@@ -1,14 +1,15 @@
 package server
 
 import (
-	"net/http"
-	
+	"berth-agent/internal/config"
 	"berth-agent/internal/handlers"
+	"fmt"
+	"net/http"
 )
 
-func New() *http.Server {
+func New(cfg *config.AppConfig) *http.Server {
 	return &http.Server{
-		Addr:    ":8081",
+		Addr:    fmt.Sprintf(":%d", cfg.Port),
 		Handler: setupRoutes(),
 	}
 }
