@@ -1,4 +1,4 @@
-package handlers
+package files
 
 import (
 	"encoding/json"
@@ -6,17 +6,19 @@ import (
 	"strings"
 )
 
-func FilesRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/api/v1/stacks/files" {
-		http.NotFound(w, r)
-		return
-	}
-	
-	switch r.Method {
-	case "GET":
-		ListFiles(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func FilesRoot() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/stacks/files" {
+			http.NotFound(w, r)
+			return
+		}
+
+		switch r.Method {
+		case "GET":
+			ListFiles(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
 	}
 }
 
@@ -26,7 +28,7 @@ func FilesWithPath(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	
+
 	switch r.Method {
 	case "GET":
 		GetFile(w, r)

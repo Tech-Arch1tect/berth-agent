@@ -5,11 +5,13 @@ import (
 )
 
 type AppConfig struct {
-	Port int `env:"PORT" validate:"required,max=65535"`
+	Port           int    `env:"PORT" validate:"required,max=65535"`
+	ComposeDirPath string `env:"COMPOSE_DIR_PATH" validate:"required,min=1"`
 }
 
 func (c *AppConfig) SetDefaults() {
 	c.Port = 8081
+	c.ComposeDirPath = "/opt/compose"
 }
 
 func Load() (*AppConfig, error) {
