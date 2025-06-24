@@ -32,7 +32,6 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 	mux.HandleFunc("/api/v1/stacks/compose/logs", handleMethod("GET", compose.ComposeLogs))
 	mux.HandleFunc("/api/v1/stacks/compose/up", handleMethod("POST", compose.ComposeUp))
 	mux.HandleFunc("/api/v1/stacks/compose/down", handleMethod("POST", compose.ComposeDown))
-	mux.HandleFunc("/api/v1/stacks/compose/status", handleMethod("GET", compose.ComposeStatus))
 
 	// Files endpoints
 	mux.HandleFunc("/api/v1/stacks/", func(w http.ResponseWriter, r *http.Request) {
