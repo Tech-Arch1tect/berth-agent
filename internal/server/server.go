@@ -42,7 +42,7 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 		// Route based on URL structure and method
 		if len(parts) >= 2 && parts[1] == "files" {
 			if len(parts) == 2 {
-				files.ListFilesHandler(w, r)
+				files.ListFilesHandler(cfg)(w, r)
 			} else {
 				switch r.Method {
 				case "GET":
