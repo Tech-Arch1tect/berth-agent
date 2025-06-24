@@ -3,11 +3,13 @@ package server
 import (
 	"berth-agent/internal/compose"
 	"berth-agent/internal/config"
+	"berth-agent/internal/export"
 	"berth-agent/internal/files"
 	"berth-agent/internal/handlers"
 	"berth-agent/internal/stacks"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 func New(cfg *config.AppConfig) *http.Server {
@@ -33,9 +35,33 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 	mux.HandleFunc("/api/v1/stacks/compose/status", handleMethod("GET", compose.ComposeStatus))
 
 	// Files endpoints
-	mux.HandleFunc("/api/v1/stacks/files", files.FilesRoot())
-	mux.HandleFunc("/api/v1/stacks/files/export", handleMethod("POST", files.ExportFiles))
-	mux.HandleFunc("/api/v1/stacks/files/", files.FilesWithPath)
+	mux.HandleFunc("/api/v1/stacks/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/stacks/")
+		parts := strings.Split(path, "/")
+
+		// Route based on URL structure and method
+		if len(parts) >= 2 && parts[1] == "files" {
+			if len(parts) == 2 {
+				files.ListFilesHandler(w, r)
+			} else {
+				switch r.Method {
+				case "GET":
+					files.GetFileHandler(w, r)
+				case "PUT":
+					files.UpdateFileHandler(w, r)
+				case "DELETE":
+					files.DeleteFileHandler(w, r)
+				default:
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			}
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	// Export endpoints
+	mux.HandleFunc("/api/v1/export/", export.ExportHandler)
 
 	// Stacks endpoints
 	mux.HandleFunc("/api/v1/stacks/stacks", handleMethod("GET", stacks.ListStacks(cfg)))
