@@ -10,15 +10,20 @@ func UpdateFileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	stackName := extractStackName(r, "/api/v1/stacks/")
-	filePath := extractFilePath(r, "/api/v1/stacks/")
-	
-	if stackName == "" || filePath == "" {
+	filePath := extractFilePath(r)
+
+	if stackName == "" {
 		http.NotFound(w, r)
 		return
 	}
-	
+
+	if filePath == "" {
+		http.Error(w, "Path parameter is required", http.StatusBadRequest)
+		return
+	}
+
 	UpdateFile(w, r, stackName, filePath)
 }
 
@@ -26,9 +31,9 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, stackName, filePath stri
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotImplemented)
 	json.NewEncoder(w).Encode(map[string]string{
-		"error": "Not implemented yet",
-		"stack": stackName,
-		"path": filePath,
+		"error":    "Not implemented yet",
+		"stack":    stackName,
+		"path":     filePath,
 		"endpoint": "UpdateFile",
 	})
 }

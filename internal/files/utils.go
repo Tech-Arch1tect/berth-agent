@@ -14,11 +14,6 @@ func extractStackName(r *http.Request, prefix string) string {
 	return ""
 }
 
-func extractFilePath(r *http.Request, prefix string) string {
-	path := strings.TrimPrefix(r.URL.Path, prefix)
-	parts := strings.Split(path, "/")
-	if len(parts) > 3 {
-		return strings.Join(parts[3:], "/")
-	}
-	return ""
+func extractFilePath(r *http.Request) string {
+	return r.URL.Query().Get("path")
 }

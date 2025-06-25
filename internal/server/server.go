@@ -39,20 +39,20 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 		parts := strings.Split(path, "/")
 
 		// Route based on URL structure and method
-		if len(parts) >= 2 && parts[1] == "files" {
-			if len(parts) == 2 {
-				files.ListFilesHandler(cfg)(w, r)
-			} else {
-				switch r.Method {
-				case "GET":
-					files.GetFileHandler(w, r)
-				case "PUT":
-					files.UpdateFileHandler(w, r)
-				case "DELETE":
-					files.DeleteFileHandler(w, r)
-				default:
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		if len(parts) >= 2 && parts[1] == "files" && len(parts) == 2 {
+			switch r.Method {
+			case "GET":
+				if r.URL.Query().Get("path") == "" || isDirectoryListing(r) {
+					files.ListFilesHandler(cfg)(w, r)
+				} else {
+					files.GetFileHandler(cfg)(w, r)
 				}
+			case "PUT":
+				files.UpdateFileHandler(w, r)
+			case "DELETE":
+				files.DeleteFileHandler(w, r)
+			default:
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
 		} else {
 			http.NotFound(w, r)
@@ -76,4 +76,9 @@ func handleMethod(method string, handler http.HandlerFunc) http.HandlerFunc {
 		}
 		handler(w, r)
 	}
+}
+
+func isDirectoryListing(r *http.Request) bool {
+	path := r.URL.Query().Get("path")
+	return path == "" || path == "." || strings.HasSuffix(path, "/")
 }
