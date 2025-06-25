@@ -33,20 +33,24 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 	mux.HandleFunc("/api/v1/stacks/compose/up", handleMethod("POST", compose.ComposeUp))
 	mux.HandleFunc("/api/v1/stacks/compose/down", handleMethod("POST", compose.ComposeDown))
 
-	// Files endpoints
 	mux.HandleFunc("/api/v1/stacks/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/stacks/")
 		parts := strings.Split(path, "/")
 
-		// Route based on URL structure and method
-		if len(parts) >= 2 && parts[1] == "files" && len(parts) == 2 {
+		if len(parts) == 2 && parts[1] == "files" {
 			switch r.Method {
 			case "GET":
-				if r.URL.Query().Get("path") == "" || isDirectoryListing(r) {
-					files.ListFilesHandler(cfg)(w, r)
-				} else {
-					files.GetFileHandler(cfg)(w, r)
-				}
+				files.ListFilesHandler(cfg)(w, r)
+			default:
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+
+		if len(parts) == 2 && parts[1] == "file" {
+			switch r.Method {
+			case "GET":
+				files.GetFileHandler(cfg)(w, r)
 			case "PUT":
 				files.UpdateFileHandler(w, r)
 			case "DELETE":
@@ -54,9 +58,10 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 			default:
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
-		} else {
-			http.NotFound(w, r)
+			return
 		}
+
+		http.NotFound(w, r)
 	})
 
 	// Export endpoints
@@ -76,9 +81,4 @@ func handleMethod(method string, handler http.HandlerFunc) http.HandlerFunc {
 		}
 		handler(w, r)
 	}
-}
-
-func isDirectoryListing(r *http.Request) bool {
-	path := r.URL.Query().Get("path")
-	return path == "" || path == "." || strings.HasSuffix(path, "/")
 }
