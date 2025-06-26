@@ -1,39 +1,109 @@
 package files
 
 import (
+	"berth-agent/internal/config"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
-func DeleteFileHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "DELETE" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+func DeleteFileHandler(cfg *config.AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		stackName := extractStackName(r, "/api/v1/stacks/")
+		filePath := extractFilePath(r)
+
+		if stackName == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		if filePath == "" {
+			http.Error(w, "Path parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		DeleteFile(w, r, cfg, stackName, filePath)
 	}
-
-	stackName := extractStackName(r, "/api/v1/stacks/")
-	filePath := extractFilePath(r)
-
-	if stackName == "" {
-		http.NotFound(w, r)
-		return
-	}
-
-	if filePath == "" {
-		http.Error(w, "Path parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	DeleteFile(w, r, stackName, filePath)
 }
 
-func DeleteFile(w http.ResponseWriter, r *http.Request, stackName, filePath string) {
+type DeleteFileResponse struct {
+	Stack   string `json:"stack"`
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+func DeleteFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotImplemented)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error":    "Not implemented yet",
-		"stack":    stackName,
-		"path":     filePath,
-		"endpoint": "DeleteFile",
-	})
+
+	filePath = filepath.Clean(filePath)
+	if strings.Contains(filePath, "..") {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Invalid path: directory traversal not allowed",
+		})
+		return
+	}
+
+	stackDir := filepath.Join(cfg.ComposeDirPath, stackName)
+	fullPath := filepath.Join(stackDir, filePath)
+
+	if !strings.HasPrefix(fullPath, stackDir) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Invalid path: outside stack directory",
+		})
+		return
+	}
+
+	fileInfo, err := os.Stat(fullPath)
+	if os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "File not found",
+			"path":  filePath,
+		})
+		return
+	}
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("Failed to access file: %v", err),
+		})
+		return
+	}
+
+	if fileInfo.IsDir() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Path is a directory, not a file",
+		})
+		return
+	}
+
+	err = os.Remove(fullPath)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("Failed to delete file: %v", err),
+		})
+		return
+	}
+
+	response := DeleteFileResponse{
+		Stack:   stackName,
+		Path:    filePath,
+		Message: "File deleted successfully",
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }

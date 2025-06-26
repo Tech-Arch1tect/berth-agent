@@ -54,7 +54,7 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 			case "PUT":
 				files.UpdateFileHandler(w, r)
 			case "DELETE":
-				files.DeleteFileHandler(w, r)
+				files.DeleteFileHandler(cfg)(w, r)
 			default:
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
