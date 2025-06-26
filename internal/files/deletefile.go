@@ -2,6 +2,7 @@ package files
 
 import (
 	"berth-agent/internal/config"
+	"berth-agent/internal/utils"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,8 +18,8 @@ func DeleteFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 			return
 		}
 
-		stackName := extractStackName(r, "/api/v1/stacks/")
-		filePath := extractFilePath(r)
+		stackName := utils.ExtractStackName(r, "/api/v1/stacks/")
+		filePath := utils.ExtractFilePath(r)
 
 		if stackName == "" {
 			http.NotFound(w, r)
@@ -91,7 +92,7 @@ func DeleteFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 			})
 			return
 		}
-		
+
 		err = os.RemoveAll(fullPath)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)

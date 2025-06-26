@@ -2,6 +2,7 @@ package files
 
 import (
 	"berth-agent/internal/config"
+	"berth-agent/internal/utils"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,8 +19,8 @@ func UpdateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 			return
 		}
 
-		stackName := extractStackName(r, "/api/v1/stacks/")
-		filePath := extractFilePath(r)
+		stackName := utils.ExtractStackName(r, "/api/v1/stacks/")
+		filePath := utils.ExtractFilePath(r)
 
 		if stackName == "" {
 			http.NotFound(w, r)
@@ -87,7 +88,7 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		})
 		return
 	}
-	
+
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{

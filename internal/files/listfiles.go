@@ -2,6 +2,7 @@ package files
 
 import (
 	"berth-agent/internal/config"
+	"berth-agent/internal/utils"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,7 +18,7 @@ func ListFilesHandler(cfg *config.AppConfig) http.HandlerFunc {
 			return
 		}
 
-		stackName := extractStackName(r, "/api/v1/stacks/")
+		stackName := utils.ExtractStackName(r, "/api/v1/stacks/")
 		if stackName == "" {
 			http.NotFound(w, r)
 			return

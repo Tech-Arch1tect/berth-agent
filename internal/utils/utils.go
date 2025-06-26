@@ -1,11 +1,11 @@
-package files
+package utils
 
 import (
 	"net/http"
 	"strings"
 )
 
-func extractStackName(r *http.Request, prefix string) string {
+func ExtractStackName(r *http.Request, prefix string) string {
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	parts := strings.Split(path, "/")
 	if len(parts) > 0 {
@@ -14,6 +14,6 @@ func extractStackName(r *http.Request, prefix string) string {
 	return ""
 }
 
-func extractFilePath(r *http.Request) string {
+func ExtractFilePath(r *http.Request) string {
 	return r.URL.Query().Get("path")
 }

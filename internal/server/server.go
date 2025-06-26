@@ -25,17 +25,53 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 	// Health endpoint
 	mux.HandleFunc("/health", handlers.Health)
 
-	// Compose endpoints
-	mux.HandleFunc("/api/v1/stacks/compose/info", handleMethod("GET", compose.ComposeInfo))
-	mux.HandleFunc("/api/v1/stacks/compose/exec", handleMethod("POST", compose.ComposeExec))
-	mux.HandleFunc("/api/v1/stacks/compose/ps", handleMethod("GET", compose.ComposePs))
-	mux.HandleFunc("/api/v1/stacks/compose/logs", handleMethod("GET", compose.ComposeLogs))
-	mux.HandleFunc("/api/v1/stacks/compose/up", handleMethod("POST", compose.ComposeUp))
-	mux.HandleFunc("/api/v1/stacks/compose/down", handleMethod("POST", compose.ComposeDown))
-
 	mux.HandleFunc("/api/v1/stacks/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/stacks/")
 		parts := strings.Split(path, "/")
+
+		if len(parts) >= 3 && parts[1] == "compose" {
+			switch parts[2] {
+			case "info":
+				if r.Method == "GET" {
+					compose.ComposeInfoHandler(cfg)(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			case "exec":
+				if r.Method == "POST" {
+					compose.ComposeExecHandler(cfg)(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			case "ps":
+				if r.Method == "GET" {
+					compose.ComposePsHandler(cfg)(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			case "logs":
+				if r.Method == "GET" {
+					compose.ComposeLogsHandler(cfg)(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			case "up":
+				if r.Method == "POST" {
+					compose.ComposeUpHandler(cfg)(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			case "down":
+				if r.Method == "POST" {
+					compose.ComposeDownHandler(cfg)(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			default:
+				http.NotFound(w, r)
+			}
+			return
+		}
 
 		if len(parts) == 2 && parts[1] == "files" {
 			switch r.Method {
