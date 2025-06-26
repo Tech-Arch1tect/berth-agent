@@ -67,7 +67,7 @@ func DeleteFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 	if os.IsNotExist(err) {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "File not found",
+			"error": "File or directory not found",
 			"path":  filePath,
 		})
 		return
@@ -81,27 +81,47 @@ func DeleteFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
+	recursive := r.URL.Query().Get("recursive") == "true"
+
 	if fileInfo.IsDir() {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Path is a directory, not a file",
-		})
-		return
+		if !recursive {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Path is a directory. Use recursive=true to delete directories",
+			})
+			return
+		}
+		
+		err = os.RemoveAll(fullPath)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to delete directory: %v", err),
+			})
+			return
+		}
+	} else {
+		err = os.Remove(fullPath)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to delete file: %v", err),
+			})
+			return
+		}
 	}
 
-	err = os.Remove(fullPath)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to delete file: %v", err),
-		})
-		return
+	var message string
+	if fileInfo.IsDir() {
+		message = "Directory deleted successfully"
+	} else {
+		message = "File deleted successfully"
 	}
 
 	response := DeleteFileResponse{
 		Stack:   stackName,
 		Path:    filePath,
-		Message: "File deleted successfully",
+		Message: message,
 	}
 
 	w.WriteHeader(http.StatusOK)
