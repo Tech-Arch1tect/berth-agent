@@ -52,7 +52,7 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 			case "GET":
 				files.GetFileHandler(cfg)(w, r)
 			case "PUT":
-				files.UpdateFileHandler(w, r)
+				files.UpdateFileHandler(cfg)(w, r)
 			case "DELETE":
 				files.DeleteFileHandler(cfg)(w, r)
 			default:
