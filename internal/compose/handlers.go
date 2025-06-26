@@ -368,14 +368,16 @@ func ComposeDownHandler(cfg *config.AppConfig) http.HandlerFunc {
 }
 
 type ComposeDownRequest struct {
-	RemoveVolumes bool `json:"remove_volumes"`
-	RemoveImages  bool `json:"remove_images"`
+	Services      []string `json:"services,omitempty"`
+	RemoveVolumes bool     `json:"remove_volumes"`
+	RemoveImages  bool     `json:"remove_images"`
 }
 
 type ComposeDownResponse struct {
-	Stack   string `json:"stack"`
-	Message string `json:"message"`
-	Output  string `json:"output"`
+	Stack    string `json:"stack"`
+	Message  string `json:"message"`
+	Services string `json:"services,omitempty"`
+	Output   string `json:"output"`
 }
 
 func ComposeDown(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
@@ -401,13 +403,22 @@ func ComposeDown(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, 
 	if req.RemoveImages {
 		args = append(args, "--rmi", "all")
 	}
+	if len(req.Services) > 0 {
+		args = append(args, req.Services...)
+	}
 
 	output, err := runDockerCompose(stackDir, args...)
 
 	response := ComposeDownResponse{
-		Stack:   stackName,
-		Message: "Stopped and removed services",
-		Output:  string(output),
+		Stack:  stackName,
+		Output: string(output),
+	}
+
+	if len(req.Services) > 0 {
+		response.Services = strings.Join(req.Services, ", ")
+		response.Message = fmt.Sprintf("Stopped and removed services: %s", response.Services)
+	} else {
+		response.Message = "Stopped and removed all services"
 	}
 
 	if err != nil {
