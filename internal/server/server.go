@@ -51,6 +51,8 @@ func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
 			switch r.Method {
 			case "GET":
 				files.GetFileHandler(cfg)(w, r)
+			case "POST":
+				files.CreateFileHandler(cfg)(w, r)
 			case "PUT":
 				files.UpdateFileHandler(cfg)(w, r)
 			case "DELETE":
