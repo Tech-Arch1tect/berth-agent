@@ -9,7 +9,8 @@ import (
 	"berth-agent/internal/stacks"
 	"fmt"
 	"net/http"
-	"strings"
+
+	"github.com/tech-arch1tect/simplerouter"
 )
 
 func New(cfg *config.AppConfig) *http.Server {
@@ -19,104 +20,32 @@ func New(cfg *config.AppConfig) *http.Server {
 	}
 }
 
-func setupRoutes(cfg *config.AppConfig) *http.ServeMux {
-	mux := http.NewServeMux()
+func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
+	router := simplerouter.New()
 
 	// Health endpoint
-	mux.HandleFunc("/health", handlers.Health)
+	router.GET("/health", simplerouter.HandlerFunc(handlers.Health))
 
-	mux.HandleFunc("/api/v1/stacks/", func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/stacks/")
-		parts := strings.Split(path, "/")
+	// Compose endpoints
+	router.GET("/api/v1/stacks/{stack}/compose/info", simplerouter.HandlerFunc(compose.ComposeInfoHandler(cfg)))
+	router.POST("/api/v1/stacks/{stack}/compose/exec", simplerouter.HandlerFunc(compose.ComposeExecHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/compose/ps", simplerouter.HandlerFunc(compose.ComposePsHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/compose/logs", simplerouter.HandlerFunc(compose.ComposeLogsHandler(cfg)))
+	router.POST("/api/v1/stacks/{stack}/compose/up", simplerouter.HandlerFunc(compose.ComposeUpHandler(cfg)))
+	router.POST("/api/v1/stacks/{stack}/compose/down", simplerouter.HandlerFunc(compose.ComposeDownHandler(cfg)))
 
-		if len(parts) >= 3 && parts[1] == "compose" {
-			switch parts[2] {
-			case "info":
-				if r.Method == "GET" {
-					compose.ComposeInfoHandler(cfg)(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			case "exec":
-				if r.Method == "POST" {
-					compose.ComposeExecHandler(cfg)(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			case "ps":
-				if r.Method == "GET" {
-					compose.ComposePsHandler(cfg)(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			case "logs":
-				if r.Method == "GET" {
-					compose.ComposeLogsHandler(cfg)(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			case "up":
-				if r.Method == "POST" {
-					compose.ComposeUpHandler(cfg)(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			case "down":
-				if r.Method == "POST" {
-					compose.ComposeDownHandler(cfg)(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			default:
-				http.NotFound(w, r)
-			}
-			return
-		}
-
-		if len(parts) == 2 && parts[1] == "files" {
-			switch r.Method {
-			case "GET":
-				files.ListFilesHandler(cfg)(w, r)
-			default:
-				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			}
-			return
-		}
-
-		if len(parts) == 2 && parts[1] == "file" {
-			switch r.Method {
-			case "GET":
-				files.GetFileHandler(cfg)(w, r)
-			case "POST":
-				files.CreateFileHandler(cfg)(w, r)
-			case "PUT":
-				files.UpdateFileHandler(cfg)(w, r)
-			case "DELETE":
-				files.DeleteFileHandler(cfg)(w, r)
-			default:
-				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			}
-			return
-		}
-
-		http.NotFound(w, r)
-	})
+	// Files endpoints
+	router.GET("/api/v1/stacks/{stack}/files", simplerouter.HandlerFunc(files.ListFilesHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.GetFileHandler(cfg)))
+	router.POST("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.CreateFileHandler(cfg)))
+	router.PUT("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.UpdateFileHandler(cfg)))
+	router.DELETE("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.DeleteFileHandler(cfg)))
 
 	// Export endpoints
-	mux.HandleFunc("/api/v1/export/", export.ExportHandler)
+	router.GET("/api/v1/export/", simplerouter.HandlerFunc(export.ExportHandler))
 
 	// Stacks endpoints
-	mux.HandleFunc("/api/v1/stacks/stacks", handleMethod("GET", stacks.ListStacks(cfg)))
+	router.GET("/api/v1/stacks/stacks", simplerouter.HandlerFunc(stacks.ListStacks(cfg)))
 
-	return mux
-}
-
-func handleMethod(method string, handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != method {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		handler(w, r)
-	}
+	return router
 }
