@@ -7,6 +7,7 @@ import (
 type AppConfig struct {
 	Port           int    `env:"PORT" validate:"required,max=65535"`
 	ComposeDirPath string `env:"COMPOSE_DIR_PATH" validate:"required,min=1"`
+	Token          string `env:"TOKEN" validate:"required,min=16"`
 }
 
 func (c *AppConfig) SetDefaults() {

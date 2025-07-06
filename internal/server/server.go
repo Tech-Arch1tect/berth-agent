@@ -9,6 +9,7 @@ import (
 	"berth-agent/internal/stacks"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/tech-arch1tect/simplerouter"
 )
@@ -20,8 +21,33 @@ func New(cfg *config.AppConfig) *http.Server {
 	}
 }
 
+func authMiddleware(cfg *config.AppConfig) simplerouter.Middleware {
+	return func(next simplerouter.HandlerFunc) simplerouter.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "Authorization header required", http.StatusUnauthorized)
+				return
+			}
+
+			if !strings.HasPrefix(authHeader, "Bearer ") {
+				http.Error(w, "Bearer token required", http.StatusUnauthorized)
+				return
+			}
+
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if token != cfg.Token {
+				http.Error(w, "Invalid token", http.StatusUnauthorized)
+				return
+			}
+
+			next(w, r)
+		}
+	}
+}
+
 func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
-	router := simplerouter.New()
+	router := simplerouter.New().Use(authMiddleware(cfg))
 
 	// Health endpoint
 	router.GET("/health", simplerouter.HandlerFunc(handlers.Health))
