@@ -199,7 +199,7 @@ func ComposePs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, st
 		return
 	}
 
-	output, err := runDockerCompose(stackDir, "ps", "--format", "json")
+	output, err := runDockerCompose(stackDir, "ps", "--format", "json", "--no-trunc")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to get service status: %v", err), stackName)
 		return
