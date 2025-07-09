@@ -15,10 +15,10 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	fmt.Printf("Loaded configuration: %+v\n", cfg)
-	srv := server.New(cfg)
+	router := server.New(cfg)
 
 	log.Println("Starting Berth Agent on :" + strconv.Itoa(cfg.Port))
-	if err := srv.ListenAndServe(); err != nil {
+	if err := router.ListenAndServe(":" + strconv.Itoa(cfg.Port)); err != nil {
 		log.Fatal("Failed to start server:", err)
 	}
 }

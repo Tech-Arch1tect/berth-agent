@@ -7,18 +7,14 @@ import (
 	"berth-agent/internal/files"
 	"berth-agent/internal/handlers"
 	"berth-agent/internal/stacks"
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/tech-arch1tect/simplerouter"
 )
 
-func New(cfg *config.AppConfig) *http.Server {
-	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: setupRoutes(cfg),
-	}
+func New(cfg *config.AppConfig) *simplerouter.Router {
+	return setupRoutes(cfg)
 }
 
 func authMiddleware(cfg *config.AppConfig) simplerouter.Middleware {
@@ -47,7 +43,7 @@ func authMiddleware(cfg *config.AppConfig) simplerouter.Middleware {
 }
 
 func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
-	router := simplerouter.New().Use(authMiddleware(cfg))
+	router := simplerouter.NewWithDefaults().Use(authMiddleware(cfg))
 
 	// Health endpoint
 	router.GET("/health", simplerouter.HandlerFunc(handlers.Health))

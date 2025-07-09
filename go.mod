@@ -5,6 +5,7 @@ go 1.24.4
 require (
 	github.com/Tech-Arch1tect/config v0.3.0
 	github.com/compose-spec/compose-go/v2 v2.6.5
+	github.com/tech-arch1tect/simplerouter v0.1.1
 )
 
 require (
@@ -16,7 +17,6 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
-	github.com/tech-arch1tect/simplerouter v0.1.0 // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	golang.org/x/sync v0.3.0 // indirect
 	golang.org/x/sys v0.5.0 // indirect
