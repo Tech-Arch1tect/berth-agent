@@ -90,6 +90,9 @@ func streamComposeOperation(w http.ResponseWriter, r *http.Request, cfg *config.
 	switch operation {
 	case "up":
 		args = []string{"up", "-d"}
+		if r.URL.Query().Get("build") == "true" {
+			args = append(args, "--build")
+		}
 		if servicesParam := r.URL.Query().Get("services"); servicesParam != "" {
 			services := strings.Split(servicesParam, ",")
 			for _, service := range services {
