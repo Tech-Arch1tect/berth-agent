@@ -53,9 +53,8 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 	router.POST("/api/v1/stacks/{stack}/compose/exec", simplerouter.HandlerFunc(compose.ComposeExecHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/ps", simplerouter.HandlerFunc(compose.ComposePsHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/logs", simplerouter.HandlerFunc(compose.ComposeLogsHandler(cfg)))
-	router.POST("/api/v1/stacks/{stack}/compose/up", simplerouter.HandlerFunc(compose.ComposeUpHandler(cfg)))
-	router.POST("/api/v1/stacks/{stack}/compose/down", simplerouter.HandlerFunc(compose.ComposeDownHandler(cfg)))
 
+	// Streaming endpoints
 	router.GET("/api/v1/stacks/{stack}/compose/up/stream", simplerouter.HandlerFunc(compose.ComposeUpStreamHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/down/stream", simplerouter.HandlerFunc(compose.ComposeDownStreamHandler(cfg)))
 
