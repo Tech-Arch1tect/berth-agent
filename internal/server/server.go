@@ -56,6 +56,9 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 	router.POST("/api/v1/stacks/{stack}/compose/up", simplerouter.HandlerFunc(compose.ComposeUpHandler(cfg)))
 	router.POST("/api/v1/stacks/{stack}/compose/down", simplerouter.HandlerFunc(compose.ComposeDownHandler(cfg)))
 
+	router.GET("/api/v1/stacks/{stack}/compose/up/stream", simplerouter.HandlerFunc(compose.ComposeUpStreamHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/compose/down/stream", simplerouter.HandlerFunc(compose.ComposeDownStreamHandler(cfg)))
+
 	// Files endpoints
 	router.GET("/api/v1/stacks/{stack}/files", simplerouter.HandlerFunc(files.ListFilesHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.GetFileHandler(cfg)))
