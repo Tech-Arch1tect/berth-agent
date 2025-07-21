@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,7 +76,14 @@ func streamComposeOperation(w http.ResponseWriter, r *http.Request, cfg *config.
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	ctx, cancel := context.WithCancel(r.Context())
+	timeoutSeconds := 600
+	if timeoutParam := r.URL.Query().Get("timeout"); timeoutParam != "" {
+		if parsed, err := strconv.Atoi(timeoutParam); err == nil && parsed > 0 {
+			timeoutSeconds = parsed
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	var args []string
