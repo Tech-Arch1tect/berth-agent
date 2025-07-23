@@ -25,7 +25,7 @@ type ComposeError struct {
 	Stack string `json:"stack"`
 }
 
-func validateStackAndFindComposeFile(cfg *config.AppConfig, stackName string) (string, string, error) {
+func ValidateStackAndFindComposeFile(cfg *config.AppConfig, stackName string) (string, string, error) {
 	if stackName == "" {
 		return "", "", fmt.Errorf("stack name is required")
 	}
@@ -75,7 +75,7 @@ type ComposeInfoResponse struct {
 }
 
 func ComposeInfo(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
-	stackDir, configFile, err := validateStackAndFindComposeFile(cfg, stackName)
+	stackDir, configFile, err := ValidateStackAndFindComposeFile(cfg, stackName)
 	if err != nil {
 		if strings.Contains(err.Error(), "stack not found") {
 			writeError(w, http.StatusNotFound, err.Error(), stackName)
@@ -126,7 +126,7 @@ type ComposeExecResponse struct {
 }
 
 func ComposeExec(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
-	stackDir, _, err := validateStackAndFindComposeFile(cfg, stackName)
+	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
 	if err != nil {
 		if strings.Contains(err.Error(), "stack not found") {
 			writeError(w, http.StatusNotFound, err.Error(), stackName)
@@ -189,7 +189,7 @@ type ComposePsResponse struct {
 }
 
 func ComposePs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
-	stackDir, _, err := validateStackAndFindComposeFile(cfg, stackName)
+	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
 	if err != nil {
 		if strings.Contains(err.Error(), "stack not found") {
 			writeError(w, http.StatusNotFound, err.Error(), stackName)
@@ -249,7 +249,7 @@ type ComposeLogsResponse struct {
 }
 
 func ComposeLogs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
-	stackDir, _, err := validateStackAndFindComposeFile(cfg, stackName)
+	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
 	if err != nil {
 		if strings.Contains(err.Error(), "stack not found") {
 			writeError(w, http.StatusNotFound, err.Error(), stackName)

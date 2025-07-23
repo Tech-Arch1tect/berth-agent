@@ -5,7 +5,9 @@ go 1.24.4
 require (
 	github.com/Tech-Arch1tect/config v0.3.0
 	github.com/compose-spec/compose-go/v2 v2.6.5
-	github.com/tech-arch1tect/simplerouter v0.1.1
+	github.com/creack/pty v1.1.24
+	github.com/gorilla/websocket v1.5.3
+	github.com/tech-arch1tect/simplerouter v0.1.2
 )
 
 require (

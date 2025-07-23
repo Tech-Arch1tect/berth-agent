@@ -7,13 +7,17 @@ import (
 	"berth-agent/internal/files"
 	"berth-agent/internal/handlers"
 	"berth-agent/internal/stacks"
+	"berth-agent/internal/terminal"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tech-arch1tect/simplerouter"
 )
 
 func New(cfg *config.AppConfig) *simplerouter.Router {
+	terminal.InitTerminalManager(30 * time.Minute)
+
 	return setupRoutes(cfg)
 }
 
@@ -21,17 +25,20 @@ func authMiddleware(cfg *config.AppConfig) simplerouter.Middleware {
 	return func(next simplerouter.HandlerFunc) simplerouter.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			token := ""
+
+			if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			} else {
+				// Fall back to query parameter for WebSocket connections
+				token = r.URL.Query().Get("token")
+			}
+
+			if token == "" {
+				http.Error(w, "Authorization required", http.StatusUnauthorized)
 				return
 			}
 
-			if !strings.HasPrefix(authHeader, "Bearer ") {
-				http.Error(w, "Bearer token required", http.StatusUnauthorized)
-				return
-			}
-
-			token := strings.TrimPrefix(authHeader, "Bearer ")
 			if token != cfg.Token {
 				http.Error(w, "Invalid token", http.StatusUnauthorized)
 				return
@@ -57,6 +64,9 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 	// Streaming endpoints
 	router.GET("/api/v1/stacks/{stack}/compose/up/stream", simplerouter.HandlerFunc(compose.ComposeUpStreamHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/down/stream", simplerouter.HandlerFunc(compose.ComposeDownStreamHandler(cfg)))
+
+	// Terminal session endpoint
+	router.GET("/api/v1/stacks/{stack}/terminal/session/{service}", simplerouter.HandlerFunc(terminal.TerminalSessionHandler(cfg)))
 
 	// Files endpoints
 	router.GET("/api/v1/stacks/{stack}/files", simplerouter.HandlerFunc(files.ListFilesHandler(cfg)))

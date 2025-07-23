@@ -65,7 +65,7 @@ func ComposeDownStreamHandler(cfg *config.AppConfig) http.HandlerFunc {
 }
 
 func streamComposeOperation(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, operation string) {
-	stackDir, _, err := validateStackAndFindComposeFile(cfg, stackName)
+	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
