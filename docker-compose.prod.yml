@@ -1,0 +1,11 @@
+services:
+  berth-agent:
+    image: techarchitect/berth-agent:latest
+    container_name: berth-agent
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${BERTH_AGENT_PORT:-8081}:${BERTH_AGENT_PORT:-8081}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - ${COMPOSE_DIR_PATH:-/opt/compose}:${COMPOSE_DIR_PATH:-/opt/compose}:rw

@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+README.Docker.md
+*.md
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+Jenkinsfile
+
+# Development
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+coverage.out
+*.test
+test/
+tests/
+
+# Build artifacts
+berth-agent
+dist/
+build/
+
+# Configuration
+.env
+.env.local
+.env.example
+*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Logs
+*.log
+logs/
+
+# Dependencies (will be downloaded in container)
+vendor/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
