@@ -5,7 +5,6 @@ import (
 	"berth-agent/internal/utils"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,10 +36,14 @@ func GetFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 }
 
 type GetFileResponse struct {
-	Stack   string `json:"stack"`
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	Size    int64  `json:"size"`
+	Stack    string `json:"stack"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Size     int64  `json:"size"`
+	MimeType string `json:"mimeType"`
+	IsBinary bool   `json:"isBinary"`
+	IsBase64 bool   `json:"isBase64"`
+	ModTime  string `json:"modTime"`
 }
 
 func GetFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
@@ -92,17 +95,16 @@ func GetFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stac
 		return
 	}
 
-	file, err := os.Open(fullPath)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+	maxSizeMB := int64(100)
+	if err := utils.ValidateFileSize(fileInfo.Size(), maxSizeMB); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to open file: %v", err),
+			"error": err.Error(),
 		})
 		return
 	}
-	defer file.Close()
 
-	content, err := io.ReadAll(file)
+	fileContent, err := utils.ReadFileContent(fullPath)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
@@ -112,10 +114,14 @@ func GetFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stac
 	}
 
 	response := GetFileResponse{
-		Stack:   stackName,
-		Path:    filePath,
-		Content: string(content),
-		Size:    fileInfo.Size(),
+		Stack:    stackName,
+		Path:     filePath,
+		Content:  fileContent.Content,
+		Size:     fileContent.Size,
+		MimeType: fileContent.MimeType,
+		IsBinary: fileContent.IsBinary,
+		IsBase64: fileContent.IsBase64,
+		ModTime:  fileContent.ModTime,
 	}
 
 	w.WriteHeader(http.StatusOK)

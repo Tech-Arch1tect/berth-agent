@@ -5,7 +5,6 @@ import (
 	"berth-agent/internal/utils"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,7 +36,9 @@ func CreateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 }
 
 type CreateFileRequest struct {
-	Content string `json:"content"`
+	Content  string `json:"content"`
+	IsBinary bool   `json:"isBinary"`
+	IsBase64 bool   `json:"isBase64"`
 }
 
 type CreateFileResponse struct {
@@ -97,27 +98,7 @@ func CreateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to create directory: %v", err),
-		})
-		return
-	}
-
-	file, err := os.Create(fullPath)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to create file: %v", err),
-		})
-		return
-	}
-	defer file.Close()
-
-	_, err = io.WriteString(file, req.Content)
-	if err != nil {
+	if err := utils.WriteFileContent(fullPath, req.Content, req.IsBinary, req.IsBase64); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": fmt.Sprintf("Failed to write file: %v", err),
@@ -125,7 +106,7 @@ func CreateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	fileInfo, err := file.Stat()
+	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{

@@ -4,16 +4,15 @@ import (
 	"berth-agent/internal/config"
 	"berth-agent/internal/utils"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func UpdateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
+func GetFileMetadataHandler(cfg *config.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PUT" {
+		if r.Method != "GET" {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -31,24 +30,22 @@ func UpdateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 			return
 		}
 
-		UpdateFile(w, r, cfg, stackName, filePath)
+		GetFileMetadata(w, r, cfg, stackName, filePath)
 	}
 }
 
-type UpdateFileRequest struct {
-	Content  string `json:"content"`
+type GetFileMetadataResponse struct {
+	Stack    string `json:"stack"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	MimeType string `json:"mimeType"`
 	IsBinary bool   `json:"isBinary"`
-	IsBase64 bool   `json:"isBase64"`
+	ModTime  string `json:"modTime"`
+	Editable bool   `json:"editable"`
+	SizeStr  string `json:"sizeStr"`
 }
 
-type UpdateFileResponse struct {
-	Stack   string `json:"stack"`
-	Path    string `json:"path"`
-	Message string `json:"message"`
-	Size    int64  `json:"size"`
-}
-
-func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
+func GetFileMetadata(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
 	w.Header().Set("Content-Type", "application/json")
 
 	filePath = filepath.Clean(filePath)
@@ -71,15 +68,6 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	var req UpdateFileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Invalid JSON request body",
-		})
-		return
-	}
-
 	fileInfo, err := os.Stat(fullPath)
 	if os.IsNotExist(err) {
 		w.WriteHeader(http.StatusNotFound)
@@ -93,10 +81,12 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to access file: %v", err),
+			"error": "Failed to access file",
 		})
 		return
-	} else if fileInfo.IsDir() {
+	}
+
+	if fileInfo.IsDir() {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Path is a directory, not a file",
@@ -104,30 +94,24 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	if err := utils.WriteFileContent(fullPath, req.Content, req.IsBinary, req.IsBase64); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to write file: %v", err),
-		})
-		return
-	}
-
-	newFileInfo, err := os.Stat(fullPath)
+	enhancedInfo, err := utils.GetEnhancedFileInfo(fullPath)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to get file info: %v", err),
+			"error": "Failed to get file metadata",
 		})
 		return
 	}
 
-	message := "File updated successfully"
-
-	response := UpdateFileResponse{
-		Stack:   stackName,
-		Path:    filePath,
-		Message: message,
-		Size:    newFileInfo.Size(),
+	response := GetFileMetadataResponse{
+		Stack:    stackName,
+		Path:     filePath,
+		Size:     enhancedInfo.Size,
+		MimeType: enhancedInfo.MimeType,
+		IsBinary: enhancedInfo.IsBinary,
+		ModTime:  enhancedInfo.ModTime,
+		Editable: utils.IsTextEditable(enhancedInfo.MimeType),
+		SizeStr:  utils.GetFileSizeString(enhancedInfo.Size),
 	}
 
 	w.WriteHeader(http.StatusOK)

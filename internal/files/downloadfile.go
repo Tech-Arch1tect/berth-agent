@@ -5,15 +5,16 @@ import (
 	"berth-agent/internal/utils"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func UpdateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
+func DownloadFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PUT" {
+		if r.Method != "GET" {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -31,26 +32,11 @@ func UpdateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
 			return
 		}
 
-		UpdateFile(w, r, cfg, stackName, filePath)
+		DownloadFile(w, r, cfg, stackName, filePath)
 	}
 }
 
-type UpdateFileRequest struct {
-	Content  string `json:"content"`
-	IsBinary bool   `json:"isBinary"`
-	IsBase64 bool   `json:"isBase64"`
-}
-
-type UpdateFileResponse struct {
-	Stack   string `json:"stack"`
-	Path    string `json:"path"`
-	Message string `json:"message"`
-	Size    int64  `json:"size"`
-}
-
-func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
-	w.Header().Set("Content-Type", "application/json")
-
+func DownloadFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
 	filePath = filepath.Clean(filePath)
 	if strings.Contains(filePath, "..") {
 		w.WriteHeader(http.StatusBadRequest)
@@ -71,15 +57,6 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	var req UpdateFileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Invalid JSON request body",
-		})
-		return
-	}
-
 	fileInfo, err := os.Stat(fullPath)
 	if os.IsNotExist(err) {
 		w.WriteHeader(http.StatusNotFound)
@@ -93,10 +70,12 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to access file: %v", err),
+			"error": "Failed to access file",
 		})
 		return
-	} else if fileInfo.IsDir() {
+	}
+
+	if fileInfo.IsDir() {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Path is a directory, not a file",
@@ -104,32 +83,28 @@ func UpdateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	if err := utils.WriteFileContent(fullPath, req.Content, req.IsBinary, req.IsBase64); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to write file: %v", err),
-		})
-		return
+	mimeType, _, err := utils.DetectFileType(fullPath)
+	if err != nil {
+		mimeType = "application/octet-stream"
 	}
 
-	newFileInfo, err := os.Stat(fullPath)
+	file, err := os.Open(fullPath)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": fmt.Sprintf("Failed to get file info: %v", err),
+			"error": "Failed to open file",
 		})
 		return
 	}
+	defer file.Close()
 
-	message := "File updated successfully"
+	filename := filepath.Base(filePath)
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Length", fmt.Sprint((fileInfo.Size())))
 
-	response := UpdateFileResponse{
-		Stack:   stackName,
-		Path:    filePath,
-		Message: message,
-		Size:    newFileInfo.Size(),
+	_, err = io.Copy(w, file)
+	if err != nil {
+		return
 	}
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
 }

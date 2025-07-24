@@ -33,16 +33,10 @@ func ListFilesHandler(cfg *config.AppConfig) http.HandlerFunc {
 	}
 }
 
-type FileInfo struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"isDir"`
-	Size  int64  `json:"size"`
-}
-
 type ListFilesResponse struct {
-	Stack string     `json:"stack"`
-	Path  string     `json:"path"`
-	Files []FileInfo `json:"files"`
+	Stack string           `json:"stack"`
+	Path  string           `json:"path"`
+	Files []utils.FileInfo `json:"files"`
 }
 
 func ListFiles(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, subPath string) {
@@ -86,18 +80,26 @@ func ListFiles(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, st
 		return
 	}
 
-	files := make([]FileInfo, 0, len(entries))
+	files := make([]utils.FileInfo, 0, len(entries))
 	for _, entry := range entries {
-		info, err := entry.Info()
+		entryPath := filepath.Join(fullPath, entry.Name())
+		fileInfo, err := utils.GetEnhancedFileInfo(entryPath)
 		if err != nil {
-			continue
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			fileInfo = &utils.FileInfo{
+				Name:     entry.Name(),
+				IsDir:    entry.IsDir(),
+				Size:     info.Size(),
+				MimeType: "application/octet-stream",
+				IsBinary: true,
+				ModTime:  info.ModTime().Format("2006-01-02T15:04:05Z07:00"),
+			}
 		}
 
-		files = append(files, FileInfo{
-			Name:  entry.Name(),
-			IsDir: entry.IsDir(),
-			Size:  info.Size(),
-		})
+		files = append(files, *fileInfo)
 	}
 
 	response := ListFilesResponse{

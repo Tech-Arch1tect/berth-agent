@@ -71,6 +71,8 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 	// Files endpoints
 	router.GET("/api/v1/stacks/{stack}/files", simplerouter.HandlerFunc(files.ListFilesHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.GetFileHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/file/metadata", simplerouter.HandlerFunc(files.GetFileMetadataHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/file/download", simplerouter.HandlerFunc(files.DownloadFileHandler(cfg)))
 	router.POST("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.CreateFileHandler(cfg)))
 	router.PUT("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.UpdateFileHandler(cfg)))
 	router.DELETE("/api/v1/stacks/{stack}/file", simplerouter.HandlerFunc(files.DeleteFileHandler(cfg)))
