@@ -105,69 +105,8 @@ func ComposeInfo(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, 
 	json.NewEncoder(w).Encode(response)
 }
 
-func ComposeExecHandler(cfg *config.AppConfig) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		stackName := utils.ExtractStackName(r, "/api/v1/stacks/")
-		ComposeExec(w, r, cfg, stackName)
-	}
-}
 
-type ComposeExecRequest struct {
-	Service string   `json:"service"`
-	Command []string `json:"command"`
-}
 
-type ComposeExecResponse struct {
-	Stack   string `json:"stack"`
-	Service string `json:"service"`
-	Command string `json:"command"`
-	Output  string `json:"output"`
-	Error   string `json:"error,omitempty"`
-}
-
-func ComposeExec(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
-	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
-	if err != nil {
-		if strings.Contains(err.Error(), "stack not found") {
-			writeError(w, http.StatusNotFound, err.Error(), stackName)
-		} else {
-			writeError(w, http.StatusBadRequest, err.Error(), stackName)
-		}
-		return
-	}
-
-	var req ComposeExecRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON request body", stackName)
-		return
-	}
-
-	if req.Service == "" || len(req.Command) == 0 {
-		writeError(w, http.StatusBadRequest, "Service and command are required", stackName)
-		return
-	}
-
-	args := append([]string{"exec", "-T", req.Service}, req.Command...)
-	output, err := runDockerCompose(stackDir, args...)
-
-	response := ComposeExecResponse{
-		Stack:   stackName,
-		Service: req.Service,
-		Command: strings.Join(req.Command, " "),
-		Output:  string(output),
-	}
-
-	if err != nil {
-		response.Error = err.Error()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-	}
-
-	json.NewEncoder(w).Encode(response)
-}
 
 func ComposePsHandler(cfg *config.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

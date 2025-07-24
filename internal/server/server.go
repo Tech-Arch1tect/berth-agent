@@ -57,7 +57,6 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 
 	// Compose endpoints
 	router.GET("/api/v1/stacks/{stack}/compose/info", simplerouter.HandlerFunc(compose.ComposeInfoHandler(cfg)))
-	router.POST("/api/v1/stacks/{stack}/compose/exec", simplerouter.HandlerFunc(compose.ComposeExecHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/ps", simplerouter.HandlerFunc(compose.ComposePsHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/logs", simplerouter.HandlerFunc(compose.ComposeLogsHandler(cfg)))
 
