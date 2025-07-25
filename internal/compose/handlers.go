@@ -115,11 +115,20 @@ func ComposePsHandler(cfg *config.AppConfig) http.HandlerFunc {
 	}
 }
 
+type NetworkInfo struct {
+	Name      string `json:"name"`
+	IPAddress string `json:"ip_address"`
+	Gateway   string `json:"gateway"`
+}
+
 type ComposeService struct {
-	Name    string `json:"name"`
-	Command string `json:"command"`
-	State   string `json:"state"`
-	Ports   string `json:"ports"`
+	ID       string        `json:"id"`
+	Name     string        `json:"name"`
+	Command  string        `json:"command"`
+	State    string        `json:"state"`
+	Ports    string        `json:"ports"`
+	Image    string        `json:"image"`
+	Networks []NetworkInfo `json:"networks"`
 }
 
 type ComposePsResponse struct {
@@ -153,11 +162,17 @@ func ComposePs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, st
 		}
 		var service map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &service); err == nil {
+			containerID := getString(service, "ID")
+			networks := getContainerNetworks(containerID)
+			
 			composeService := ComposeService{
-				Name:    getString(service, "Name"),
-				Command: getString(service, "Command"),
-				State:   getString(service, "State"),
-				Ports:   getString(service, "Ports"),
+				ID:       containerID,
+				Name:     getString(service, "Name"),
+				Command:  getString(service, "Command"),
+				State:    getString(service, "State"),
+				Ports:    getString(service, "Ports"),
+				Image:    getString(service, "Image"),
+				Networks: networks,
 			}
 			services = append(services, composeService)
 		}
@@ -232,6 +247,48 @@ func ComposeLogs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, 
 
 
 func getString(m map[string]interface{}, key string) string {
+	if val, ok := m[key]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+func getContainerNetworks(containerID string) []NetworkInfo {
+	if containerID == "" {
+		return []NetworkInfo{}
+	}
+
+	cmd := exec.Command("docker", "inspect", containerID, "--format", "{{json .NetworkSettings.Networks}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return []NetworkInfo{}
+	}
+
+	var networks map[string]interface{}
+	if err := json.Unmarshal(output, &networks); err != nil {
+		return []NetworkInfo{}
+	}
+
+	var networkInfos []NetworkInfo
+	for networkName, networkData := range networks {
+		if networkMap, ok := networkData.(map[string]interface{}); ok {
+			info := NetworkInfo{
+				Name:      networkName,
+				IPAddress: getStringFromInterface(networkMap, "IPAddress"),
+				Gateway:   getStringFromInterface(networkMap, "Gateway"),
+			}
+			if info.IPAddress != "" {
+				networkInfos = append(networkInfos, info)
+			}
+		}
+	}
+
+	return networkInfos
+}
+
+func getStringFromInterface(m map[string]interface{}, key string) string {
 	if val, ok := m[key]; ok {
 		if str, ok := val.(string); ok {
 			return str
