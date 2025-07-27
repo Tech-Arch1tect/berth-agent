@@ -64,6 +64,7 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 	// Streaming endpoints
 	router.GET("/api/v1/stacks/{stack}/compose/up/stream", simplerouter.HandlerFunc(compose.ComposeUpStreamHandler(cfg)))
 	router.GET("/api/v1/stacks/{stack}/compose/down/stream", simplerouter.HandlerFunc(compose.ComposeDownStreamHandler(cfg)))
+	router.GET("/api/v1/stacks/{stack}/compose/pull/stream", simplerouter.HandlerFunc(compose.ComposePullStreamHandler(cfg)))
 
 	// Terminal session endpoint
 	router.GET("/api/v1/stacks/{stack}/terminal/session/{service}", simplerouter.HandlerFunc(terminal.TerminalSessionHandler(cfg)))

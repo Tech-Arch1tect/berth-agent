@@ -64,6 +64,13 @@ func ComposeDownStreamHandler(cfg *config.AppConfig) http.HandlerFunc {
 	}
 }
 
+func ComposePullStreamHandler(cfg *config.AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stackName := utils.ExtractStackName(r, "/api/v1/stacks/")
+		streamComposeOperation(w, r, cfg, stackName, "pull")
+	}
+}
+
 func streamComposeOperation(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, operation string) {
 	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
 	if err != nil {
@@ -109,6 +116,16 @@ func streamComposeOperation(w http.ResponseWriter, r *http.Request, cfg *config.
 		if r.URL.Query().Get("remove_images") == "true" {
 			args = append(args, "--rmi", "all")
 		}
+		if servicesParam := r.URL.Query().Get("services"); servicesParam != "" {
+			services := strings.Split(servicesParam, ",")
+			for _, service := range services {
+				if service = strings.TrimSpace(service); service != "" {
+					args = append(args, service)
+				}
+			}
+		}
+	case "pull":
+		args = []string{"pull"}
 		if servicesParam := r.URL.Query().Get("services"); servicesParam != "" {
 			services := strings.Split(servicesParam, ",")
 			for _, service := range services {
@@ -261,6 +278,30 @@ func parseDockerComposeLine(line string) *ComposeEvent {
 				Name:     serviceName,
 				Action:   action,
 				Duration: extra,
+			},
+			Message: line,
+		}
+	}
+
+	if pullProgressMatch := regexp.MustCompile(`^\s*(.+?)\s+Pulling\s*\.\.\.\s*(\d+%)?\s*(.+?)?\s*$`).FindStringSubmatch(line); pullProgressMatch != nil {
+		serviceName := strings.TrimSpace(pullProgressMatch[1])
+		progress := ""
+		size := ""
+		if len(pullProgressMatch) > 2 && pullProgressMatch[2] != "" {
+			progress = pullProgressMatch[2]
+		}
+		if len(pullProgressMatch) > 3 && pullProgressMatch[3] != "" {
+			size = pullProgressMatch[3]
+		}
+
+		return &ComposeEvent{
+			Type:      "service",
+			Timestamp: timestamp,
+			Service: &ServiceUpdate{
+				Name:     serviceName,
+				Action:   "Pulling",
+				Progress: progress,
+				Size:     size,
 			},
 			Message: line,
 		}
