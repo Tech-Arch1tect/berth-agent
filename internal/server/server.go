@@ -1,6 +1,7 @@
 package server
 
 import (
+	"berth-agent/internal/bulk"
 	"berth-agent/internal/compose"
 	"berth-agent/internal/config"
 	"berth-agent/internal/docker"
@@ -85,25 +86,28 @@ func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
 	// Stacks endpoints
 	router.GET("/api/v1/stacks/stacks", simplerouter.HandlerFunc(stacks.ListStacks(cfg)))
 
+	// Bulk endpoints
+	router.GET("/api/v1/bulk/stacks-with-status", simplerouter.HandlerFunc(bulk.BulkStacksWithStatusHandler(cfg)))
+
 	// Docker maintenance endpoints
 	// Images
 	router.GET("/api/v1/docker/images", simplerouter.HandlerFunc(docker.ListImagesHandler(cfg)))
 	router.DELETE("/api/v1/docker/images/{imageID}", simplerouter.HandlerFunc(docker.DeleteImageHandler(cfg)))
 	router.POST("/api/v1/docker/images/prune", simplerouter.HandlerFunc(docker.PruneImagesHandler(cfg)))
-	
+
 	// Build cache
 	router.POST("/api/v1/docker/buildcache/prune", simplerouter.HandlerFunc(docker.PruneBuildCacheHandler(cfg)))
-	
+
 	// System
 	router.POST("/api/v1/docker/system/prune", simplerouter.HandlerFunc(docker.SystemPruneHandler(cfg)))
 	router.GET("/api/v1/docker/system/info", simplerouter.HandlerFunc(docker.GetSystemInfoHandler(cfg)))
 	router.GET("/api/v1/docker/system/df", simplerouter.HandlerFunc(docker.GetDiskUsageHandler(cfg)))
-	
+
 	// Volumes
 	router.GET("/api/v1/docker/volumes", simplerouter.HandlerFunc(docker.ListVolumesHandler(cfg)))
 	router.DELETE("/api/v1/docker/volumes/{volumeName}", simplerouter.HandlerFunc(docker.DeleteVolumeHandler(cfg)))
 	router.POST("/api/v1/docker/volumes/prune", simplerouter.HandlerFunc(docker.PruneVolumesHandler(cfg)))
-	
+
 	// Networks
 	router.GET("/api/v1/docker/networks", simplerouter.HandlerFunc(docker.ListNetworksHandler(cfg)))
 	router.DELETE("/api/v1/docker/networks/{networkID}", simplerouter.HandlerFunc(docker.DeleteNetworkHandler(cfg)))

@@ -105,9 +105,6 @@ func ComposeInfo(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, 
 	json.NewEncoder(w).Encode(response)
 }
 
-
-
-
 func ComposePsHandler(cfg *config.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stackName := utils.ExtractStackName(r, "/api/v1/stacks/")
@@ -137,20 +134,32 @@ type ComposePsResponse struct {
 }
 
 func ComposePs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName string) {
-	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
+	response, err := GetStackServices(cfg, stackName)
 	if err != nil {
 		if strings.Contains(err.Error(), "stack not found") {
 			writeError(w, http.StatusNotFound, err.Error(), stackName)
+		} else if strings.Contains(err.Error(), "Failed to get service status") {
+			writeError(w, http.StatusInternalServerError, err.Error(), stackName)
 		} else {
 			writeError(w, http.StatusBadRequest, err.Error(), stackName)
 		}
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func GetStackServices(cfg *config.AppConfig, stackName string) (*ComposePsResponse, error) {
+	stackDir, _, err := ValidateStackAndFindComposeFile(cfg, stackName)
+	if err != nil {
+		return nil, err
+	}
+
 	output, err := runDockerCompose(stackDir, "ps", "--format", "json", "--no-trunc")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to get service status: %v", err), stackName)
-		return
+		return nil, fmt.Errorf("Failed to get service status: %v", err)
 	}
 
 	var services []ComposeService
@@ -164,7 +173,7 @@ func ComposePs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, st
 		if err := json.Unmarshal([]byte(line), &service); err == nil {
 			containerID := getString(service, "ID")
 			networks := getContainerNetworks(containerID)
-			
+
 			composeService := ComposeService{
 				ID:       containerID,
 				Name:     getString(service, "Name"),
@@ -178,14 +187,10 @@ func ComposePs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, st
 		}
 	}
 
-	response := ComposePsResponse{
+	return &ComposePsResponse{
 		Stack:    stackName,
 		Services: services,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	}, nil
 }
 
 func ComposeLogsHandler(cfg *config.AppConfig) http.HandlerFunc {
@@ -244,7 +249,6 @@ func ComposeLogs(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
 }
-
 
 func getString(m map[string]interface{}, key string) string {
 	if val, ok := m[key]; ok {
