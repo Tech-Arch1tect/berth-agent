@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/compose-spec/compose-go/v2/types"
 )
@@ -39,24 +40,48 @@ func BulkStacksWithStatusHandler(cfg *config.AppConfig) http.HandlerFunc {
 		}
 
 		var stacksWithStatus []StackWithStatus
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		resultChan := make(chan StackWithStatus, len(stacksList))
 
 		for _, stack := range stacksList {
-			stackWithStatus := StackWithStatus{
-				Name:               stack.Name,
-				Path:               stack.Path,
-				Services:           stack.Services,
-				Networks:           stack.Networks,
-				Volumes:            stack.Volumes,
-				ParsedSuccessfully: stack.ParsedSuccessfully,
-				ServiceCount:       len(stack.Services),
-			}
+			wg.Add(1)
+			go func(s stacks.Stack) {
+				defer wg.Done()
 
-			if stack.ParsedSuccessfully {
-				serviceStatus := getStackServiceStatus(cfg, stack.Name)
-				stackWithStatus.ServiceStatus = serviceStatus
-			}
+				stackWithStatus := StackWithStatus{
+					Name:               s.Name,
+					Path:               s.Path,
+					Services:           s.Services,
+					Networks:           s.Networks,
+					Volumes:            s.Volumes,
+					ParsedSuccessfully: s.ParsedSuccessfully,
+					ServiceCount:       len(s.Services),
+				}
 
-			stacksWithStatus = append(stacksWithStatus, stackWithStatus)
+				if s.ParsedSuccessfully {
+					response, err := compose.GetStackServices(cfg, s.Name)
+					if err != nil {
+						log.Printf("Failed to get service status for stack %s: %v", s.Name, err)
+					} else {
+						stackWithStatus.ServiceStatus = response
+					}
+				}
+
+				resultChan <- stackWithStatus
+			}(stack)
+		}
+
+		go func() {
+			wg.Wait()
+			close(resultChan)
+		}()
+
+		for result := range resultChan {
+			mu.Lock()
+			stacksWithStatus = append(stacksWithStatus, result)
+			mu.Unlock()
 		}
 
 		response := BulkStacksWithStatusResponse{
@@ -70,15 +95,4 @@ func BulkStacksWithStatusHandler(cfg *config.AppConfig) http.HandlerFunc {
 			log.Printf("Failed to encode bulk response: %v", err)
 		}
 	}
-}
-
-func getStackServiceStatus(cfg *config.AppConfig, stackName string) *compose.ComposePsResponse {
-
-	response, err := compose.GetStackServices(cfg, stackName)
-	if err != nil {
-		log.Printf("Failed to get service status for stack %s: %v", stackName, err)
-		return nil
-	}
-
-	return response
 }
