@@ -52,7 +52,7 @@ func authMiddleware(cfg *config.AppConfig) simplerouter.Middleware {
 }
 
 func setupRoutes(cfg *config.AppConfig) *simplerouter.Router {
-	router := simplerouter.NewWithDefaults().Use(authMiddleware(cfg))
+	router := simplerouter.NewWithDefaults().Use(authMiddleware(cfg)).Use(simplerouter.Compression())
 
 	// Health endpoint
 	router.GET("/health", simplerouter.HandlerFunc(handlers.Health))
