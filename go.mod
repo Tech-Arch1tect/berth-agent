@@ -8,7 +8,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/gorilla/websocket v1.5.3
-	github.com/tech-arch1tect/simplerouter v0.1.2
+	github.com/tech-arch1tect/simplerouter v0.1.3
 )
 
 require (
