@@ -9,3 +9,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw
       - ${COMPOSE_DIR_PATH:-/opt/compose}:${COMPOSE_DIR_PATH:-/opt/compose}:rw
+      # Optional: Mount TLS certificates for HTTPS
+      # - ${TLS_CERT_PATH}:/certs/server.crt:ro
+      # - ${TLS_KEY_PATH}:/certs/server.key:ro
