@@ -18,7 +18,7 @@ func main() {
 	router := server.New(cfg)
 
 	addr := ":" + strconv.Itoa(cfg.Port)
-	
+
 	if cfg.IsHTTPSEnabled() {
 		log.Printf("Starting Berth Agent with HTTPS on %s", addr)
 		log.Printf("Using TLS cert: %s, key: %s", cfg.TLSCertFile, cfg.TLSKeyFile)

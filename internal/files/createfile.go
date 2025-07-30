@@ -1,6 +1,7 @@
 package files
 
 import (
+	"berth-agent/internal/compose"
 	"berth-agent/internal/config"
 	"berth-agent/internal/utils"
 	"encoding/json"
@@ -8,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func CreateFileHandler(cfg *config.AppConfig) http.HandlerFunc {
@@ -51,25 +51,21 @@ type CreateFileResponse struct {
 func CreateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, stackName, filePath string) {
 	w.Header().Set("Content-Type", "application/json")
 
-	filePath = filepath.Clean(filePath)
-	if strings.Contains(filePath, "..") {
+	stackDir, _, err := compose.ValidateStackAndFindComposeFile(cfg, stackName)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Invalid path: directory traversal not allowed",
-		})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	stackDir := filepath.Join(cfg.ComposeDirPath, stackName)
-	fullPath := filepath.Join(stackDir, filePath)
-
-	if !strings.HasPrefix(fullPath, stackDir) {
+	safePath, err := utils.SafeFilePath(filePath)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Invalid path: outside stack directory",
-		})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+
+	fullPath := filepath.Join(stackDir, safePath)
 
 	var req CreateFileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -80,7 +76,7 @@ func CreateFile(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig, s
 		return
 	}
 
-	_, err := os.Stat(fullPath)
+	_, err = os.Stat(fullPath)
 	if err == nil {
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]string{
