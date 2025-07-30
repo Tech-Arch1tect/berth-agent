@@ -32,8 +32,10 @@ func authMiddleware(cfg *config.AppConfig) simplerouter.Middleware {
 			if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
 				token = strings.TrimPrefix(authHeader, "Bearer ")
 			} else {
-				// Fall back to query parameter for WebSocket connections
-				token = r.URL.Query().Get("token")
+				protocol := r.Header.Get("Sec-WebSocket-Protocol")
+				if protocol != "" && strings.HasPrefix(protocol, "bearer.") {
+					token = strings.TrimPrefix(protocol, "bearer.")
+				}
 			}
 
 			if token == "" {

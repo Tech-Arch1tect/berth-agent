@@ -72,7 +72,13 @@ func TerminalSessionHandler(cfg *config.AppConfig) http.HandlerFunc {
 			return
 		}
 
-		ws, err := upgrader.Upgrade(w, r, nil)
+		responseHeaders := http.Header{}
+		protocol := r.Header.Get("Sec-WebSocket-Protocol")
+		if protocol != "" && strings.HasPrefix(protocol, "bearer.") {
+			responseHeaders.Set("Sec-WebSocket-Protocol", protocol)
+		}
+
+		ws, err := upgrader.Upgrade(w, r, responseHeaders)
 		if err != nil {
 			log.Printf("WebSocket upgrade failed: %v", err)
 			return
