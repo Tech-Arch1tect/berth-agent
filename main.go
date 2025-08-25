@@ -41,6 +41,7 @@ func RegisterRoutes(
 
 	api.GET("/health", healthHandler.Health)
 	api.GET("/stacks", stackHandler.ListStacks)
+	api.GET("/stacks/:name", stackHandler.GetStackDetails)
 }
 
 func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config) {

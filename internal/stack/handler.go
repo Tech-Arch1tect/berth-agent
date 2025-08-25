@@ -25,3 +25,21 @@ func (h *Handler) ListStacks(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, stacks)
 }
+
+func (h *Handler) GetStackDetails(c echo.Context) error {
+	stackName := c.Param("name")
+	if stackName == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "stack name is required",
+		})
+	}
+
+	stackDetails, err := h.service.GetStackDetails(stackName)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, stackDetails)
+}
