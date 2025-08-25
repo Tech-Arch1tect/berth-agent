@@ -89,6 +89,16 @@ func (h *Hub) BroadcastContainerStatus(event ContainerStatusEvent) {
 	h.broadcast <- data
 }
 
+func (h *Hub) BroadcastStackStatus(event StackStatusEvent) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("Error marshalling stack status event: %v", err)
+		return
+	}
+
+	h.broadcast <- data
+}
+
 func (h *Hub) BroadcastOperationProgress(event OperationProgressEvent) {
 	event.BaseMessage = BaseMessage{
 		Type:      MessageTypeOperationProgress,

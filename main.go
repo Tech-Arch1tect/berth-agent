@@ -3,6 +3,7 @@ package main
 import (
 	"berth-agent/config"
 	"berth-agent/internal/auth"
+	"berth-agent/internal/docker"
 	"berth-agent/internal/health"
 	"berth-agent/internal/stack"
 	"berth-agent/internal/websocket"
@@ -19,11 +20,14 @@ func main() {
 		stack.Module,
 		health.Module,
 		websocket.Module,
+		docker.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
+		fx.Provide(NewEventMonitorWithConfig),
 		fx.Invoke(RegisterRoutes),
 		fx.Invoke(StartServer),
 		fx.Invoke(StartWebSocketHub),
+		fx.Invoke(StartEventMonitor),
 	).Run()
 }
 
@@ -55,10 +59,26 @@ func NewWebSocketHandler(hub *websocket.Hub, cfg *config.Config) *websocket.Hand
 	return websocket.NewHandler(hub, cfg.AccessToken)
 }
 
+func NewEventMonitorWithConfig(hub *websocket.Hub, cfg *config.Config) *docker.EventMonitor {
+	return docker.NewEventMonitor(hub, cfg.StackLocation)
+}
+
 func StartWebSocketHub(lc fx.Lifecycle, hub *websocket.Hub) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			go hub.Run()
+			return nil
+		},
+	})
+}
+
+func StartEventMonitor(lc fx.Lifecycle, monitor *docker.EventMonitor) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			return monitor.Start()
+		},
+		OnStop: func(ctx context.Context) error {
+			monitor.Stop()
 			return nil
 		},
 	})
