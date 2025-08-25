@@ -5,6 +5,7 @@ import (
 	"berth-agent/internal/auth"
 	"berth-agent/internal/health"
 	"berth-agent/internal/stack"
+	"berth-agent/internal/websocket"
 	"context"
 
 	"github.com/labstack/echo/v4"
@@ -17,9 +18,12 @@ func main() {
 		config.Module,
 		stack.Module,
 		health.Module,
+		websocket.Module,
 		fx.Provide(NewEcho),
+		fx.Provide(NewWebSocketHandler),
 		fx.Invoke(RegisterRoutes),
 		fx.Invoke(StartServer),
+		fx.Invoke(StartWebSocketHub),
 	).Run()
 }
 
@@ -35,6 +39,7 @@ func RegisterRoutes(
 	cfg *config.Config,
 	stackHandler *stack.Handler,
 	healthHandler *health.Handler,
+	wsHandler *websocket.Handler,
 ) {
 	api := e.Group("/api")
 	api.Use(auth.TokenMiddleware(cfg.AccessToken))
@@ -42,6 +47,21 @@ func RegisterRoutes(
 	api.GET("/health", healthHandler.Health)
 	api.GET("/stacks", stackHandler.ListStacks)
 	api.GET("/stacks/:name", stackHandler.GetStackDetails)
+
+	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
+}
+
+func NewWebSocketHandler(hub *websocket.Hub, cfg *config.Config) *websocket.Handler {
+	return websocket.NewHandler(hub, cfg.AccessToken)
+}
+
+func StartWebSocketHub(lc fx.Lifecycle, hub *websocket.Hub) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			go hub.Run()
+			return nil
+		},
+	})
 }
 
 func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config) {

@@ -3,6 +3,7 @@ module berth-agent
 go 1.25.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/labstack/echo/v4 v4.13.4
 	go.uber.org/fx v1.24.0
 )
