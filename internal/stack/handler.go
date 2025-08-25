@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"berth-agent/internal/validation"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -31,6 +32,12 @@ func (h *Handler) GetStackDetails(c echo.Context) error {
 	if stackName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": "stack name is required",
+		})
+	}
+
+	if err := validation.ValidateStackName(stackName); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid stack name: " + err.Error(),
 		})
 	}
 

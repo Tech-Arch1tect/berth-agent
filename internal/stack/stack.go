@@ -2,6 +2,7 @@ package stack
 
 import (
 	"berth-agent/config"
+	"berth-agent/internal/validation"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -92,7 +93,10 @@ func (s *Service) ListStacks() ([]Stack, error) {
 }
 
 func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
-	stackPath := filepath.Join(s.stackLocation, name)
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
+	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("stack '%s' not found", name)
@@ -217,8 +221,13 @@ func (s *Service) getServiceImage(stackPath, composeFile, serviceName string) (s
 }
 
 func (s *Service) getContainerInfo(stackName string) (map[string][]Container, error) {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stack name '%s': %w", stackName, err)
+	}
+
 	cmd := exec.Command("docker", "compose", "ps", "--format", "json")
-	cmd.Dir = filepath.Join(s.stackLocation, stackName)
+	cmd.Dir = stackPath
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -280,8 +289,13 @@ func (s *Service) getContainerInfo(stackName string) (map[string][]Container, er
 }
 
 func (s *Service) getAllContainerInfo(stackName string) (map[string][]Container, error) {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stack name '%s': %w", stackName, err)
+	}
+
 	cmd := exec.Command("docker", "compose", "ps", "-a", "--format", "json")
-	cmd.Dir = filepath.Join(s.stackLocation, stackName)
+	cmd.Dir = stackPath
 
 	output, err := cmd.Output()
 	if err != nil {
