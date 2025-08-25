@@ -2,11 +2,11 @@ package stack
 
 import (
 	"berth-agent/config"
+	"berth-agent/internal/docker"
 	"berth-agent/internal/validation"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -45,11 +45,13 @@ type Port struct {
 
 type Service struct {
 	stackLocation string
+	commandExec   *docker.CommandExecutor
 }
 
 func NewService(cfg *config.Config) *Service {
 	return &Service{
 		stackLocation: cfg.StackLocation,
+		commandExec:   docker.NewCommandExecutor(cfg.StackLocation),
 	}
 }
 
@@ -160,10 +162,12 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 }
 
 func (s *Service) parseComposeServices(stackPath, composeFile string) ([]ComposeService, error) {
-	composePath := filepath.Join(stackPath, composeFile)
+	stackName := filepath.Base(stackPath)
 
-	cmd := exec.Command("docker", "compose", "-f", composePath, "config", "--services")
-	cmd.Dir = stackPath
+	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--services")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compose command: %w", err)
+	}
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -194,10 +198,12 @@ func (s *Service) parseComposeServices(stackPath, composeFile string) ([]Compose
 }
 
 func (s *Service) getServiceImage(stackPath, composeFile, serviceName string) (string, error) {
-	composePath := filepath.Join(stackPath, composeFile)
+	stackName := filepath.Base(stackPath)
 
-	cmd := exec.Command("docker", "compose", "-f", composePath, "config", "--format", "json")
-	cmd.Dir = stackPath
+	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	if err != nil {
+		return "", fmt.Errorf("failed to create compose command: %w", err)
+	}
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -221,13 +227,10 @@ func (s *Service) getServiceImage(stackPath, composeFile, serviceName string) (s
 }
 
 func (s *Service) getContainerInfo(stackName string) (map[string][]Container, error) {
-	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "--format", "json")
 	if err != nil {
-		return nil, fmt.Errorf("invalid stack name '%s': %w", stackName, err)
+		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
-
-	cmd := exec.Command("docker", "compose", "ps", "--format", "json")
-	cmd.Dir = stackPath
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -289,13 +292,10 @@ func (s *Service) getContainerInfo(stackName string) (map[string][]Container, er
 }
 
 func (s *Service) getAllContainerInfo(stackName string) (map[string][]Container, error) {
-	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "-a", "--format", "json")
 	if err != nil {
-		return nil, fmt.Errorf("invalid stack name '%s': %w", stackName, err)
+		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
-
-	cmd := exec.Command("docker", "compose", "ps", "-a", "--format", "json")
-	cmd.Dir = stackPath
 
 	output, err := cmd.Output()
 	if err != nil {
