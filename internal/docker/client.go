@@ -100,6 +100,14 @@ func (c *Client) ContainerInspect(ctx context.Context, containerID string) (cont
 	return containerInfo, nil
 }
 
+func (c *Client) ContainerList(ctx context.Context) ([]container.Summary, error) {
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+	return containers, nil
+}
+
 func (c *Client) ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
 	stats, err := c.cli.ContainerStats(ctx, containerID, stream)
 	if err != nil {
