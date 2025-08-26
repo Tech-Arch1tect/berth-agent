@@ -98,3 +98,27 @@ func (h *Handler) GetStackVolumes(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, volumes)
 }
+
+func (h *Handler) GetStackEnvironmentVariables(c echo.Context) error {
+	stackName := c.Param("name")
+	if stackName == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "stack name is required",
+		})
+	}
+
+	if err := validation.ValidateStackName(stackName); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid stack name: " + err.Error(),
+		})
+	}
+
+	envVars, err := h.service.GetStackEnvironmentVariables(stackName)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, envVars)
+}

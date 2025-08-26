@@ -107,6 +107,19 @@ type Volume struct {
 	UsedBy     []VolumeUsage     `json:"used_by,omitempty"`
 }
 
+type EnvironmentVariable struct {
+	Key             string `json:"key"`
+	Value           string `json:"value"`
+	IsSensitive     bool   `json:"is_sensitive"`
+	Source          string `json:"source"` // "compose" or "runtime"
+	IsFromContainer bool   `json:"is_from_container"`
+}
+
+type ServiceEnvironment struct {
+	ServiceName string                `json:"service_name"`
+	Variables   []EnvironmentVariable `json:"variables"`
+}
+
 type Service struct {
 	stackLocation string
 	commandExec   *docker.CommandExecutor
@@ -1001,4 +1014,249 @@ func (s *Service) mergeVolumeInformation(stackName string, composeVolumes map[st
 	}
 
 	return result
+}
+
+func (s *Service) GetStackEnvironmentVariables(name string) (map[string][]ServiceEnvironment, error) {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
+	}
+
+	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("stack '%s' not found", name)
+	}
+
+	composeEnvironment, err := s.getComposeEnvironment(stackPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compose environment: %w", err)
+	}
+
+	runtimeEnvironment, err := s.getRuntimeEnvironment(stackPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get runtime environment: %w", err)
+	}
+
+	return s.mergeEnvironmentInformation(composeEnvironment, runtimeEnvironment), nil
+}
+
+func (s *Service) getComposeEnvironment(stackPath string) (map[string][]ServiceEnvironment, error) {
+	composeFiles := []string{
+		"docker-compose.yml",
+		"docker-compose.yaml",
+		"compose.yml",
+		"compose.yaml",
+	}
+
+	var composeFile string
+	for _, filename := range composeFiles {
+		composePath := filepath.Join(stackPath, filename)
+		if _, err := os.Stat(composePath); err == nil {
+			composeFile = filename
+			break
+		}
+	}
+
+	if composeFile == "" {
+		return make(map[string][]ServiceEnvironment), nil
+	}
+
+	return s.parseComposeEnvironment(stackPath, composeFile)
+}
+
+func (s *Service) parseComposeEnvironment(stackPath, composeFile string) (map[string][]ServiceEnvironment, error) {
+	stackName := filepath.Base(stackPath)
+
+	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compose command: %w", err)
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute compose config: %w", err)
+	}
+
+	var composeData struct {
+		Services map[string]any `json:"services"`
+	}
+
+	if err := json.Unmarshal(output, &composeData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal compose config: %w", err)
+	}
+
+	services := make(map[string][]ServiceEnvironment)
+
+	for serviceName, serviceConfig := range composeData.Services {
+		if serviceMap, ok := serviceConfig.(map[string]any); ok {
+			var envVars []ServiceEnvironment
+
+			if envConfig, exists := serviceMap["environment"]; exists {
+				switch env := envConfig.(type) {
+				case []any:
+					for _, envVar := range env {
+						if envStr, ok := envVar.(string); ok {
+							key, value := s.parseEnvString(envStr)
+							envVars = append(envVars, ServiceEnvironment{
+								Variables: []EnvironmentVariable{{
+									Key:             key,
+									Value:           value,
+									IsSensitive:     s.isSensitiveVariable(key),
+									Source:          "compose",
+									IsFromContainer: false,
+								}},
+							})
+						}
+					}
+				case map[string]any:
+					for key, val := range env {
+						value := ""
+						if val != nil {
+							value = fmt.Sprintf("%v", val)
+						}
+						envVars = append(envVars, ServiceEnvironment{
+							Variables: []EnvironmentVariable{{
+								Key:             key,
+								Value:           value,
+								IsSensitive:     s.isSensitiveVariable(key),
+								Source:          "compose",
+								IsFromContainer: false,
+							}},
+						})
+					}
+				}
+			}
+
+			if len(envVars) > 0 {
+				services[serviceName] = envVars
+			}
+		}
+	}
+
+	return services, nil
+}
+
+func (s *Service) getRuntimeEnvironment(stackPath string) (map[string][]ServiceEnvironment, error) {
+	stackName := filepath.Base(stackPath)
+	containers, err := s.getContainerInfo(stackName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container info: %w", err)
+	}
+
+	services := make(map[string][]ServiceEnvironment)
+
+	for serviceName, containerList := range containers {
+		var envVars []ServiceEnvironment
+
+		for _, container := range containerList {
+			ctx := context.Background()
+			containerJSON, err := s.dockerClient.ContainerInspect(ctx, container.Name)
+			if err != nil {
+				continue
+			}
+
+			var containerEnvVars []EnvironmentVariable
+			for _, envStr := range containerJSON.Config.Env {
+				key, value := s.parseEnvString(envStr)
+				containerEnvVars = append(containerEnvVars, EnvironmentVariable{
+					Key:             key,
+					Value:           value,
+					IsSensitive:     s.isSensitiveVariable(key),
+					Source:          "runtime",
+					IsFromContainer: true,
+				})
+			}
+
+			if len(containerEnvVars) > 0 {
+				envVars = append(envVars, ServiceEnvironment{
+					Variables: containerEnvVars,
+				})
+			}
+		}
+
+		if len(envVars) > 0 {
+			services[serviceName] = envVars
+		}
+	}
+
+	return services, nil
+}
+
+func (s *Service) mergeEnvironmentInformation(composeEnv, runtimeEnv map[string][]ServiceEnvironment) map[string][]ServiceEnvironment {
+	result := make(map[string][]ServiceEnvironment)
+
+	allServices := make(map[string]bool)
+	for serviceName := range composeEnv {
+		allServices[serviceName] = true
+	}
+	for serviceName := range runtimeEnv {
+		allServices[serviceName] = true
+	}
+
+	for serviceName := range allServices {
+		var mergedEnvVars []EnvironmentVariable
+		envVarMap := make(map[string]EnvironmentVariable)
+
+		if composeVars, exists := composeEnv[serviceName]; exists {
+			for _, serviceEnv := range composeVars {
+				for _, envVar := range serviceEnv.Variables {
+					envVarMap[envVar.Key] = envVar
+				}
+			}
+		}
+
+		if runtimeVars, exists := runtimeEnv[serviceName]; exists {
+			for _, serviceEnv := range runtimeVars {
+				for _, envVar := range serviceEnv.Variables {
+					if existing, exists := envVarMap[envVar.Key]; exists {
+						if existing.Source == "compose" && envVar.Source == "runtime" {
+							existing.IsFromContainer = true
+						}
+						envVarMap[envVar.Key] = existing
+					} else {
+						envVarMap[envVar.Key] = envVar
+					}
+				}
+			}
+		}
+
+		for _, envVar := range envVarMap {
+			if envVar.IsSensitive && envVar.Value != "" {
+				envVar.Value = "***"
+			}
+			mergedEnvVars = append(mergedEnvVars, envVar)
+		}
+
+		if len(mergedEnvVars) > 0 {
+			result[serviceName] = []ServiceEnvironment{{
+				Variables: mergedEnvVars,
+			}}
+		}
+	}
+
+	return result
+}
+
+func (s *Service) parseEnvString(envStr string) (key, value string) {
+	parts := strings.SplitN(envStr, "=", 2)
+	key = parts[0]
+	if len(parts) == 2 {
+		value = parts[1]
+	}
+	return key, value
+}
+
+func (s *Service) isSensitiveVariable(key string) bool {
+	sensitiveKeywords := []string{
+		"PASSWORD", "PASS", "SECRET", "TOKEN", "KEY", "API_KEY",
+		"AUTH", "CREDENTIAL", "PRIVATE", "CERT", "SSL", "TLS",
+		"JWT", "OAUTH", "BEARER", "SESSION", "COOKIE",
+	}
+
+	upperKey := strings.ToUpper(key)
+	for _, keyword := range sensitiveKeywords {
+		if strings.Contains(upperKey, keyword) {
+			return true
+		}
+	}
+	return false
 }
