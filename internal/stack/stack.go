@@ -208,7 +208,7 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 		return nil, fmt.Errorf("failed to parse compose services: %w", err)
 	}
 
-	containers, err := s.getContainerInfo(name)
+	containers, err := s.GetContainerInfo(name)
 	if err != nil {
 		containers = make(map[string][]Container)
 	}
@@ -305,7 +305,7 @@ func (s *Service) getServiceImage(stackPath, composeFile, serviceName string) (s
 	return "", nil
 }
 
-func (s *Service) getContainerInfo(stackName string) (map[string][]Container, error) {
+func (s *Service) GetContainerInfo(stackName string) (map[string][]Container, error) {
 	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compose command: %w", err)
@@ -1137,7 +1137,7 @@ func (s *Service) parseComposeEnvironment(stackPath, composeFile string) (map[st
 
 func (s *Service) getRuntimeEnvironment(stackPath string) (map[string][]ServiceEnvironment, error) {
 	stackName := filepath.Base(stackPath)
-	containers, err := s.getContainerInfo(stackName)
+	containers, err := s.GetContainerInfo(stackName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container info: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"berth-agent/internal/docker"
 	"berth-agent/internal/health"
 	"berth-agent/internal/stack"
+	"berth-agent/internal/stats"
 	"berth-agent/internal/websocket"
 	"context"
 
@@ -18,6 +19,7 @@ func main() {
 	fx.New(
 		config.Module,
 		stack.Module,
+		stats.Module,
 		health.Module,
 		websocket.Module,
 		docker.Module,
@@ -42,6 +44,7 @@ func RegisterRoutes(
 	e *echo.Echo,
 	cfg *config.Config,
 	stackHandler *stack.Handler,
+	statsHandler *stats.Handler,
 	healthHandler *health.Handler,
 	wsHandler *websocket.Handler,
 ) {
@@ -54,6 +57,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:name/networks", stackHandler.GetStackNetworks)
 	api.GET("/stacks/:name/volumes", stackHandler.GetStackVolumes)
 	api.GET("/stacks/:name/environment", stackHandler.GetStackEnvironmentVariables)
+	api.GET("/stacks/:name/stats", statsHandler.GetStackStats)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
 }
