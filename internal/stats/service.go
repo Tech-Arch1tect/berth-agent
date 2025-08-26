@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 )
@@ -47,32 +49,65 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 		Containers: make([]ContainerStats, 0),
 	}
 
+	type containerJob struct {
+		name        string
+		serviceName string
+	}
+
+	var runningContainers []containerJob
 	for serviceName, containerList := range containers {
 		for _, container := range containerList {
-			if container.State != "running" {
-				continue
+			if container.State == "running" {
+				runningContainers = append(runningContainers, containerJob{
+					name:        container.Name,
+					serviceName: serviceName,
+				})
 			}
-
-			containerStats, err := s.getContainerStats(container.Name, serviceName)
-			if err != nil {
-				continue
-			}
-
-			stats.Containers = append(stats.Containers, *containerStats)
 		}
+	}
+
+	if len(runningContainers) == 0 {
+		return stats, nil
+	}
+
+	statsChan := make(chan ContainerStats, len(runningContainers))
+	var wg sync.WaitGroup
+
+	for _, job := range runningContainers {
+		wg.Add(1)
+		go func(containerName, serviceName string) {
+			defer wg.Done()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			containerStats, err := s.getContainerStatsWithContext(ctx, containerName, serviceName)
+			if err != nil {
+				return
+			}
+
+			statsChan <- *containerStats
+		}(job.name, job.serviceName)
+	}
+
+	go func() {
+		wg.Wait()
+		close(statsChan)
+	}()
+
+	for containerStats := range statsChan {
+		stats.Containers = append(stats.Containers, containerStats)
 	}
 
 	return stats, nil
 }
 
 func (s *Service) getContainerStats(containerName, serviceName string) (*ContainerStats, error) {
-	ctx := context.Background()
-	containerJSON, err := s.dockerClient.ContainerInspect(ctx, containerName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect container: %w", err)
-	}
+	return s.getContainerStatsWithContext(context.Background(), containerName, serviceName)
+}
 
-	statsReader, err := s.dockerClient.ContainerStats(ctx, containerJSON.ID, false)
+func (s *Service) getContainerStatsWithContext(ctx context.Context, containerName, serviceName string) (*ContainerStats, error) {
+	statsReader, err := s.dockerClient.ContainerStats(ctx, containerName, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container stats: %w", err)
 	}
