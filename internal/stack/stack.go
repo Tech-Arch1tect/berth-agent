@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -170,6 +171,10 @@ func (s *Service) ListStacks() ([]Stack, error) {
 		}
 	}
 
+	sort.Slice(stacks, func(i, j int) bool {
+		return stacks[i].Name < stacks[j].Name
+	})
+
 	return stacks, nil
 }
 
@@ -230,7 +235,24 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 				State: "not created",
 			}}
 		}
+
+		sort.Slice(services[i].Containers, func(a, b int) bool {
+			return services[i].Containers[a].Name < services[i].Containers[b].Name
+		})
+
+		for j := range services[i].Containers {
+			sort.Slice(services[i].Containers[j].Ports, func(a, b int) bool {
+				if services[i].Containers[j].Ports[a].Private != services[i].Containers[j].Ports[b].Private {
+					return services[i].Containers[j].Ports[a].Private < services[i].Containers[j].Ports[b].Private
+				}
+				return services[i].Containers[j].Ports[a].Type < services[i].Containers[j].Ports[b].Type
+			})
+		}
 	}
+
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
 
 	return &StackDetails{
 		Name:        name,
@@ -357,6 +379,13 @@ func (s *Service) GetContainerInfo(stackName string) (map[string][]Container, er
 			}
 		}
 
+		sort.Slice(ports, func(i, j int) bool {
+			if ports[i].Private != ports[j].Private {
+				return ports[i].Private < ports[j].Private
+			}
+			return ports[i].Type < ports[j].Type
+		})
+
 		container := Container{
 			Name:  name,
 			Image: image,
@@ -421,6 +450,13 @@ func (s *Service) getAllContainerInfo(stackName string) (map[string][]Container,
 				}
 			}
 		}
+
+		sort.Slice(ports, func(i, j int) bool {
+			if ports[i].Private != ports[j].Private {
+				return ports[i].Private < ports[j].Private
+			}
+			return ports[i].Type < ports[j].Type
+		})
 
 		container := Container{
 			Name:  name,
@@ -645,6 +681,10 @@ func (s *Service) mergeNetworkInformation(stackName string, composeNetworks map[
 	for _, network := range networkMap {
 		result = append(result, network)
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
 
 	return result
 }
@@ -1013,6 +1053,10 @@ func (s *Service) mergeVolumeInformation(stackName string, composeVolumes map[st
 		result = append(result, volume)
 	}
 
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+
 	return result
 }
 
@@ -1225,6 +1269,10 @@ func (s *Service) mergeEnvironmentInformation(composeEnv, runtimeEnv map[string]
 			}
 			mergedEnvVars = append(mergedEnvVars, envVar)
 		}
+
+		sort.Slice(mergedEnvVars, func(i, j int) bool {
+			return mergedEnvVars[i].Key < mergedEnvVars[j].Key
+		})
 
 		if len(mergedEnvVars) > 0 {
 			result[serviceName] = []ServiceEnvironment{{

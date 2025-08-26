@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +104,10 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 	for containerStats := range statsChan {
 		stats.Containers = append(stats.Containers, containerStats)
 	}
+
+	sort.Slice(stats.Containers, func(i, j int) bool {
+		return stats.Containers[i].Name < stats.Containers[j].Name
+	})
 
 	return stats, nil
 }
