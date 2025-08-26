@@ -52,6 +52,7 @@ func RegisterRoutes(
 	api.GET("/stacks", stackHandler.ListStacks)
 	api.GET("/stacks/:name", stackHandler.GetStackDetails)
 	api.GET("/stacks/:name/networks", stackHandler.GetStackNetworks)
+	api.GET("/stacks/:name/volumes", stackHandler.GetStackVolumes)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
 }

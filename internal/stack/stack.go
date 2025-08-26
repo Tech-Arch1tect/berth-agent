@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 )
 
 type Stack struct {
@@ -76,6 +77,34 @@ type Network struct {
 	Containers map[string]NetworkEndpoint `json:"containers,omitempty"`
 	Exists     bool                       `json:"exists"`
 	Created    string                     `json:"created,omitempty"`
+}
+
+type VolumeMount struct {
+	Type         string            `json:"type"`
+	Source       string            `json:"source"`
+	Target       string            `json:"target"`
+	ReadOnly     bool              `json:"read_only,omitempty"`
+	BindOptions  map[string]string `json:"bind_options,omitempty"`
+	TmpfsOptions map[string]string `json:"tmpfs_options,omitempty"`
+}
+
+type VolumeUsage struct {
+	ContainerName string        `json:"container_name"`
+	ServiceName   string        `json:"service_name"`
+	Mounts        []VolumeMount `json:"mounts"`
+}
+
+type Volume struct {
+	Name       string            `json:"name"`
+	Driver     string            `json:"driver,omitempty"`
+	External   bool              `json:"external,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	DriverOpts map[string]string `json:"driver_opts,omitempty"`
+	Exists     bool              `json:"exists"`
+	Created    string            `json:"created,omitempty"`
+	Mountpoint string            `json:"mountpoint,omitempty"`
+	Scope      string            `json:"scope,omitempty"`
+	UsedBy     []VolumeUsage     `json:"used_by,omitempty"`
 }
 
 type Service struct {
@@ -602,6 +631,373 @@ func (s *Service) mergeNetworkInformation(stackName string, composeNetworks map[
 	var result []Network
 	for _, network := range networkMap {
 		result = append(result, network)
+	}
+
+	return result
+}
+
+func (s *Service) GetStackVolumes(name string) ([]Volume, error) {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
+	}
+
+	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("stack '%s' not found", name)
+	}
+
+	composeVolumes, err := s.getComposeVolumes(stackPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compose volumes: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dockerVolumeList, err := s.dockerClient.ListVolumes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list Docker volumes: %w", err)
+	}
+
+	var dockerVolumes []*volume.Volume
+	for _, vol := range dockerVolumeList.Volumes {
+		if s.isStackVolume(vol.Name, name) {
+			dockerVolumes = append(dockerVolumes, vol)
+		}
+	}
+
+	containerInfo, err := s.getStackContainerVolumes(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container volume info: %w", err)
+	}
+
+	return s.mergeVolumeInformation(name, composeVolumes, dockerVolumes, containerInfo), nil
+}
+
+func (s *Service) isStackVolume(volumeName, stackName string) bool {
+	stackPrefix := stackName + "_"
+
+	return strings.HasPrefix(volumeName, stackPrefix) ||
+		strings.Contains(volumeName, stackName)
+}
+
+func (s *Service) getComposeVolumes(stackPath string) (map[string]Volume, error) {
+	composeFiles := []string{
+		"docker-compose.yml",
+		"docker-compose.yaml",
+		"compose.yml",
+		"compose.yaml",
+	}
+
+	var composeFile string
+	for _, filename := range composeFiles {
+		composePath := filepath.Join(stackPath, filename)
+		if _, err := os.Stat(composePath); err == nil {
+			composeFile = filename
+			break
+		}
+	}
+
+	if composeFile == "" {
+		return make(map[string]Volume), nil
+	}
+
+	return s.parseComposeVolumes(stackPath, composeFile)
+}
+
+func (s *Service) parseComposeVolumes(stackPath, composeFile string) (map[string]Volume, error) {
+	stackName := filepath.Base(stackPath)
+
+	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compose command: %w", err)
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute compose config: %w", err)
+	}
+
+	var composeData struct {
+		Volumes  map[string]any `json:"volumes"`
+		Services map[string]any `json:"services"`
+	}
+
+	if err := json.Unmarshal(output, &composeData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal compose config: %w", err)
+	}
+
+	volumes := make(map[string]Volume)
+
+	for volumeName, volumeConfig := range composeData.Volumes {
+		vol := Volume{
+			Name:   volumeName,
+			Exists: false,
+		}
+
+		if config, ok := volumeConfig.(map[string]any); ok {
+			if driver, ok := config["driver"].(string); ok {
+				vol.Driver = driver
+			}
+
+			if external, ok := config["external"].(bool); ok {
+				vol.External = external
+			}
+
+			if labels, ok := config["labels"].(map[string]any); ok {
+				vol.Labels = make(map[string]string)
+				for k, v := range labels {
+					if str, ok := v.(string); ok {
+						vol.Labels[k] = str
+					}
+				}
+			}
+
+			if driverOpts, ok := config["driver_opts"].(map[string]any); ok {
+				vol.DriverOpts = make(map[string]string)
+				for k, v := range driverOpts {
+					if str, ok := v.(string); ok {
+						vol.DriverOpts[k] = str
+					}
+				}
+			}
+		}
+
+		volumes[volumeName] = vol
+	}
+
+	for _, serviceConfig := range composeData.Services {
+		if serviceData, ok := serviceConfig.(map[string]any); ok {
+			if volumesList, ok := serviceData["volumes"].([]any); ok {
+				for _, volumeEntry := range volumesList {
+					var volumeKey string
+					var volumeSource string
+					var volumeType string = "bind"
+
+					if volumeStr, ok := volumeEntry.(string); ok {
+
+						parts := strings.Split(volumeStr, ":")
+						if len(parts) >= 2 {
+							source := parts[0]
+
+							if strings.HasPrefix(source, "/") || strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../") || strings.HasPrefix(source, "~") {
+
+								volumeKey = "bind:" + source
+								volumeSource = source
+								volumeType = "bind"
+							} else {
+
+								volumeKey = source
+								volumeSource = source
+								volumeType = "volume"
+							}
+						}
+					} else if volumeData, ok := volumeEntry.(map[string]any); ok {
+
+						if source, ok := volumeData["source"].(string); ok {
+							volumeSource = source
+							if volType, ok := volumeData["type"].(string); ok {
+								volumeType = volType
+							}
+
+							if volumeType == "bind" {
+								volumeKey = "bind:" + source
+							} else {
+								volumeKey = source
+							}
+						}
+					}
+
+					if volumeKey != "" && volumeSource != "" {
+						if _, exists := volumes[volumeKey]; exists {
+
+							continue
+						}
+
+						vol := Volume{
+							Name:   volumeKey,
+							Exists: false,
+						}
+
+						if volumeType == "bind" {
+							vol.Driver = "bind"
+						} else if volumeType == "tmpfs" {
+							vol.Driver = "tmpfs"
+						} else {
+							vol.Driver = "local"
+						}
+
+						volumes[volumeKey] = vol
+					}
+				}
+			}
+		}
+	}
+
+	return volumes, nil
+}
+
+func (s *Service) getStackContainerVolumes(stackName string) (map[string][]VolumeUsage, error) {
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "-a", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compose command: %w", err)
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	volumeUsage := make(map[string][]VolumeUsage)
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		var container struct {
+			Name    string `json:"Name"`
+			Service string `json:"Service"`
+			ID      string `json:"ID"`
+		}
+
+		if err := json.Unmarshal([]byte(line), &container); err != nil {
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		containerInfo, err := s.dockerClient.ContainerInspect(ctx, container.ID)
+		cancel()
+
+		if err != nil {
+			continue
+		}
+
+		var mounts []VolumeMount
+		for _, mount := range containerInfo.Mounts {
+			volumeMount := VolumeMount{
+				Type:     string(mount.Type),
+				Source:   mount.Source,
+				Target:   mount.Destination,
+				ReadOnly: !mount.RW,
+			}
+
+			mounts = append(mounts, volumeMount)
+
+			var volumeKey string
+			if mount.Type == "volume" && mount.Name != "" {
+
+				volumeKey = mount.Name
+			} else if mount.Type == "bind" {
+
+				volumeKey = "bind:" + mount.Source
+			} else if mount.Type == "tmpfs" {
+
+				volumeKey = "tmpfs:" + mount.Destination
+			}
+
+			if volumeKey != "" {
+				usage := VolumeUsage{
+					ContainerName: container.Name,
+					ServiceName:   container.Service,
+					Mounts:        []VolumeMount{volumeMount},
+				}
+				volumeUsage[volumeKey] = append(volumeUsage[volumeKey], usage)
+			}
+		}
+	}
+
+	return volumeUsage, nil
+}
+
+func (s *Service) mergeVolumeInformation(stackName string, composeVolumes map[string]Volume, dockerVolumes []*volume.Volume, containerInfo map[string][]VolumeUsage) []Volume {
+	volumeMap := make(map[string]Volume)
+
+	maps.Copy(volumeMap, composeVolumes)
+
+	stackPrefix := stackName + "_"
+
+	for _, dockerVol := range dockerVolumes {
+		var vol Volume
+		var volumeKey string
+
+		if after, ok := strings.CutPrefix(dockerVol.Name, stackPrefix); ok {
+			volumeKey = after
+		} else if strings.Contains(dockerVol.Name, stackName) {
+			volumeKey = dockerVol.Name
+		} else {
+
+			if _, exists := containerInfo[dockerVol.Name]; exists {
+				volumeKey = dockerVol.Name
+			} else {
+				continue
+			}
+		}
+
+		if existing, exists := volumeMap[volumeKey]; exists {
+			vol = existing
+		} else {
+			vol = Volume{
+				Name: volumeKey,
+			}
+		}
+
+		vol.Exists = true
+		vol.Driver = dockerVol.Driver
+		vol.Mountpoint = dockerVol.Mountpoint
+		vol.Scope = dockerVol.Scope
+		vol.Created = dockerVol.CreatedAt
+
+		if dockerVol.Labels != nil {
+			if vol.Labels == nil {
+				vol.Labels = make(map[string]string)
+			}
+			maps.Copy(vol.Labels, dockerVol.Labels)
+		}
+
+		if dockerVol.Options != nil {
+			if vol.DriverOpts == nil {
+				vol.DriverOpts = make(map[string]string)
+			}
+			maps.Copy(vol.DriverOpts, dockerVol.Options)
+		}
+
+		volumeMap[volumeKey] = vol
+	}
+
+	for volumeKey, usage := range containerInfo {
+		if vol, exists := volumeMap[volumeKey]; exists {
+			vol.UsedBy = usage
+
+			if strings.HasPrefix(volumeKey, "bind:") || strings.HasPrefix(volumeKey, "tmpfs:") {
+				vol.Exists = true
+			}
+
+			volumeMap[volumeKey] = vol
+		} else {
+
+			newVol := Volume{
+				Name:   volumeKey,
+				Exists: true,
+				UsedBy: usage,
+			}
+
+			if strings.HasPrefix(volumeKey, "bind:") {
+				newVol.Driver = "bind"
+			} else if strings.HasPrefix(volumeKey, "tmpfs:") {
+				newVol.Driver = "tmpfs"
+			} else {
+				newVol.Driver = "local"
+			}
+
+			volumeMap[volumeKey] = newVol
+		}
+	}
+
+	var result []Volume
+	for _, volume := range volumeMap {
+		result = append(result, volume)
 	}
 
 	return result

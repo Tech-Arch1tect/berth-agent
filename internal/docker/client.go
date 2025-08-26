@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
 
@@ -57,4 +59,43 @@ func (c *Client) GetNetworksByLabels(ctx context.Context, labels map[string]stri
 		return nil, fmt.Errorf("failed to list networks with labels: %w", err)
 	}
 	return networks, nil
+}
+
+func (c *Client) ListVolumes(ctx context.Context) (volume.ListResponse, error) {
+	volumes, err := c.cli.VolumeList(ctx, volume.ListOptions{})
+	if err != nil {
+		return volume.ListResponse{}, fmt.Errorf("failed to list volumes: %w", err)
+	}
+	return volumes, nil
+}
+
+func (c *Client) InspectVolume(ctx context.Context, volumeID string) (*volume.Volume, error) {
+	vol, err := c.cli.VolumeInspect(ctx, volumeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect volume %s: %w", volumeID, err)
+	}
+	return &vol, nil
+}
+
+func (c *Client) GetVolumesByLabels(ctx context.Context, labels map[string]string) ([]*volume.Volume, error) {
+	args := filters.NewArgs()
+	for key, value := range labels {
+		args.Add("label", fmt.Sprintf("%s=%s", key, value))
+	}
+
+	volumes, err := c.cli.VolumeList(ctx, volume.ListOptions{
+		Filters: args,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list volumes with labels: %w", err)
+	}
+	return volumes.Volumes, nil
+}
+
+func (c *Client) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
+	containerInfo, err := c.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return container.InspectResponse{}, fmt.Errorf("failed to inspect container %s: %w", containerID, err)
+	}
+	return containerInfo, nil
 }
