@@ -51,6 +51,7 @@ func RegisterRoutes(
 	api.GET("/health", healthHandler.Health)
 	api.GET("/stacks", stackHandler.ListStacks)
 	api.GET("/stacks/:name", stackHandler.GetStackDetails)
+	api.GET("/stacks/:name/networks", stackHandler.GetStackNetworks)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
 }
