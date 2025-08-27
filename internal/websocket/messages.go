@@ -8,7 +8,6 @@ const (
 	MessageTypeContainerStatus   MessageType = "container_status"
 	MessageTypeStackStatus       MessageType = "stack_status"
 	MessageTypeOperationProgress MessageType = "operation_progress"
-	MessageTypeLogStream         MessageType = "log_stream"
 	MessageTypeError             MessageType = "error"
 )
 
@@ -52,15 +51,6 @@ type OperationProgressEvent struct {
 	ProgressStep string `json:"progress_step,omitempty"`
 	ExitCode     int    `json:"exit_code,omitempty"`
 	Completed    bool   `json:"completed"`
-}
-
-type LogStreamEvent struct {
-	BaseMessage
-	StackName     string `json:"stack_name"`
-	ServiceName   string `json:"service_name"`
-	ContainerName string `json:"container_name"`
-	RawOutput     string `json:"raw_output"`
-	Stream        string `json:"stream"`
 }
 
 type ErrorEvent struct {
