@@ -6,6 +6,7 @@ import (
 	"berth-agent/internal/docker"
 	"berth-agent/internal/health"
 	"berth-agent/internal/logs"
+	"berth-agent/internal/operations"
 	"berth-agent/internal/stack"
 	"berth-agent/internal/stats"
 	"berth-agent/internal/websocket"
@@ -23,6 +24,7 @@ func main() {
 		stats.Module,
 		health.Module,
 		logs.Module,
+		operations.Module,
 		websocket.Module,
 		docker.Module,
 		fx.Provide(NewEcho),
@@ -49,6 +51,7 @@ func RegisterRoutes(
 	statsHandler *stats.Handler,
 	healthHandler *health.Handler,
 	logsHandler *logs.Handler,
+	operationsHandler *operations.Handler,
 	wsHandler *websocket.Handler,
 ) {
 	api := e.Group("/api")
@@ -63,6 +66,10 @@ func RegisterRoutes(
 	api.GET("/stacks/:name/stats", statsHandler.GetStackStats)
 	api.GET("/stacks/:stackName/logs", logsHandler.GetStackLogs)
 	api.GET("/stacks/:stackName/containers/:containerName/logs", logsHandler.GetContainerLogs)
+
+	api.POST("/stacks/:stackName/operations", operationsHandler.StartOperation)
+	api.GET("/operations/:operationId/stream", operationsHandler.StreamOperation)
+	api.GET("/operations/:operationId/status", operationsHandler.GetOperationStatus)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
 }
