@@ -199,6 +199,44 @@ func (h *Handler) Copy(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
 
+func (h *Handler) UploadFile(c echo.Context) error {
+	stackName := c.Param("stackName")
+	path := c.FormValue("path")
+
+	if path == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "path parameter is required",
+			Code:  "MISSING_PATH",
+		})
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "file parameter is required",
+			Code:  "MISSING_FILE",
+		})
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "cannot open uploaded file",
+			Code:  "OPEN_FILE_ERROR",
+		})
+	}
+	defer src.Close()
+
+	if err := h.service.WriteUploadedFile(stackName, path, src, file.Size); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: err.Error(),
+			Code:  "UPLOAD_FILE_ERROR",
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
+}
+
 func (h *Handler) DownloadFile(c echo.Context) error {
 	stackName := c.Param("stackName")
 	path := c.QueryParam("path")

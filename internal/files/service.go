@@ -367,3 +367,43 @@ func (s *Service) copyDirectory(src, dst string) error {
 
 	return nil
 }
+
+func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size int64) error {
+	fullPath, err := s.validateStackPath(stackName, path)
+	if err != nil {
+		return err
+	}
+
+	if size > 100*1024*1024 {
+		return errors.New("file too large (>100MB)")
+	}
+
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("cannot create directory: %w", err)
+	}
+
+	tempPath := fullPath + ".tmp"
+	destFile, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("cannot create file: %w", err)
+	}
+	defer func() { _ = destFile.Close() }()
+
+	if _, err := io.Copy(destFile, src); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("cannot write file: %w", err)
+	}
+
+	if err := destFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("cannot close file: %w", err)
+	}
+
+	if err := os.Rename(tempPath, fullPath); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("cannot move file into place: %w", err)
+	}
+
+	return nil
+}

@@ -80,6 +80,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:stackName/files", filesHandler.ListDirectory)
 	api.GET("/stacks/:stackName/files/read", filesHandler.ReadFile)
 	api.POST("/stacks/:stackName/files/write", filesHandler.WriteFile)
+	api.POST("/stacks/:stackName/files/upload", filesHandler.UploadFile)
 	api.POST("/stacks/:stackName/files/mkdir", filesHandler.CreateDirectory)
 	api.DELETE("/stacks/:stackName/files/delete", filesHandler.Delete)
 	api.POST("/stacks/:stackName/files/rename", filesHandler.Rename)
