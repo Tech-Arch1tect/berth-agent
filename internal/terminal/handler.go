@@ -118,7 +118,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				event := ws.TerminalOutputEvent{
 					BaseMessage: ws.BaseMessage{
 						Type:      ws.MessageTypeTerminalOutput,
-						Timestamp: time.Now(),
+						Timestamp: time.Now().Format(time.RFC3339),
 					},
 					SessionID: session.ID,
 					Output:    output,
@@ -132,7 +132,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				event := ws.TerminalCloseEvent{
 					BaseMessage: ws.BaseMessage{
 						Type:      ws.MessageTypeTerminalClose,
-						Timestamp: time.Now(),
+						Timestamp: time.Now().Format(time.RFC3339),
 					},
 					SessionID: session.ID,
 					ExitCode:  exitCode,
@@ -280,7 +280,7 @@ func (h *Handler) sendError(conn *websocket.Conn, message, details string) {
 	event := ws.ErrorEvent{
 		BaseMessage: ws.BaseMessage{
 			Type:      ws.MessageTypeError,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().Format(time.RFC3339),
 		},
 		Error:   message,
 		Context: details,
@@ -293,7 +293,7 @@ func (h *Handler) sendSuccess(conn *websocket.Conn, message, sessionID string) {
 		"type":       "success",
 		"message":    message,
 		"session_id": sessionID,
-		"timestamp":  time.Now(),
+		"timestamp":  time.Now().Format(time.RFC3339),
 	}
 	conn.WriteJSON(response)
 }

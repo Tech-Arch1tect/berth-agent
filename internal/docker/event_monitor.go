@@ -117,7 +117,7 @@ func (em *EventMonitor) handleDockerEvent(event DockerEvent) {
 	containerEvent := websocket.ContainerStatusEvent{
 		BaseMessage: websocket.BaseMessage{
 			Type:      websocket.MessageTypeContainerStatus,
-			Timestamp: time.Unix(event.Time, 0),
+			Timestamp: time.Unix(event.Time, 0).Format(time.RFC3339),
 		},
 		StackName:     stackName,
 		ServiceName:   serviceName,
@@ -229,7 +229,7 @@ func (em *EventMonitor) checkAndBroadcastStackStatus(stackName string) {
 		stackEvent := websocket.StackStatusEvent{
 			BaseMessage: websocket.BaseMessage{
 				Type:      websocket.MessageTypeStackStatus,
-				Timestamp: time.Now(),
+				Timestamp: time.Now().Format(time.RFC3339),
 			},
 			StackName: stackName,
 			Status:    em.determineStackStatus(runningCount, stoppedCount),
