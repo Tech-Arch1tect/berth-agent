@@ -4,6 +4,7 @@ import (
 	"berth-agent/config"
 	"berth-agent/internal/auth"
 	"berth-agent/internal/docker"
+	"berth-agent/internal/files"
 	"berth-agent/internal/health"
 	"berth-agent/internal/logs"
 	"berth-agent/internal/operations"
@@ -28,6 +29,7 @@ func main() {
 		operations.Module,
 		websocket.Module,
 		terminal.Module(),
+		files.Module,
 		docker.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
@@ -56,6 +58,7 @@ func RegisterRoutes(
 	operationsHandler *operations.Handler,
 	wsHandler *websocket.Handler,
 	terminalHandler *terminal.Handler,
+	filesHandler *files.Handler,
 ) {
 	api := e.Group("/api")
 	api.Use(auth.TokenMiddleware(cfg.AccessToken))
@@ -73,6 +76,15 @@ func RegisterRoutes(
 	api.POST("/stacks/:stackName/operations", operationsHandler.StartOperation)
 	api.GET("/operations/:operationId/stream", operationsHandler.StreamOperation)
 	api.GET("/operations/:operationId/status", operationsHandler.GetOperationStatus)
+
+	api.GET("/stacks/:stackName/files", filesHandler.ListDirectory)
+	api.GET("/stacks/:stackName/files/read", filesHandler.ReadFile)
+	api.POST("/stacks/:stackName/files/write", filesHandler.WriteFile)
+	api.POST("/stacks/:stackName/files/mkdir", filesHandler.CreateDirectory)
+	api.DELETE("/stacks/:stackName/files/delete", filesHandler.Delete)
+	api.POST("/stacks/:stackName/files/rename", filesHandler.Rename)
+	api.POST("/stacks/:stackName/files/copy", filesHandler.Copy)
+	api.GET("/stacks/:stackName/files/download", filesHandler.DownloadFile)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
 	e.GET("/ws/terminal", terminalHandler.HandleTerminalWebSocket)

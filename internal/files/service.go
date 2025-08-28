@@ -1,0 +1,369 @@
+package files
+
+import (
+	"berth-agent/config"
+	"berth-agent/internal/validation"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"unicode/utf8"
+)
+
+type Service struct {
+	stackLocation string
+}
+
+func NewService(cfg *config.Config) *Service {
+	return &Service{
+		stackLocation: cfg.StackLocation,
+	}
+}
+
+func (s *Service) validateStackPath(stackName, relativePath string) (string, error) {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
+	if err != nil {
+		return "", fmt.Errorf("invalid stack name '%s': %w", stackName, err)
+	}
+
+	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("stack '%s' not found", stackName)
+	}
+
+	if relativePath == "" || relativePath == "/" {
+		return stackPath, nil
+	}
+
+	relativePath = strings.TrimPrefix(relativePath, "/")
+
+	cleanPath := filepath.Clean(relativePath)
+	if strings.Contains(cleanPath, "..") {
+		return "", errors.New("path traversal not allowed")
+	}
+
+	fullPath := filepath.Join(stackPath, cleanPath)
+
+	relativeCheck, err := filepath.Rel(stackPath, fullPath)
+	if err != nil || strings.HasPrefix(relativeCheck, "..") {
+		return "", errors.New("path outside stack directory")
+	}
+
+	return fullPath, nil
+}
+
+func (s *Service) ListDirectory(stackName, path string) (*DirectoryListing, error) {
+	fullPath, err := s.validateStackPath(stackName, path)
+	if err != nil {
+		return nil, err
+	}
+
+	stat, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("path not found: %s", path)
+		}
+		return nil, fmt.Errorf("cannot access path: %w", err)
+	}
+
+	if !stat.IsDir() {
+		return nil, fmt.Errorf("path is not a directory: %s", path)
+	}
+
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read directory: %w", err)
+	}
+
+	var fileEntries []FileEntry
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		relativePath := filepath.Join(path, entry.Name())
+		if path == "" {
+			relativePath = entry.Name()
+		}
+
+		fileEntry := FileEntry{
+			Name:        entry.Name(),
+			Path:        relativePath,
+			Size:        info.Size(),
+			IsDirectory: entry.IsDir(),
+			ModTime:     info.ModTime(),
+			Mode:        info.Mode().String(),
+		}
+
+		if !entry.IsDir() {
+			ext := filepath.Ext(entry.Name())
+			if ext != "" {
+				fileEntry.Extension = strings.ToLower(ext[1:])
+			}
+		}
+
+		fileEntries = append(fileEntries, fileEntry)
+	}
+
+	sort.Slice(fileEntries, func(i, j int) bool {
+		if fileEntries[i].IsDirectory != fileEntries[j].IsDirectory {
+			return fileEntries[i].IsDirectory
+		}
+		return fileEntries[i].Name < fileEntries[j].Name
+	})
+
+	return &DirectoryListing{
+		Path:    path,
+		Entries: fileEntries,
+	}, nil
+}
+
+func (s *Service) ReadFile(stackName, path string) (*FileContent, error) {
+	fullPath, err := s.validateStackPath(stackName, path)
+	if err != nil {
+		return nil, err
+	}
+
+	stat, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("file not found: %s", path)
+		}
+		return nil, fmt.Errorf("cannot access file: %w", err)
+	}
+
+	if stat.IsDir() {
+		return nil, fmt.Errorf("path is a directory, not a file: %s", path)
+	}
+
+	if stat.Size() > 10*1024*1024 {
+		return nil, errors.New("file too large (>10MB)")
+	}
+
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read file: %w", err)
+	}
+
+	encoding := "utf-8"
+	contentStr := string(content)
+
+	if !utf8.Valid(content) {
+		encoding = "base64"
+		contentStr = base64.StdEncoding.EncodeToString(content)
+	}
+
+	return &FileContent{
+		Path:     path,
+		Content:  contentStr,
+		Size:     stat.Size(),
+		Encoding: encoding,
+	}, nil
+}
+
+func (s *Service) WriteFile(stackName string, req WriteFileRequest) error {
+	fullPath, err := s.validateStackPath(stackName, req.Path)
+	if err != nil {
+		return err
+	}
+
+	var content []byte
+	if req.Encoding == "base64" {
+		decoded, err := base64.StdEncoding.DecodeString(req.Content)
+		if err != nil {
+			return fmt.Errorf("invalid base64 content: %w", err)
+		}
+		content = decoded
+	} else {
+		content = []byte(req.Content)
+	}
+
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("cannot create directory: %w", err)
+	}
+
+	tempPath := fullPath + ".tmp"
+	if err := os.WriteFile(tempPath, content, 0644); err != nil {
+		return fmt.Errorf("cannot write file: %w", err)
+	}
+
+	if err := os.Rename(tempPath, fullPath); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("cannot move file into place: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) CreateDirectory(stackName string, req CreateDirectoryRequest) error {
+	fullPath, err := s.validateStackPath(stackName, req.Path)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(fullPath, 0755); err != nil {
+		return fmt.Errorf("cannot create directory: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) Delete(stackName string, req DeleteRequest) error {
+	fullPath, err := s.validateStackPath(stackName, req.Path)
+	if err != nil {
+		return err
+	}
+
+	stat, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot access path: %w", err)
+	}
+
+	if stat.IsDir() {
+		if err := os.RemoveAll(fullPath); err != nil {
+			return fmt.Errorf("cannot delete directory: %w", err)
+		}
+	} else {
+		if err := os.Remove(fullPath); err != nil {
+			return fmt.Errorf("cannot delete file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) Rename(stackName string, req RenameRequest) error {
+	oldFullPath, err := s.validateStackPath(stackName, req.OldPath)
+	if err != nil {
+		return fmt.Errorf("invalid source path: %w", err)
+	}
+
+	newFullPath, err := s.validateStackPath(stackName, req.NewPath)
+	if err != nil {
+		return fmt.Errorf("invalid destination path: %w", err)
+	}
+
+	if _, err := os.Stat(oldFullPath); os.IsNotExist(err) {
+		return fmt.Errorf("source path not found: %s", req.OldPath)
+	}
+
+	if _, err := os.Stat(newFullPath); err == nil {
+		return fmt.Errorf("destination path already exists: %s", req.NewPath)
+	}
+
+	dir := filepath.Dir(newFullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("cannot create destination directory: %w", err)
+	}
+
+	if err := os.Rename(oldFullPath, newFullPath); err != nil {
+		return fmt.Errorf("cannot rename: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) Copy(stackName string, req CopyRequest) error {
+	sourceFullPath, err := s.validateStackPath(stackName, req.SourcePath)
+	if err != nil {
+		return fmt.Errorf("invalid source path: %w", err)
+	}
+
+	targetFullPath, err := s.validateStackPath(stackName, req.TargetPath)
+	if err != nil {
+		return fmt.Errorf("invalid target path: %w", err)
+	}
+
+	sourceStat, err := os.Stat(sourceFullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("source path not found: %s", req.SourcePath)
+		}
+		return fmt.Errorf("cannot access source path: %w", err)
+	}
+
+	if _, err := os.Stat(targetFullPath); err == nil {
+		return fmt.Errorf("target path already exists: %s", req.TargetPath)
+	}
+
+	dir := filepath.Dir(targetFullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("cannot create target directory: %w", err)
+	}
+
+	if sourceStat.IsDir() {
+		return s.copyDirectory(sourceFullPath, targetFullPath)
+	} else {
+		return s.copyFile(sourceFullPath, targetFullPath)
+	}
+}
+
+func (s *Service) copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("cannot open source file: %w", err)
+	}
+	defer func() { _ = sourceFile.Close() }()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("cannot create destination file: %w", err)
+	}
+	defer func() { _ = destFile.Close() }()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		return fmt.Errorf("cannot copy file: %w", err)
+	}
+
+	sourceInfo, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("cannot get source file info: %w", err)
+	}
+
+	if err := os.Chmod(dst, sourceInfo.Mode()); err != nil {
+		return fmt.Errorf("cannot set file permissions: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) copyDirectory(src, dst string) error {
+	sourceInfo, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("cannot get source directory info: %w", err)
+	}
+
+	if err := os.MkdirAll(dst, sourceInfo.Mode()); err != nil {
+		return fmt.Errorf("cannot create destination directory: %w", err)
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("cannot read source directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := s.copyDirectory(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := s.copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
