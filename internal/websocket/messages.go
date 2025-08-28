@@ -9,6 +9,10 @@ const (
 	MessageTypeStackStatus       MessageType = "stack_status"
 	MessageTypeOperationProgress MessageType = "operation_progress"
 	MessageTypeError             MessageType = "error"
+	MessageTypeTerminalOutput    MessageType = "terminal_output"
+	MessageTypeTerminalResize    MessageType = "terminal_resize"
+	MessageTypeTerminalInput     MessageType = "terminal_input"
+	MessageTypeTerminalClose     MessageType = "terminal_close"
 )
 
 type BaseMessage struct {
@@ -57,4 +61,29 @@ type ErrorEvent struct {
 	BaseMessage
 	Error   string `json:"error"`
 	Context string `json:"context,omitempty"`
+}
+
+type TerminalInputEvent struct {
+	BaseMessage
+	SessionID string `json:"session_id"`
+	Input     []byte `json:"input"`
+}
+
+type TerminalOutputEvent struct {
+	BaseMessage
+	SessionID string `json:"session_id"`
+	Output    []byte `json:"output"`
+}
+
+type TerminalResizeEvent struct {
+	BaseMessage
+	SessionID string `json:"session_id"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
+}
+
+type TerminalCloseEvent struct {
+	BaseMessage
+	SessionID string `json:"session_id"`
+	ExitCode  int    `json:"exit_code"`
 }

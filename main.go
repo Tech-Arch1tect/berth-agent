@@ -9,6 +9,7 @@ import (
 	"berth-agent/internal/operations"
 	"berth-agent/internal/stack"
 	"berth-agent/internal/stats"
+	"berth-agent/internal/terminal"
 	"berth-agent/internal/websocket"
 	"context"
 
@@ -26,6 +27,7 @@ func main() {
 		logs.Module,
 		operations.Module,
 		websocket.Module,
+		terminal.Module(),
 		docker.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
@@ -53,6 +55,7 @@ func RegisterRoutes(
 	logsHandler *logs.Handler,
 	operationsHandler *operations.Handler,
 	wsHandler *websocket.Handler,
+	terminalHandler *terminal.Handler,
 ) {
 	api := e.Group("/api")
 	api.Use(auth.TokenMiddleware(cfg.AccessToken))
@@ -72,6 +75,7 @@ func RegisterRoutes(
 	api.GET("/operations/:operationId/status", operationsHandler.GetOperationStatus)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
+	e.GET("/ws/terminal", terminalHandler.HandleTerminalWebSocket)
 }
 
 func NewWebSocketHandler(hub *websocket.Hub, cfg *config.Config) *websocket.Handler {
