@@ -208,26 +208,45 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 		return nil, fmt.Errorf("no compose file found in stack '%s'", name)
 	}
 
-	services, err := s.parseComposeServices(stackPath, composeFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse compose services: %w", err)
+	type composeData struct {
+		services []ComposeService
+		err      error
 	}
 
-	containers, err := s.GetContainerInfo(name)
-	if err != nil {
+	type containerData struct {
+		containers map[string][]Container
+		err        error
+	}
+
+	composeChan := make(chan composeData, 1)
+	containerChan := make(chan containerData, 1)
+
+	go func() {
+		services, err := s.parseComposeServicesAndImages(stackPath, composeFile)
+		composeChan <- composeData{services: services, err: err}
+	}()
+
+	go func() {
+		containers, err := s.getContainerInfoViaAPI(name)
+		containerChan <- containerData{containers: containers, err: err}
+	}()
+
+	composeResult := <-composeChan
+	containerResult := <-containerChan
+
+	if composeResult.err != nil {
+		return nil, fmt.Errorf("failed to parse compose data: %w", composeResult.err)
+	}
+
+	services := composeResult.services
+	containers := containerResult.containers
+	if containerResult.err != nil {
 		containers = make(map[string][]Container)
-	}
-
-	allContainers, err := s.getAllContainerInfo(name)
-	if err != nil {
-		allContainers = make(map[string][]Container)
 	}
 
 	for i := range services {
 		if containerList, exists := containers[services[i].Name]; exists {
 			services[i].Containers = containerList
-		} else if stoppedContainers, exists := allContainers[services[i].Name]; exists {
-			services[i].Containers = stoppedContainers
 		} else {
 			services[i].Containers = []Container{{
 				Name:  fmt.Sprintf("%s-%s-1", name, services[i].Name),
@@ -260,71 +279,6 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 		ComposeFile: composeFile,
 		Services:    services,
 	}, nil
-}
-
-func (s *Service) parseComposeServices(stackPath, composeFile string) ([]ComposeService, error) {
-	stackName := filepath.Base(stackPath)
-
-	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--services")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create compose command: %w", err)
-	}
-
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get compose services: %w", err)
-	}
-
-	serviceNames := strings.Split(strings.TrimSpace(string(output)), "\n")
-	var services []ComposeService
-
-	for _, serviceName := range serviceNames {
-		if serviceName == "" {
-			continue
-		}
-
-		image, err := s.getServiceImage(stackPath, composeFile, serviceName)
-		if err != nil {
-			image = ""
-		}
-
-		services = append(services, ComposeService{
-			Name:       serviceName,
-			Image:      image,
-			Containers: []Container{},
-		})
-	}
-
-	return services, nil
-}
-
-func (s *Service) getServiceImage(stackPath, composeFile, serviceName string) (string, error) {
-	stackName := filepath.Base(stackPath)
-
-	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
-	if err != nil {
-		return "", fmt.Errorf("failed to create compose command: %w", err)
-	}
-
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-
-	var config map[string]any
-	if err := json.Unmarshal(output, &config); err != nil {
-		return "", err
-	}
-
-	if services, ok := config["services"].(map[string]any); ok {
-		if service, ok := services[serviceName].(map[string]any); ok {
-			if image, ok := service["image"].(string); ok {
-				return image, nil
-			}
-		}
-	}
-
-	return "", nil
 }
 
 func (s *Service) GetContainerInfo(stackName string) (map[string][]Container, error) {
@@ -399,56 +353,73 @@ func (s *Service) GetContainerInfo(stackName string) (map[string][]Container, er
 	return containers, nil
 }
 
-func (s *Service) getAllContainerInfo(stackName string) (map[string][]Container, error) {
-	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "-a", "--format", "json")
+func (s *Service) parseComposeServicesAndImages(stackPath, composeFile string) ([]ComposeService, error) {
+	stackName := filepath.Base(stackPath)
+
+	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get compose config: %w", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	containers := make(map[string][]Container)
+	var config map[string]any
+	if err := json.Unmarshal(output, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse compose config: %w", err)
+	}
 
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
+	var services []ComposeService
+	if servicesSection, ok := config["services"].(map[string]any); ok {
+		for serviceName, serviceConfig := range servicesSection {
+			service := ComposeService{
+				Name:       serviceName,
+				Containers: []Container{},
+			}
 
-		var containerInfo map[string]any
-		if err := json.Unmarshal([]byte(line), &containerInfo); err != nil {
-			continue
-		}
-
-		name, _ := containerInfo["Name"].(string)
-		image, _ := containerInfo["Image"].(string)
-		state, _ := containerInfo["State"].(string)
-		service, _ := containerInfo["Service"].(string)
-
-		var ports []Port
-		if publishedPorts, ok := containerInfo["Publishers"]; ok {
-			if portsList, ok := publishedPorts.([]any); ok {
-				for _, portInfo := range portsList {
-					if portMap, ok := portInfo.(map[string]any); ok {
-						private, _ := portMap["TargetPort"].(float64)
-						public, _ := portMap["PublishedPort"].(float64)
-						protocol, _ := portMap["Protocol"].(string)
-
-						if protocol == "" {
-							protocol = "tcp"
-						}
-
-						ports = append(ports, Port{
-							Private: int(private),
-							Public:  int(public),
-							Type:    protocol,
-						})
-					}
+			if serviceConfigMap, ok := serviceConfig.(map[string]any); ok {
+				if image, ok := serviceConfigMap["image"].(string); ok {
+					service.Image = image
 				}
 			}
+
+			services = append(services, service)
+		}
+	}
+
+	return services, nil
+}
+
+func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Container, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	filters := map[string][]string{
+		"label": {fmt.Sprintf("com.docker.compose.project=%s", stackName)},
+	}
+
+	apiContainers, err := s.dockerClient.ContainerList(ctx, filters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers via Docker API: %w", err)
+	}
+
+	containers := make(map[string][]Container)
+
+	for _, apiContainer := range apiContainers {
+		serviceName := apiContainer.Labels["com.docker.compose.service"]
+		if serviceName == "" {
+			continue
+		}
+
+		var ports []Port
+		for _, port := range apiContainer.Ports {
+			ports = append(ports, Port{
+				Private: int(port.PrivatePort),
+				Public:  int(port.PublicPort),
+				Type:    port.Type,
+			})
 		}
 
 		sort.Slice(ports, func(i, j int) bool {
@@ -458,14 +429,19 @@ func (s *Service) getAllContainerInfo(stackName string) (map[string][]Container,
 			return ports[i].Type < ports[j].Type
 		})
 
+		var containerName string
+		if len(apiContainer.Names) > 0 {
+			containerName = strings.TrimPrefix(apiContainer.Names[0], "/")
+		}
+
 		container := Container{
-			Name:  name,
-			Image: image,
-			State: state,
+			Name:  containerName,
+			Image: apiContainer.Image,
+			State: apiContainer.State,
 			Ports: ports,
 		}
 
-		containers[service] = append(containers[service], container)
+		containers[serviceName] = append(containers[serviceName], container)
 	}
 
 	return containers, nil

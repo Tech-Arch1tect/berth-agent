@@ -114,7 +114,7 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 
 func (s *Service) getContainerID(containerName string) (string, error) {
 	ctx := context.Background()
-	containers, err := s.dockerClient.ContainerList(ctx)
+	containers, err := s.dockerClient.ContainerList(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to list containers: %w", err)
 	}

@@ -100,8 +100,18 @@ func (c *Client) ContainerInspect(ctx context.Context, containerID string) (cont
 	return containerInfo, nil
 }
 
-func (c *Client) ContainerList(ctx context.Context) ([]container.Summary, error) {
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{})
+func (c *Client) ContainerList(ctx context.Context, filterLabels map[string][]string) ([]container.Summary, error) {
+	args := filters.NewArgs()
+	for key, values := range filterLabels {
+		for _, value := range values {
+			args.Add(key, value)
+		}
+	}
+
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: args,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
