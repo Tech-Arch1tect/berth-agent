@@ -801,7 +801,7 @@ func (s *Service) parseComposeVolumes(stackPath, composeFile string) (map[string
 				for _, volumeEntry := range volumesList {
 					var volumeKey string
 					var volumeSource string
-					var volumeType string = "bind"
+					var volumeType = "bind"
 
 					if volumeStr, ok := volumeEntry.(string); ok {
 
@@ -848,11 +848,12 @@ func (s *Service) parseComposeVolumes(stackPath, composeFile string) (map[string
 							Exists: false,
 						}
 
-						if volumeType == "bind" {
+						switch volumeType {
+						case "bind":
 							vol.Driver = "bind"
-						} else if volumeType == "tmpfs" {
+						case "tmpfs":
 							vol.Driver = "tmpfs"
-						} else {
+						default:
 							vol.Driver = "local"
 						}
 
@@ -903,7 +904,6 @@ func (s *Service) getStackContainerVolumes(stackName string) (map[string][]Volum
 			continue
 		}
 
-		var mounts []VolumeMount
 		for _, mount := range containerInfo.Mounts {
 			volumeMount := VolumeMount{
 				Type:     string(mount.Type),
@@ -911,8 +911,6 @@ func (s *Service) getStackContainerVolumes(stackName string) (map[string][]Volum
 				Target:   mount.Destination,
 				ReadOnly: !mount.RW,
 			}
-
-			mounts = append(mounts, volumeMount)
 
 			var volumeKey string
 			if mount.Type == "volume" && mount.Name != "" {

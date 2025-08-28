@@ -25,11 +25,9 @@ type Hub struct {
 }
 
 type Client struct {
-	hub    *Hub
-	conn   *websocket.Conn
-	send   chan []byte
-	closed bool
-	mutex  sync.RWMutex
+	hub  *Hub
+	conn *websocket.Conn
+	send chan []byte
 }
 
 func NewHub() *Hub {
@@ -144,7 +142,7 @@ func (h *Hub) ServeWebSocket(c echo.Context, authToken string) error {
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
-		c.conn.Close()
+		_ = c.conn.Close()
 	}()
 
 	for {
@@ -159,17 +157,10 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump() {
-	defer c.conn.Close()
+	defer func() { _ = c.conn.Close() }()
 
-	for {
-		select {
-		case message, ok := <-c.send:
-			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			c.conn.WriteMessage(websocket.TextMessage, message)
-		}
+	for message := range c.send {
+		_ = c.conn.WriteMessage(websocket.TextMessage, message)
 	}
+	_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 }

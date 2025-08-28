@@ -60,7 +60,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		log.Printf("Terminal: WebSocket upgrade failed: %v", err)
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var session *Session
 	sessionCreated := false
@@ -137,8 +137,8 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 					SessionID: session.ID,
 					ExitCode:  exitCode,
 				}
-				conn.WriteJSON(event)
-				conn.Close()
+				_ = conn.WriteJSON(event)
+				_ = conn.Close()
 			})
 
 			log.Printf("Terminal: Session %s created successfully", session.ID)
@@ -199,8 +199,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				}
 
 				log.Printf("Terminal: Closing session %s", session.ID)
-				h.manager.CloseSession(session.ID)
-				sessionCreated = false
+				_ = h.manager.CloseSession(session.ID)
 				session = nil
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -212,7 +211,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 	}
 
 	if sessionCreated && session != nil {
-		h.manager.CloseSession(session.ID)
+		_ = h.manager.CloseSession(session.ID)
 	}
 
 	return nil
@@ -285,7 +284,7 @@ func (h *Handler) sendError(conn *websocket.Conn, message, details string) {
 		Error:   message,
 		Context: details,
 	}
-	conn.WriteJSON(event)
+	_ = conn.WriteJSON(event)
 }
 
 func (h *Handler) sendSuccess(conn *websocket.Conn, message, sessionID string) {
@@ -295,7 +294,7 @@ func (h *Handler) sendSuccess(conn *websocket.Conn, message, sessionID string) {
 		"session_id": sessionID,
 		"timestamp":  time.Now().Format(time.RFC3339),
 	}
-	conn.WriteJSON(response)
+	_ = conn.WriteJSON(response)
 }
 
 func (h *Handler) Shutdown() {

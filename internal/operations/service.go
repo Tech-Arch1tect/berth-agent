@@ -157,14 +157,6 @@ func (s *Service) buildCommand(req OperationRequest, stackPath string) *exec.Cmd
 	return cmd
 }
 
-func (s *Service) streamOutput(reader io.Reader, writer io.Writer, streamType StreamMessageType) {
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		line := scanner.Text()
-		s.sendMessage(writer, streamType, line)
-	}
-}
-
 func (s *Service) streamOutputWithContext(ctx context.Context, reader io.Reader, writer io.Writer, streamType StreamMessageType) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -197,7 +189,7 @@ func (s *Service) sendMessage(writer io.Writer, msgType StreamMessageType, data 
 
 	if flusher, ok := writer.(interface{ Flush() }); ok {
 		defer func() {
-			recover()
+			_ = recover()
 		}()
 		flusher.Flush()
 	}
@@ -214,7 +206,7 @@ func (s *Service) sendCompleteMessage(writer io.Writer, success bool, exitCode i
 
 	if flusher, ok := writer.(interface{ Flush() }); ok {
 		defer func() {
-			recover()
+			_ = recover()
 		}()
 		flusher.Flush()
 	}

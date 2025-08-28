@@ -316,7 +316,7 @@ func (s *Service) parseMemoryStat(filePath string) (map[string]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	stats := make(map[string]uint64)
 	scanner := bufio.NewScanner(file)
@@ -345,7 +345,7 @@ func (s *Service) parseCPUStat(filePath string) (map[string]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	stats := make(map[string]uint64)
 	scanner := bufio.NewScanner(file)
@@ -374,7 +374,7 @@ func (s *Service) parseIOStat(filePath string) (map[string]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	stats := make(map[string]uint64)
 	scanner := bufio.NewScanner(file)
