@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"berth-agent/internal/common"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -21,16 +22,12 @@ func NewHandler(hub *Hub, accessToken string) *Handler {
 func (h *Handler) HandleAgentWebSocket(c echo.Context) error {
 	auth := c.Request().Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
-		return c.JSON(401, map[string]string{
-			"error": "Bearer token required",
-		})
+		return common.SendUnauthorized(c, "Bearer token required")
 	}
 
 	token := strings.TrimPrefix(auth, "Bearer ")
 	if token != h.accessToken {
-		return c.JSON(401, map[string]string{
-			"error": "Invalid token",
-		})
+		return common.SendUnauthorized(c, "Invalid token")
 	}
 
 	return h.hub.ServeWebSocket(c, token)

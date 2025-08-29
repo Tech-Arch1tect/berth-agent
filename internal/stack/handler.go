@@ -1,8 +1,8 @@
 package stack
 
 import (
+	"berth-agent/internal/common"
 	"berth-agent/internal/validation"
-	"net/http"
 
 	"github.com/labstack/echo/v4"
 )
@@ -20,105 +20,79 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) ListStacks(c echo.Context) error {
 	stacks, err := h.service.ListStacks()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
+		return common.SendInternalError(c, err.Error())
 	}
-	return c.JSON(http.StatusOK, stacks)
+	return common.SendSuccess(c, stacks)
 }
 
 func (h *Handler) GetStackDetails(c echo.Context) error {
 	stackName := c.Param("name")
 	if stackName == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "stack name is required",
-		})
+		return common.SendBadRequest(c, "stack name is required")
 	}
 
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "invalid stack name: " + err.Error(),
-		})
+		return common.SendBadRequest(c, "invalid stack name: "+err.Error())
 	}
 
 	stackDetails, err := h.service.GetStackDetails(stackName)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": err.Error(),
-		})
+		return common.SendNotFound(c, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, stackDetails)
+	return common.SendSuccess(c, stackDetails)
 }
 
 func (h *Handler) GetStackNetworks(c echo.Context) error {
 	stackName := c.Param("name")
 	if stackName == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "stack name is required",
-		})
+		return common.SendBadRequest(c, "stack name is required")
 	}
 
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "invalid stack name: " + err.Error(),
-		})
+		return common.SendBadRequest(c, "invalid stack name: "+err.Error())
 	}
 
 	networks, err := h.service.GetStackNetworks(stackName)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": err.Error(),
-		})
+		return common.SendNotFound(c, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, networks)
+	return common.SendSuccess(c, networks)
 }
 
 func (h *Handler) GetStackVolumes(c echo.Context) error {
 	stackName := c.Param("name")
 	if stackName == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "stack name is required",
-		})
+		return common.SendBadRequest(c, "stack name is required")
 	}
 
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "invalid stack name: " + err.Error(),
-		})
+		return common.SendBadRequest(c, "invalid stack name: "+err.Error())
 	}
 
 	volumes, err := h.service.GetStackVolumes(stackName)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": err.Error(),
-		})
+		return common.SendNotFound(c, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, volumes)
+	return common.SendSuccess(c, volumes)
 }
 
 func (h *Handler) GetStackEnvironmentVariables(c echo.Context) error {
 	stackName := c.Param("name")
 	if stackName == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "stack name is required",
-		})
+		return common.SendBadRequest(c, "stack name is required")
 	}
 
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "invalid stack name: " + err.Error(),
-		})
+		return common.SendBadRequest(c, "invalid stack name: "+err.Error())
 	}
 
 	envVars, err := h.service.GetStackEnvironmentVariables(stackName)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": err.Error(),
-		})
+		return common.SendNotFound(c, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, envVars)
+	return common.SendSuccess(c, envVars)
 }

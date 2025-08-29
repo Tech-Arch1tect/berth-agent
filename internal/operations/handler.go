@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"berth-agent/internal/common"
 	"berth-agent/internal/validation"
 	"net/http"
 	"regexp"
@@ -21,38 +22,28 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) StartOperation(c echo.Context) error {
 	stackName := c.Param("stackName")
 	if stackName == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Stack name is required",
-		})
+		return common.SendBadRequest(c, "Stack name is required")
 	}
 
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid stack name: " + err.Error(),
-		})
+		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
 	}
 
 	var req OperationRequest
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid request format",
-		})
+		return common.SendBadRequest(c, "Invalid request format")
 	}
 
 	if err := ValidateOperationRequest(req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid operation request: " + err.Error(),
-		})
+		return common.SendBadRequest(c, "Invalid operation request: "+err.Error())
 	}
 
 	operationID, err := h.service.StartOperation(c.Request().Context(), stackName, req)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
+		return common.SendInternalError(c, err.Error())
 	}
 
-	return c.JSON(http.StatusOK, OperationResponse{
+	return common.SendSuccess(c, OperationResponse{
 		OperationID: operationID,
 	})
 }
@@ -60,15 +51,11 @@ func (h *Handler) StartOperation(c echo.Context) error {
 func (h *Handler) StreamOperation(c echo.Context) error {
 	operationID := c.Param("operationId")
 	if operationID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Operation ID is required",
-		})
+		return common.SendBadRequest(c, "Operation ID is required")
 	}
 
 	if err := validateOperationID(operationID); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid operation ID format",
-		})
+		return common.SendBadRequest(c, "Invalid operation ID format")
 	}
 
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -91,25 +78,19 @@ func (h *Handler) StreamOperation(c echo.Context) error {
 func (h *Handler) GetOperationStatus(c echo.Context) error {
 	operationID := c.Param("operationId")
 	if operationID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Operation ID is required",
-		})
+		return common.SendBadRequest(c, "Operation ID is required")
 	}
 
 	if err := validateOperationID(operationID); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid operation ID format",
-		})
+		return common.SendBadRequest(c, "Invalid operation ID format")
 	}
 
 	operation, exists := h.service.GetOperation(operationID)
 	if !exists {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": "Operation not found",
-		})
+		return common.SendNotFound(c, "Operation not found")
 	}
 
-	return c.JSON(http.StatusOK, operation)
+	return common.SendSuccess(c, operation)
 }
 
 func validateOperationID(operationID string) error {
