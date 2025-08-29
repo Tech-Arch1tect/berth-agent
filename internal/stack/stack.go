@@ -38,10 +38,68 @@ type ComposeService struct {
 }
 
 type Container struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
-	State string `json:"state"`
-	Ports []Port `json:"ports,omitempty"`
+	Name           string             `json:"name"`
+	Image          string             `json:"image"`
+	State          string             `json:"state"`
+	Ports          []Port             `json:"ports,omitempty"`
+	Created        string             `json:"created,omitempty"`
+	Started        string             `json:"started,omitempty"`
+	Finished       string             `json:"finished,omitempty"`
+	ExitCode       int                `json:"exit_code,omitempty"`
+	RestartPolicy  *RestartPolicy     `json:"restart_policy,omitempty"`
+	ResourceLimits *ResourceLimits    `json:"resource_limits,omitempty"`
+	Health         *HealthStatus      `json:"health,omitempty"`
+	Command        []string           `json:"command,omitempty"`
+	WorkingDir     string             `json:"working_dir,omitempty"`
+	User           string             `json:"user,omitempty"`
+	Labels         map[string]string  `json:"labels,omitempty"`
+	Networks       []ContainerNetwork `json:"networks,omitempty"`
+	Mounts         []ContainerMount   `json:"mounts,omitempty"`
+}
+
+type ContainerNetwork struct {
+	Name       string   `json:"name"`
+	NetworkID  string   `json:"network_id,omitempty"`
+	IPAddress  string   `json:"ip_address,omitempty"`
+	Gateway    string   `json:"gateway,omitempty"`
+	MacAddress string   `json:"mac_address,omitempty"`
+	Aliases    []string `json:"aliases,omitempty"`
+}
+
+type ContainerMount struct {
+	Type        string `json:"type"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Driver      string `json:"driver,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	RW          bool   `json:"rw"`
+	Propagation string `json:"propagation,omitempty"`
+}
+
+type RestartPolicy struct {
+	Name              string `json:"name"`
+	MaximumRetryCount int    `json:"maximum_retry_count,omitempty"`
+}
+
+type ResourceLimits struct {
+	CPUShares  int64 `json:"cpu_shares,omitempty"`
+	Memory     int64 `json:"memory,omitempty"`
+	MemorySwap int64 `json:"memory_swap,omitempty"`
+	CPUQuota   int64 `json:"cpu_quota,omitempty"`
+	CPUPeriod  int64 `json:"cpu_period,omitempty"`
+}
+
+type HealthStatus struct {
+	Status        string      `json:"status"`
+	FailingStreak int         `json:"failing_streak,omitempty"`
+	Log           []HealthLog `json:"log,omitempty"`
+}
+
+type HealthLog struct {
+	Start    string `json:"start"`
+	End      string `json:"end,omitempty"`
+	ExitCode int    `json:"exit_code"`
+	Output   string `json:"output"`
 }
 
 type Port struct {
@@ -439,6 +497,119 @@ func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Contain
 			Image: apiContainer.Image,
 			State: apiContainer.State,
 			Ports: ports,
+		}
+
+		inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		containerDetails, err := s.dockerClient.ContainerInspect(inspectCtx, apiContainer.ID)
+		inspectCancel()
+
+		if err == nil {
+			container.Created = containerDetails.Created
+			if containerDetails.State.StartedAt != "" {
+				container.Started = containerDetails.State.StartedAt
+			}
+			if containerDetails.State.FinishedAt != "" && containerDetails.State.FinishedAt != "0001-01-01T00:00:00Z" {
+				container.Finished = containerDetails.State.FinishedAt
+			}
+			container.ExitCode = containerDetails.State.ExitCode
+
+			if containerDetails.HostConfig.RestartPolicy.Name != "" {
+				container.RestartPolicy = &RestartPolicy{
+					Name:              string(containerDetails.HostConfig.RestartPolicy.Name),
+					MaximumRetryCount: containerDetails.HostConfig.RestartPolicy.MaximumRetryCount,
+				}
+			}
+
+			resourceLimits := &ResourceLimits{}
+			hasLimits := false
+
+			if containerDetails.HostConfig.CPUShares > 0 {
+				resourceLimits.CPUShares = containerDetails.HostConfig.CPUShares
+				hasLimits = true
+			}
+			if containerDetails.HostConfig.Memory > 0 {
+				resourceLimits.Memory = containerDetails.HostConfig.Memory
+				hasLimits = true
+			}
+			if containerDetails.HostConfig.MemorySwap > 0 {
+				resourceLimits.MemorySwap = containerDetails.HostConfig.MemorySwap
+				hasLimits = true
+			}
+			if containerDetails.HostConfig.CPUQuota > 0 {
+				resourceLimits.CPUQuota = containerDetails.HostConfig.CPUQuota
+				hasLimits = true
+			}
+			if containerDetails.HostConfig.CPUPeriod > 0 {
+				resourceLimits.CPUPeriod = containerDetails.HostConfig.CPUPeriod
+				hasLimits = true
+			}
+
+			if hasLimits {
+				container.ResourceLimits = resourceLimits
+			}
+
+			if containerDetails.State.Health != nil {
+				healthLogs := make([]HealthLog, 0)
+				for _, logEntry := range containerDetails.State.Health.Log {
+					healthLogs = append(healthLogs, HealthLog{
+						Start:    logEntry.Start.Format(time.RFC3339),
+						End:      logEntry.End.Format(time.RFC3339),
+						ExitCode: logEntry.ExitCode,
+						Output:   logEntry.Output,
+					})
+				}
+
+				container.Health = &HealthStatus{
+					Status:        containerDetails.State.Health.Status,
+					FailingStreak: containerDetails.State.Health.FailingStreak,
+					Log:           healthLogs,
+				}
+			}
+
+			if len(containerDetails.Config.Cmd) > 0 {
+				container.Command = containerDetails.Config.Cmd
+			} else if len(containerDetails.Config.Entrypoint) > 0 {
+				container.Command = containerDetails.Config.Entrypoint
+			}
+
+			if containerDetails.Config.WorkingDir != "" {
+				container.WorkingDir = containerDetails.Config.WorkingDir
+			}
+
+			if containerDetails.Config.User != "" {
+				container.User = containerDetails.Config.User
+			}
+
+			container.Labels = containerDetails.Config.Labels
+
+			var networks []ContainerNetwork
+			for networkName, networkInfo := range containerDetails.NetworkSettings.Networks {
+				network := ContainerNetwork{
+					Name:       networkName,
+					NetworkID:  networkInfo.NetworkID,
+					IPAddress:  networkInfo.IPAddress,
+					Gateway:    networkInfo.Gateway,
+					MacAddress: networkInfo.MacAddress,
+					Aliases:    networkInfo.Aliases,
+				}
+				networks = append(networks, network)
+			}
+			container.Networks = networks
+
+			var mounts []ContainerMount
+			for _, mount := range containerDetails.Mounts {
+				containerMount := ContainerMount{
+					Type:        string(mount.Type),
+					Source:      mount.Source,
+					Destination: mount.Destination,
+					Driver:      mount.Driver,
+					Mode:        mount.Mode,
+					RW:          mount.RW,
+					Propagation: string(mount.Propagation),
+				}
+				mounts = append(mounts, containerMount)
+			}
+			container.Mounts = mounts
 		}
 
 		containers[serviceName] = append(containers[serviceName], container)
