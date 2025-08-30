@@ -10,7 +10,12 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -a -installsuffix cgo \
     -o berth-agent \
     .
 
