@@ -1,0 +1,15 @@
+services:
+  berth-agent:
+    image: techarchitect/berth-agent:latest
+    build: .
+    container_name: berth-agent
+    environment:
+      - ACCESS_TOKEN=${ACCESS_TOKEN}
+      - PORT=${PORT:-8080}
+      - STACK_LOCATION=${STACK_LOCATION:-/opt/compose}
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
