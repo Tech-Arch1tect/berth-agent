@@ -10,26 +10,42 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+type cpuCacheEntry struct {
+	utime        uint64
+	stime        uint64
+	timestamp    time.Time
+	lastAccessed time.Time
+}
 
 type Service struct {
 	stackLocation string
 	dockerClient  *docker.Client
 	stackService  *stack.Service
 	cgroupRoot    string
+	cpuCache      map[int]*cpuCacheEntry
+	cacheMutex    sync.RWMutex
 }
 
 func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *stack.Service) *Service {
-	return &Service{
+	service := &Service{
 		stackLocation: cfg.StackLocation,
 		dockerClient:  dockerClient,
 		stackService:  stackService,
 		cgroupRoot:    "/sys/fs/cgroup",
+		cpuCache:      make(map[int]*cpuCacheEntry),
 	}
+
+	go service.cleanupCacheLoop()
+
+	return service
 }
 
 func (s *Service) GetStackStats(name string) (*StackStats, error) {
@@ -162,10 +178,11 @@ func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, conta
 
 	cpuStats, err := s.getCPUStats(cgroupPath)
 	if err == nil {
-		stats.CPUPercent = cpuStats.Percent
 		stats.CPUUserTime = cpuStats.UserTime
 		stats.CPUSystemTime = cpuStats.SystemTime
 	}
+
+	stats.CPUPercent = s.calculateCPUPercentWithCache(pid)
 
 	blkioStats, err := s.getBlockIOStats(cgroupPath)
 	if err == nil {
@@ -270,11 +287,108 @@ func (s *Service) getCPUStats(cgroupPath string) (*cpuStats, error) {
 		return nil, fmt.Errorf("failed to parse cpu.stat: %w", err)
 	}
 
+	percent := 0.0
+
 	return &cpuStats{
-		Percent:    0.0,
+		Percent:    percent,
 		UserTime:   cpuStat["user_usec"] / 1000,
 		SystemTime: cpuStat["system_usec"] / 1000,
 	}, nil
+}
+
+func (s *Service) cleanupCacheLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.cleanupStaleCache()
+	}
+}
+
+func (s *Service) cleanupStaleCache() {
+	s.cacheMutex.Lock()
+	defer s.cacheMutex.Unlock()
+
+	cutoff := time.Now().Add(-5 * time.Minute)
+
+	for pid, entry := range s.cpuCache {
+		if entry.lastAccessed.Before(cutoff) {
+			delete(s.cpuCache, pid)
+		}
+	}
+}
+
+func (s *Service) calculateCPUPercentWithCache(pid int) float64 {
+	if pid == 0 {
+		return 0.0
+	}
+
+	procStatPath := fmt.Sprintf("/proc/%d/stat", pid)
+
+	data, err := os.ReadFile(procStatPath)
+	if err != nil {
+		return 0.0
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) < 15 {
+		return 0.0
+	}
+
+	utime, err := strconv.ParseUint(fields[13], 10, 64)
+	if err != nil {
+		return 0.0
+	}
+
+	stime, err := strconv.ParseUint(fields[14], 10, 64)
+	if err != nil {
+		return 0.0
+	}
+
+	now := time.Now()
+
+	s.cacheMutex.Lock()
+	defer s.cacheMutex.Unlock()
+
+	if cached, exists := s.cpuCache[pid]; exists {
+		cached.lastAccessed = now
+
+		deltaTime := now.Sub(cached.timestamp).Seconds()
+		if deltaTime == 0 {
+			return -1.0
+		}
+
+		deltaUtime := float64(utime - cached.utime)
+		deltaStime := float64(stime - cached.stime)
+		totalDeltaTicks := deltaUtime + deltaStime
+
+		clockTicksPerSecond := 100.0
+		deltaCPUSeconds := totalDeltaTicks / clockTicksPerSecond
+
+		numCores := float64(runtime.NumCPU())
+		maxPossibleCPUTime := deltaTime * numCores
+
+		cpuPercent := (deltaCPUSeconds / maxPossibleCPUTime) * 100.0
+
+		if cpuPercent > 100.0 {
+			cpuPercent = 100.0
+		}
+
+		cached.utime = utime
+		cached.stime = stime
+		cached.timestamp = now
+
+		return cpuPercent
+	}
+
+	s.cpuCache[pid] = &cpuCacheEntry{
+		utime:        utime,
+		stime:        stime,
+		timestamp:    now,
+		lastAccessed: now,
+	}
+
+	return -1.0
 }
 
 func (s *Service) getBlockIOStats(cgroupPath string) (*blkioStats, error) {
