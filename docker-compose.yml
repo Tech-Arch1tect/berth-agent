@@ -12,4 +12,5 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /proc:/proc:ro
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}

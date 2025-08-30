@@ -56,9 +56,11 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 		name        string
 		serviceName string
 		id          string
+		pid         int
 	}
 
 	var runningContainers []containerJob
+
 	for serviceName, containerList := range containers {
 		for _, container := range containerList {
 			if container.State == "running" {
@@ -79,21 +81,29 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 		return stats, nil
 	}
 
+	ctx := context.Background()
+	for i, job := range runningContainers {
+		containerInfo, err := s.dockerClient.ContainerInspect(ctx, job.id)
+		if err == nil && containerInfo.State.Pid != 0 {
+			runningContainers[i].pid = containerInfo.State.Pid
+		}
+	}
+
 	statsChan := make(chan ContainerStats, len(runningContainers))
 	var wg sync.WaitGroup
 
 	for _, job := range runningContainers {
 		wg.Add(1)
-		go func(containerName, serviceName, containerID string) {
+		go func(containerName, serviceName, containerID string, pid int) {
 			defer wg.Done()
 
-			containerStats, err := s.getContainerStatsFromCgroups(containerName, serviceName, containerID)
+			containerStats, err := s.getContainerStatsFromCgroups(containerName, serviceName, containerID, pid)
 			if err != nil {
 				return
 			}
 
 			statsChan <- *containerStats
-		}(job.name, job.serviceName, job.id)
+		}(job.name, job.serviceName, job.id, job.pid)
 	}
 
 	go func() {
@@ -130,7 +140,7 @@ func (s *Service) getContainerID(containerName string) (string, error) {
 	return "", fmt.Errorf("container %s not found", containerName)
 }
 
-func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, containerID string) (*ContainerStats, error) {
+func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, containerID string, pid int) (*ContainerStats, error) {
 	stats := &ContainerStats{
 		Name:        containerName,
 		ServiceName: serviceName,
@@ -165,7 +175,7 @@ func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, conta
 		stats.BlockWriteOps = blkioStats.WriteOps
 	}
 
-	networkStats, err := s.getNetworkStats(containerID)
+	networkStats, err := s.getNetworkStats(pid)
 	if err == nil {
 		stats.NetworkRxBytes = networkStats.RxBytes
 		stats.NetworkTxBytes = networkStats.TxBytes
@@ -283,12 +293,49 @@ func (s *Service) getBlockIOStats(cgroupPath string) (*blkioStats, error) {
 	}, nil
 }
 
-func (s *Service) getNetworkStats(containerID string) (*networkStats, error) {
+func (s *Service) getNetworkStats(pid int) (*networkStats, error) {
+	if pid == 0 {
+		return &networkStats{}, nil
+	}
+
+	procNetDevPath := fmt.Sprintf("/proc/%d/net/dev", pid)
+
+	file, err := os.Open(procNetDevPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", procNetDevPath, err)
+	}
+	defer file.Close()
+
+	var totalRxBytes, totalTxBytes, totalRxPackets, totalTxPackets uint64
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.Contains(line, ":") && !strings.HasPrefix(line, "Inter-") && !strings.HasPrefix(line, " face") {
+			parts := strings.Fields(line)
+			if len(parts) >= 10 {
+				rxBytes, _ := strconv.ParseUint(parts[1], 10, 64)
+				rxPackets, _ := strconv.ParseUint(parts[2], 10, 64)
+				txBytes, _ := strconv.ParseUint(parts[9], 10, 64)
+				txPackets, _ := strconv.ParseUint(parts[10], 10, 64)
+
+				totalRxBytes += rxBytes
+				totalRxPackets += rxPackets
+				totalTxBytes += txBytes
+				totalTxPackets += txPackets
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan %s: %w", procNetDevPath, err)
+	}
+
 	return &networkStats{
-		RxBytes:   0,
-		TxBytes:   0,
-		RxPackets: 0,
-		TxPackets: 0,
+		RxBytes:   totalRxBytes,
+		TxBytes:   totalTxBytes,
+		RxPackets: totalRxPackets,
+		TxPackets: totalTxPackets,
 	}, nil
 }
 
