@@ -3,9 +3,12 @@ package operations
 import (
 	"berth-agent/internal/validation"
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,13 +20,15 @@ import (
 
 type Service struct {
 	stackLocation string
+	accessToken   string
 	operations    map[string]*Operation
 	mutex         sync.RWMutex
 }
 
-func NewService(stackLocation string) *Service {
+func NewService(stackLocation, accessToken string) *Service {
 	return &Service{
 		stackLocation: stackLocation,
+		accessToken:   accessToken,
 		operations:    make(map[string]*Operation),
 	}
 }
@@ -39,7 +44,13 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 		return "", fmt.Errorf("stack '%s' not found", stackName)
 	}
 
+	// Block stack-wide operations on berth-agent stack to prevent sidecar updating itself
+	if stackName == "berth-agent" && len(req.Services) == 0 {
+		return "", fmt.Errorf("stack-wide operations are not supported for berth-agent stack - please target specific services only")
+	}
+
 	operationID := uuid.New().String()
+	isSelfOp := s.isSelfOperation(stackName, req)
 
 	operation := &Operation{
 		ID:        operationID,
@@ -47,6 +58,7 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 		Request:   req,
 		StartTime: time.Now(),
 		Status:    "running",
+		IsSelfOp:  isSelfOp,
 	}
 
 	s.mutex.Lock()
@@ -54,6 +66,24 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 	s.mutex.Unlock()
 
 	return operationID, nil
+}
+
+func (s *Service) isSelfOperation(stackName string, req OperationRequest) bool {
+	if stackName != "berth-agent" {
+		return false
+	}
+
+	// Only "up" and "restart" operations need sidecar handling
+	if req.Command != "up" && req.Command != "restart" {
+		return false
+	}
+
+	// Only consider it a self-operation if targeting the berth-agent service specifically
+	if len(req.Services) == 1 && req.Services[0] == "berth-agent" {
+		return true
+	}
+
+	return false
 }
 
 func (s *Service) GetOperation(operationID string) (*Operation, bool) {
@@ -67,6 +97,10 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 	operation, exists := s.GetOperation(operationID)
 	if !exists {
 		return fmt.Errorf("operation not found")
+	}
+
+	if operation.IsSelfOp {
+		return s.handleSelfOperation(ctx, operation, writer)
 	}
 
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
@@ -210,6 +244,69 @@ func (s *Service) sendCompleteMessage(writer io.Writer, success bool, exitCode i
 		}()
 		flusher.Flush()
 	}
+}
+
+func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation, writer io.Writer) error {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("invalid stack path: %w", err)
+	}
+
+	payload := map[string]any{
+		"command":    operation.Request.Command,
+		"options":    operation.Request.Options,
+		"services":   operation.Request.Services,
+		"stack_path": stackPath,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.accessToken)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("failed to connect to sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("sidecar returned status: %d", resp.StatusCode)
+	}
+
+	var sidecarResp map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&sidecarResp); err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("failed to parse sidecar response: %w", err)
+	}
+
+	s.sendMessage(writer, StreamTypeStdout, "Detected self-operation, forwarding to sidecar updater...")
+	if message, ok := sidecarResp["message"]; ok {
+		s.sendMessage(writer, StreamTypeStdout, message)
+	}
+	s.sendMessage(writer, StreamTypeStdout, fmt.Sprintf("Sidecar will handle %s operation independently", operation.Request.Command))
+	s.sendMessage(writer, StreamTypeStdout, "Agent update will continue in background after this connection closes")
+
+	exitCode := 0
+	s.updateOperationStatus(operation.ID, "completed", &exitCode)
+	s.sendCompleteMessage(writer, true, exitCode)
+
+	return nil
 }
 
 func (s *Service) updateOperationStatus(operationID, status string, exitCode *int) {

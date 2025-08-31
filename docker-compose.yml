@@ -14,3 +14,13 @@ services:
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /proc:/proc:ro
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
+
+  berth-updater:
+    image: techarchitect/berth-agent:latest
+    build: .
+    container_name: berth-updater
+    command: ["./berth-agent", "sidecar"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
+    restart: unless-stopped

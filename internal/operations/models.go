@@ -41,4 +41,5 @@ type Operation struct {
 	StartTime time.Time
 	Status    string
 	ExitCode  *int
+	IsSelfOp  bool
 }

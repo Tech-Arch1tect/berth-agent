@@ -12,5 +12,5 @@ var Module = fx.Options(
 )
 
 func NewServiceWithConfig(cfg *config.Config) *Service {
-	return NewService(cfg.StackLocation)
+	return NewService(cfg.StackLocation, cfg.AccessToken)
 }
