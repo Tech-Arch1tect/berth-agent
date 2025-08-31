@@ -7,6 +7,7 @@ import (
 	"berth-agent/internal/files"
 	"berth-agent/internal/health"
 	"berth-agent/internal/logs"
+	"berth-agent/internal/maintenance"
 	"berth-agent/internal/operations"
 	"berth-agent/internal/sidecar"
 	"berth-agent/internal/stack"
@@ -35,6 +36,7 @@ func runAgent() {
 		config.Module,
 		stack.Module,
 		stats.Module,
+		maintenance.Module,
 		health.Module,
 		logs.Module,
 		operations.Module,
@@ -74,6 +76,7 @@ func RegisterRoutes(
 	cfg *config.Config,
 	stackHandler *stack.Handler,
 	statsHandler *stats.Handler,
+	maintenanceHandler *maintenance.Handler,
 	healthHandler *health.Handler,
 	logsHandler *logs.Handler,
 	operationsHandler *operations.Handler,
@@ -107,6 +110,10 @@ func RegisterRoutes(
 	api.POST("/stacks/:stackName/files/rename", filesHandler.Rename)
 	api.POST("/stacks/:stackName/files/copy", filesHandler.Copy)
 	api.GET("/stacks/:stackName/files/download", filesHandler.DownloadFile)
+
+	api.GET("/maintenance/info", maintenanceHandler.GetSystemInfo)
+	api.POST("/maintenance/prune", maintenanceHandler.PruneDocker)
+	api.DELETE("/maintenance/resource", maintenanceHandler.DeleteResource)
 
 	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
 	e.GET("/ws/terminal", terminalHandler.HandleTerminalWebSocket)
