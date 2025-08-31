@@ -19,6 +19,8 @@ services:
     image: techarchitect/berth-agent:latest
     build: .
     container_name: berth-updater
+    environment:
+      - ACCESS_TOKEN=${ACCESS_TOKEN}
     command: ["./berth-agent", "sidecar"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
