@@ -44,7 +44,7 @@ func (s *Service) ExecuteOperation(ctx context.Context, req OperationRequest) er
 	fullCommand := "docker " + strings.Join(args, " ")
 	log.Printf("Executing command: %s (working directory: %s)", fullCommand, req.StackPath)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.Command("docker", args...)
 	cmd.Dir = req.StackPath
 
 	output, err := cmd.CombinedOutput()
