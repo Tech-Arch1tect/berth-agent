@@ -19,8 +19,8 @@ import (
 )
 
 type cpuCacheEntry struct {
-	utime        uint64
-	stime        uint64
+	userUsec     uint64
+	systemUsec   uint64
 	timestamp    time.Time
 	lastAccessed time.Time
 }
@@ -30,7 +30,7 @@ type Service struct {
 	dockerClient  *docker.Client
 	stackService  *stack.Service
 	cgroupRoot    string
-	cpuCache      map[int]*cpuCacheEntry
+	cpuCache      map[string]*cpuCacheEntry
 	cacheMutex    sync.RWMutex
 }
 
@@ -40,7 +40,7 @@ func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *s
 		dockerClient:  dockerClient,
 		stackService:  stackService,
 		cgroupRoot:    "/sys/fs/cgroup",
-		cpuCache:      make(map[int]*cpuCacheEntry),
+		cpuCache:      make(map[string]*cpuCacheEntry),
 	}
 
 	go service.cleanupCacheLoop()
@@ -182,7 +182,7 @@ func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, conta
 		stats.CPUSystemTime = cpuStats.SystemTime
 	}
 
-	stats.CPUPercent = s.calculateCPUPercentWithCache(pid)
+	stats.CPUPercent = s.calculateCPUPercentFromCgroup(cgroupPath)
 
 	blkioStats, err := s.getBlockIOStats(cgroupPath)
 	if err == nil {
@@ -311,59 +311,44 @@ func (s *Service) cleanupStaleCache() {
 
 	cutoff := time.Now().Add(-5 * time.Minute)
 
-	for pid, entry := range s.cpuCache {
+	for cacheKey, entry := range s.cpuCache {
 		if entry.lastAccessed.Before(cutoff) {
-			delete(s.cpuCache, pid)
+			delete(s.cpuCache, cacheKey)
 		}
 	}
 }
 
-func (s *Service) calculateCPUPercentWithCache(pid int) float64 {
-	if pid == 0 {
-		return 0.0
-	}
+func (s *Service) calculateCPUPercentFromCgroup(cgroupPath string) float64 {
+	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
 
-	procStatPath := fmt.Sprintf("/proc/%d/stat", pid)
-
-	data, err := os.ReadFile(procStatPath)
+	cpuStat, err := s.parseCPUStat(cpuStatPath)
 	if err != nil {
 		return 0.0
 	}
 
-	fields := strings.Fields(string(data))
-	if len(fields) < 15 {
-		return 0.0
-	}
-
-	utime, err := strconv.ParseUint(fields[13], 10, 64)
-	if err != nil {
-		return 0.0
-	}
-
-	stime, err := strconv.ParseUint(fields[14], 10, 64)
-	if err != nil {
-		return 0.0
-	}
+	userUsec := cpuStat["user_usec"]
+	systemUsec := cpuStat["system_usec"]
 
 	now := time.Now()
 
 	s.cacheMutex.Lock()
 	defer s.cacheMutex.Unlock()
 
-	if cached, exists := s.cpuCache[pid]; exists {
+	cacheKey := cgroupPath
+	if cached, exists := s.cpuCache[cacheKey]; exists {
 		cached.lastAccessed = now
 
 		deltaTime := now.Sub(cached.timestamp).Seconds()
+
 		if deltaTime == 0 {
 			return -1.0
 		}
 
-		deltaUtime := float64(utime - cached.utime)
-		deltaStime := float64(stime - cached.stime)
-		totalDeltaTicks := deltaUtime + deltaStime
+		deltaUserUsec := float64(userUsec - cached.userUsec)
+		deltaSystemUsec := float64(systemUsec - cached.systemUsec)
+		totalDeltaUsec := deltaUserUsec + deltaSystemUsec
 
-		clockTicksPerSecond := 100.0
-		deltaCPUSeconds := totalDeltaTicks / clockTicksPerSecond
+		deltaCPUSeconds := totalDeltaUsec / 1_000_000.0
 
 		numCores := float64(runtime.NumCPU())
 		maxPossibleCPUTime := deltaTime * numCores
@@ -374,16 +359,16 @@ func (s *Service) calculateCPUPercentWithCache(pid int) float64 {
 			cpuPercent = 100.0
 		}
 
-		cached.utime = utime
-		cached.stime = stime
+		cached.userUsec = userUsec
+		cached.systemUsec = systemUsec
 		cached.timestamp = now
 
 		return cpuPercent
 	}
 
-	s.cpuCache[pid] = &cpuCacheEntry{
-		utime:        utime,
-		stime:        stime,
+	s.cpuCache[cacheKey] = &cpuCacheEntry{
+		userUsec:     userUsec,
+		systemUsec:   systemUsec,
 		timestamp:    now,
 		lastAccessed: now,
 	}
