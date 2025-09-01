@@ -180,7 +180,7 @@ type ServiceEnvironment struct {
 	Variables   []EnvironmentVariable `json:"variables"`
 }
 
-type StackSummary struct {
+type StackStatistics struct {
 	TotalStacks     int `json:"total_stacks"`
 	HealthyStacks   int `json:"healthy_stacks"`
 	UnhealthyStacks int `json:"unhealthy_stacks"`
@@ -1537,13 +1537,13 @@ func matchesComplexPattern(text, pattern string) bool {
 	return true
 }
 
-func (s *Service) GetStacksSummary(patterns []string) (*StackSummary, error) {
+func (s *Service) GetStacksSummary(patterns []string) (*StackStatistics, error) {
 	entries, err := os.ReadDir(s.stackLocation)
 	if err != nil {
 		return nil, err
 	}
 
-	summary := &StackSummary{
+	summary := &StackStatistics{
 		TotalStacks:     0,
 		HealthyStacks:   0,
 		UnhealthyStacks: 0,
