@@ -3,6 +3,7 @@ package stack
 import (
 	"berth-agent/internal/common"
 	"berth-agent/internal/validation"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -95,4 +96,27 @@ func (h *Handler) GetStackEnvironmentVariables(c echo.Context) error {
 	}
 
 	return common.SendSuccess(c, envVars)
+}
+
+func (h *Handler) GetStacksSummary(c echo.Context) error {
+	patternsParam := c.QueryParam("patterns")
+	var patterns []string
+
+	if patternsParam != "" {
+		patterns = strings.Split(patternsParam, ",")
+		for i, pattern := range patterns {
+			patterns[i] = strings.TrimSpace(pattern)
+		}
+	}
+
+	if len(patterns) == 0 {
+		patterns = []string{"*"}
+	}
+
+	summary, err := h.service.GetStacksSummary(patterns)
+	if err != nil {
+		return common.SendInternalError(c, err.Error())
+	}
+
+	return common.SendSuccess(c, summary)
 }

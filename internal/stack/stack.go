@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -170,7 +171,7 @@ type EnvironmentVariable struct {
 	Key             string `json:"key"`
 	Value           string `json:"value"`
 	IsSensitive     bool   `json:"is_sensitive"`
-	Source          string `json:"source"` // "compose" or "runtime"
+	Source          string `json:"source"`
 	IsFromContainer bool   `json:"is_from_container"`
 }
 
@@ -179,18 +180,34 @@ type ServiceEnvironment struct {
 	Variables   []EnvironmentVariable `json:"variables"`
 }
 
+type StackSummary struct {
+	TotalStacks     int `json:"total_stacks"`
+	HealthyStacks   int `json:"healthy_stacks"`
+	UnhealthyStacks int `json:"unhealthy_stacks"`
+}
+
 type Service struct {
 	stackLocation string
 	commandExec   *docker.CommandExecutor
 	dockerClient  *docker.Client
+	serviceCache  *ServiceCountCache
 }
 
 func NewService(cfg *config.Config, dockerClient *docker.Client) *Service {
-	return &Service{
+	cache := NewServiceCountCache(cfg.StackLocation)
+
+	service := &Service{
 		stackLocation: cfg.StackLocation,
 		commandExec:   docker.NewCommandExecutor(cfg.StackLocation),
 		dockerClient:  dockerClient,
+		serviceCache:  cache,
 	}
+
+	if err := cache.Start(); err != nil {
+		log.Printf("Warning: failed to start service count cache: %v", err)
+	}
+
+	return service
 }
 
 func (s *Service) ListStacks() ([]Stack, error) {
@@ -1452,4 +1469,156 @@ func (s *Service) isSensitiveVariable(key string) bool {
 		}
 	}
 	return false
+}
+
+func matchesAnyPattern(stackName string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+
+	for _, pattern := range patterns {
+		if matchesPattern(stackName, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesPattern(text, pattern string) bool {
+	if pattern == "*" {
+		return true
+	}
+
+	text = strings.ToLower(text)
+	pattern = strings.ToLower(pattern)
+
+	return matchesComplexPattern(text, pattern)
+}
+
+func matchesComplexPattern(text, pattern string) bool {
+	if !strings.Contains(pattern, "*") {
+		return text == pattern
+	}
+
+	parts := strings.Split(pattern, "*")
+
+	if len(parts) == 1 {
+		return text == pattern
+	}
+
+	textPos := 0
+
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		if i == 0 {
+			if !strings.HasPrefix(text, part) {
+				return false
+			}
+			textPos = len(part)
+		} else if i == len(parts)-1 {
+			if !strings.HasSuffix(text, part) {
+				return false
+			}
+			if len(text) < textPos+len(part) {
+				return false
+			}
+		} else {
+			index := strings.Index(text[textPos:], part)
+			if index == -1 {
+				return false
+			}
+			textPos += index + len(part)
+		}
+	}
+
+	return true
+}
+
+func (s *Service) GetStacksSummary(patterns []string) (*StackSummary, error) {
+	entries, err := os.ReadDir(s.stackLocation)
+	if err != nil {
+		return nil, err
+	}
+
+	summary := &StackSummary{
+		TotalStacks:     0,
+		HealthyStacks:   0,
+		UnhealthyStacks: 0,
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		stackName := entry.Name()
+		if !matchesAnyPattern(stackName, patterns) {
+			continue
+		}
+
+		stackPath := filepath.Join(s.stackLocation, stackName)
+
+		composeFiles := []string{
+			"docker-compose.yml",
+			"docker-compose.yaml",
+			"compose.yml",
+			"compose.yaml",
+		}
+
+		var hasComposeFile bool
+		for _, filename := range composeFiles {
+			composePath := filepath.Join(stackPath, filename)
+			if _, err := os.Stat(composePath); err == nil {
+				hasComposeFile = true
+				break
+			}
+		}
+
+		if !hasComposeFile {
+			continue
+		}
+
+		summary.TotalStacks++
+
+		isHealthy := s.isStackHealthy(stackName)
+		if isHealthy {
+			summary.HealthyStacks++
+		} else {
+			summary.UnhealthyStacks++
+		}
+	}
+
+	return summary, nil
+}
+
+func (s *Service) isStackHealthy(stackName string) bool {
+
+	expectedCount, exists := s.serviceCache.GetServiceCount(stackName)
+	if !exists || expectedCount == 0 {
+		return false
+	}
+
+	containers, err := s.getContainerInfoViaAPI(stackName)
+	if err != nil {
+		return false
+	}
+
+	runningServices := 0
+	for _, containerList := range containers {
+		hasRunningContainer := false
+		for _, container := range containerList {
+			if container.State == "running" {
+				hasRunningContainer = true
+				break
+			}
+		}
+		if hasRunningContainer {
+			runningServices++
+		}
+	}
+
+	return runningServices == expectedCount
 }
