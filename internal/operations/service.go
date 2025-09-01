@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -247,7 +248,12 @@ func (s *Service) sendCompleteMessage(writer io.Writer, success bool, exitCode i
 }
 
 func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation, writer io.Writer) error {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
 	if err != nil {
@@ -268,7 +274,7 @@ func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation,
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
 	if err != nil {
 		s.updateOperationStatus(operation.ID, "failed", nil)
 		return fmt.Errorf("failed to create request: %w", err)

@@ -10,6 +10,7 @@ import (
 	"berth-agent/internal/maintenance"
 	"berth-agent/internal/operations"
 	"berth-agent/internal/sidecar"
+	"berth-agent/internal/ssl"
 	"berth-agent/internal/stack"
 	"berth-agent/internal/stats"
 	"berth-agent/internal/terminal"
@@ -34,6 +35,7 @@ func main() {
 func runAgent() {
 	fx.New(
 		config.Module,
+		ssl.Module,
 		stack.Module,
 		stats.Module,
 		maintenance.Module,
@@ -57,6 +59,7 @@ func runAgent() {
 func runSidecar() {
 	fx.New(
 		config.Module,
+		ssl.Module,
 		sidecar.Module,
 		fx.Provide(NewSidecarEcho),
 		fx.Invoke(RegisterSidecarRoutes),
@@ -148,12 +151,18 @@ func StartEventMonitor(lc fx.Lifecycle, monitor *docker.EventMonitor) {
 	})
 }
 
-func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config) {
+func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config, certManager *ssl.CertificateManager) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			certFile, keyFile, err := certManager.EnsureCertificates()
+			if err != nil {
+				e.Logger.Fatal("Failed to setup SSL certificates:", err)
+				return err
+			}
+
 			go func() {
-				if err := e.Start(":" + cfg.Port); err != nil {
-					e.Logger.Fatal("Server failed to start:", err)
+				if err := e.StartTLS(":"+cfg.Port, certFile, keyFile); err != nil {
+					e.Logger.Fatal("HTTPS Server failed to start:", err)
 				}
 			}()
 			return nil
@@ -179,12 +188,18 @@ func RegisterSidecarRoutes(e *echo.Echo, handler *sidecar.Handler, cfg *config.C
 	api.GET("/health", handler.Health)
 }
 
-func StartSidecarServer(lc fx.Lifecycle, e *echo.Echo) {
+func StartSidecarServer(lc fx.Lifecycle, e *echo.Echo, certManager *ssl.CertificateManager) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			certFile, keyFile, err := certManager.EnsureCertificates()
+			if err != nil {
+				e.Logger.Fatal("Failed to setup SSL certificates:", err)
+				return err
+			}
+
 			go func() {
-				if err := e.Start(":8081"); err != nil {
-					e.Logger.Fatal("Sidecar server failed to start:", err)
+				if err := e.StartTLS(":8081", certFile, keyFile); err != nil {
+					e.Logger.Fatal("Sidecar HTTPS server failed to start:", err)
 				}
 			}()
 			return nil

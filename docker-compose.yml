@@ -14,6 +14,7 @@ services:
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /proc:/proc:ro
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
+      - ./ssl:/app/ssl
 
   berth-updater:
     image: techarchitect/berth-agent:latest
@@ -25,4 +26,5 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
+      - ./ssl:/app/ssl
     restart: unless-stopped
