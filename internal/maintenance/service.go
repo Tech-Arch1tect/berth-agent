@@ -457,6 +457,11 @@ func (s *Service) getNetworkSummary(ctx context.Context) (*NetworkSummary, error
 
 		created := network.Created
 
+		subnet := ""
+		if len(network.IPAM.Config) > 0 && network.IPAM.Config[0].Subnet != "" {
+			subnet = network.IPAM.Config[0].Subnet
+		}
+
 		networkInfo := NetworkInfo{
 			ID:       network.ID[:12],
 			Name:     network.Name,
@@ -466,6 +471,7 @@ func (s *Service) getNetworkSummary(ctx context.Context) (*NetworkSummary, error
 			Internal: network.Internal,
 			Labels:   network.Labels,
 			Unused:   unused,
+			Subnet:   subnet,
 		}
 		networkInfos = append(networkInfos, networkInfo)
 	}
