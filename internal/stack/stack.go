@@ -23,6 +23,7 @@ type Stack struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
 	ComposeFile string `json:"compose_file"`
+	IsHealthy   bool   `json:"is_healthy"`
 }
 
 type StackDetails struct {
@@ -235,10 +236,13 @@ func (s *Service) ListStacks() ([]Stack, error) {
 		for _, filename := range composeFiles {
 			composePath := filepath.Join(stackPath, filename)
 			if _, err := os.Stat(composePath); err == nil {
+				stackName := entry.Name()
+				isHealthy := s.isStackHealthy(stackName)
 				stack := Stack{
-					Name:        entry.Name(),
+					Name:        stackName,
 					Path:        stackPath,
 					ComposeFile: filename,
+					IsHealthy:   isHealthy,
 				}
 				stacks = append(stacks, stack)
 				break
