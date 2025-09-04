@@ -218,6 +218,28 @@ func (h *Handler) UploadFile(c echo.Context) error {
 		})
 	}
 
+	var mode *string
+	var ownerID *uint32
+	var groupID *uint32
+
+	if modeStr := c.FormValue("mode"); modeStr != "" {
+		mode = &modeStr
+	}
+
+	if ownerStr := c.FormValue("owner_id"); ownerStr != "" {
+		if parsed, err := strconv.ParseUint(ownerStr, 10, 32); err == nil {
+			uid := uint32(parsed)
+			ownerID = &uid
+		}
+	}
+
+	if groupStr := c.FormValue("group_id"); groupStr != "" {
+		if parsed, err := strconv.ParseUint(groupStr, 10, 32); err == nil {
+			gid := uint32(parsed)
+			groupID = &gid
+		}
+	}
+
 	src, err := file.Open()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
@@ -227,7 +249,7 @@ func (h *Handler) UploadFile(c echo.Context) error {
 	}
 	defer src.Close()
 
-	if err := h.service.WriteUploadedFile(stackName, path, src, file.Size); err != nil {
+	if err := h.service.WriteUploadedFile(stackName, path, src, file.Size, mode, ownerID, groupID); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "UPLOAD_FILE_ERROR",
@@ -281,6 +303,26 @@ func (h *Handler) DownloadFile(c echo.Context) error {
 		c.Response().Header().Set("Content-Type", "text/plain")
 		return c.String(http.StatusOK, fileContent.Content)
 	}
+}
+
+func (h *Handler) GetDirectoryStats(c echo.Context) error {
+	stackName := c.Param("stackName")
+	path := c.QueryParam("path")
+
+	if path == "" {
+		path = "."
+	}
+
+	req := DirectoryStatsRequest{Path: path}
+	stats, err := h.service.GetDirectoryStats(stackName, req)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: err.Error(),
+			Code:  "DIRECTORY_STATS_ERROR",
+		})
+	}
+
+	return c.JSON(http.StatusOK, stats)
 }
 
 func (h *Handler) Chmod(c echo.Context) error {

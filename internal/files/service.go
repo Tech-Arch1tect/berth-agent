@@ -203,14 +203,39 @@ func (s *Service) WriteFile(stackName string, req WriteFileRequest) error {
 		return fmt.Errorf("cannot create directory: %w", err)
 	}
 
+	fileMode := os.FileMode(0644)
+	if req.Mode != nil {
+		parsedMode, err := strconv.ParseUint(*req.Mode, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid file mode: %w", err)
+		}
+		fileMode = os.FileMode(parsedMode)
+	}
+
 	tempPath := fullPath + ".tmp"
-	if err := os.WriteFile(tempPath, content, 0644); err != nil {
+	if err := os.WriteFile(tempPath, content, fileMode); err != nil {
 		return fmt.Errorf("cannot write file: %w", err)
 	}
 
 	if err := os.Rename(tempPath, fullPath); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("cannot move file into place: %w", err)
+	}
+
+	if req.OwnerID != nil || req.GroupID != nil {
+		uid := -1
+		gid := -1
+
+		if req.OwnerID != nil {
+			uid = int(*req.OwnerID)
+		}
+		if req.GroupID != nil {
+			gid = int(*req.GroupID)
+		}
+
+		if err := os.Chown(fullPath, uid, gid); err != nil {
+			return fmt.Errorf("cannot change ownership: %w", err)
+		}
 	}
 
 	return nil
@@ -222,11 +247,108 @@ func (s *Service) CreateDirectory(stackName string, req CreateDirectoryRequest) 
 		return err
 	}
 
-	if err := os.MkdirAll(fullPath, 0755); err != nil {
+	dirMode := os.FileMode(0755)
+	if req.Mode != nil {
+		parsedMode, err := strconv.ParseUint(*req.Mode, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid directory mode: %w", err)
+		}
+		dirMode = os.FileMode(parsedMode)
+	}
+
+	if err := os.MkdirAll(fullPath, dirMode); err != nil {
 		return fmt.Errorf("cannot create directory: %w", err)
 	}
 
+	if req.OwnerID != nil || req.GroupID != nil {
+		uid := -1
+		gid := -1
+
+		if req.OwnerID != nil {
+			uid = int(*req.OwnerID)
+		}
+		if req.GroupID != nil {
+			gid = int(*req.GroupID)
+		}
+
+		if err := os.Chown(fullPath, uid, gid); err != nil {
+			return fmt.Errorf("cannot change ownership: %w", err)
+		}
+	}
+
 	return nil
+}
+
+func (s *Service) GetDirectoryStats(stackName string, req DirectoryStatsRequest) (*DirectoryStats, error) {
+	fullPath, err := s.validateStackPath(stackName, req.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read directory: %w", err)
+	}
+
+	ownerCounts := make(map[uint32]int)
+	groupCounts := make(map[uint32]int)
+	modeCounts := make(map[string]int)
+
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+
+		ownerCounts[stat.Uid]++
+		groupCounts[stat.Gid]++
+		modeCounts[fmt.Sprintf("%o", info.Mode().Perm())]++
+	}
+
+	var mostCommonOwner uint32
+	var mostCommonGroup uint32
+	var mostCommonMode string
+	maxOwnerCount := 0
+	maxGroupCount := 0
+	maxModeCount := 0
+
+	for uid, count := range ownerCounts {
+		if count > maxOwnerCount {
+			maxOwnerCount = count
+			mostCommonOwner = uid
+		}
+	}
+
+	for gid, count := range groupCounts {
+		if count > maxGroupCount {
+			maxGroupCount = count
+			mostCommonGroup = gid
+		}
+	}
+
+	for mode, count := range modeCounts {
+		if count > maxModeCount {
+			maxModeCount = count
+			mostCommonMode = mode
+		}
+	}
+
+	ownerName, _ := getUserName(mostCommonOwner)
+	groupName, _ := getGroupName(mostCommonGroup)
+
+	return &DirectoryStats{
+		Path:            req.Path,
+		MostCommonOwner: mostCommonOwner,
+		MostCommonGroup: mostCommonGroup,
+		MostCommonMode:  mostCommonMode,
+		OwnerName:       ownerName,
+		GroupName:       groupName,
+	}, nil
 }
 
 func (s *Service) Delete(stackName string, req DeleteRequest) error {
@@ -384,7 +506,7 @@ func (s *Service) copyDirectory(src, dst string) error {
 	return nil
 }
 
-func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size int64) error {
+func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size int64, mode *string, ownerID *uint32, groupID *uint32) error {
 	fullPath, err := s.validateStackPath(stackName, path)
 	if err != nil {
 		return err
@@ -419,6 +541,32 @@ func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size 
 	if err := os.Rename(tempPath, fullPath); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("cannot move file into place: %w", err)
+	}
+
+	if mode != nil {
+		parsedMode, err := strconv.ParseUint(*mode, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid file mode: %w", err)
+		}
+		if err := os.Chmod(fullPath, os.FileMode(parsedMode)); err != nil {
+			return fmt.Errorf("cannot set file permissions: %w", err)
+		}
+	}
+
+	if ownerID != nil || groupID != nil {
+		uid := -1
+		gid := -1
+
+		if ownerID != nil {
+			uid = int(*ownerID)
+		}
+		if groupID != nil {
+			gid = int(*groupID)
+		}
+
+		if err := os.Chown(fullPath, uid, gid); err != nil {
+			return fmt.Errorf("cannot change ownership: %w", err)
+		}
 	}
 
 	return nil
