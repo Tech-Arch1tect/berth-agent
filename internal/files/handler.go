@@ -282,3 +282,38 @@ func (h *Handler) DownloadFile(c echo.Context) error {
 		return c.String(http.StatusOK, fileContent.Content)
 	}
 }
+
+func (h *Handler) Chmod(c echo.Context) error {
+	stackName := c.Param("stackName")
+
+	var req ChmodRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid request body",
+			Code:  "INVALID_REQUEST",
+		})
+	}
+
+	if req.Path == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "path is required",
+			Code:  "MISSING_PATH",
+		})
+	}
+
+	if req.Mode == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "mode is required",
+			Code:  "MISSING_MODE",
+		})
+	}
+
+	if err := h.service.Chmod(stackName, req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: err.Error(),
+			Code:  "CHMOD_ERROR",
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
+}

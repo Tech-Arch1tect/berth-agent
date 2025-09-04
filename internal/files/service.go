@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -406,4 +407,59 @@ func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size 
 	}
 
 	return nil
+}
+func (s *Service) Chmod(stackName string, req ChmodRequest) error {
+	fullPath, err := s.validateStackPath(stackName, req.Path)
+	if err != nil {
+		return err
+	}
+
+	stat, err := os.Stat(fullPath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("path not found: %s", req.Path)
+	}
+	if err != nil {
+		return fmt.Errorf("cannot stat path: %w", err)
+	}
+
+	mode, err := parseFileMode(req.Mode)
+	if err != nil {
+		return fmt.Errorf("invalid file mode '%s': %w", req.Mode, err)
+	}
+
+	if req.Recursive && stat.IsDir() {
+		return s.chmodRecursive(fullPath, mode)
+	}
+
+	if err := os.Chmod(fullPath, mode); err != nil {
+		return fmt.Errorf("cannot change permissions: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) chmodRecursive(path string, mode os.FileMode) error {
+	return filepath.Walk(path, func(walkPath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if chmodErr := os.Chmod(walkPath, mode); chmodErr != nil {
+			return fmt.Errorf("cannot change permissions for %s: %w", walkPath, chmodErr)
+		}
+
+		return nil
+	})
+}
+
+func parseFileMode(modeStr string) (os.FileMode, error) {
+	if len(modeStr) == 3 || len(modeStr) == 4 {
+		mode, err := strconv.ParseUint(modeStr, 8, 32)
+		if err != nil {
+			return 0, fmt.Errorf("invalid octal mode: %w", err)
+		}
+		return os.FileMode(mode), nil
+	}
+
+	return 0, fmt.Errorf("mode must be 3 or 4 digit octal number (e.g., 755, 0644)")
 }

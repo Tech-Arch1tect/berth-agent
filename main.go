@@ -113,6 +113,7 @@ func RegisterRoutes(
 	api.DELETE("/stacks/:stackName/files/delete", filesHandler.Delete)
 	api.POST("/stacks/:stackName/files/rename", filesHandler.Rename)
 	api.POST("/stacks/:stackName/files/copy", filesHandler.Copy)
+	api.POST("/stacks/:stackName/files/chmod", filesHandler.Chmod)
 	api.GET("/stacks/:stackName/files/download", filesHandler.DownloadFile)
 
 	api.GET("/maintenance/info", maintenanceHandler.GetSystemInfo)
