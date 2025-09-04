@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -98,6 +100,19 @@ func (s *Service) ListDirectory(stackName, path string) (*DirectoryListing, erro
 			IsDirectory: entry.IsDir(),
 			ModTime:     info.ModTime(),
 			Mode:        info.Mode().String(),
+		}
+
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			fileEntry.OwnerID = stat.Uid
+			fileEntry.GroupID = stat.Gid
+
+			if ownerName, err := getUserName(stat.Uid); err == nil {
+				fileEntry.Owner = ownerName
+			}
+
+			if groupName, err := getGroupName(stat.Gid); err == nil {
+				fileEntry.Group = groupName
+			}
 		}
 
 		if !entry.IsDir() {
@@ -452,6 +467,59 @@ func (s *Service) chmodRecursive(path string, mode os.FileMode) error {
 	})
 }
 
+func (s *Service) Chown(stackName string, req ChownRequest) error {
+	fullPath, err := s.validateStackPath(stackName, req.Path)
+	if err != nil {
+		return err
+	}
+
+	stat, err := os.Stat(fullPath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("path not found: %s", req.Path)
+	}
+	if err != nil {
+		return fmt.Errorf("cannot stat path: %w", err)
+	}
+
+	var uid, gid int = -1, -1
+
+	if req.OwnerID != nil {
+		uid = int(*req.OwnerID)
+	}
+
+	if req.GroupID != nil {
+		gid = int(*req.GroupID)
+	}
+
+	if uid == -1 && gid == -1 {
+		return fmt.Errorf("either owner_id or group_id must be specified")
+	}
+
+	if req.Recursive && stat.IsDir() {
+		return s.chownRecursive(fullPath, uid, gid)
+	}
+
+	if err := os.Chown(fullPath, uid, gid); err != nil {
+		return fmt.Errorf("cannot change ownership: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) chownRecursive(path string, uid, gid int) error {
+	return filepath.Walk(path, func(walkPath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if chownErr := os.Chown(walkPath, uid, gid); chownErr != nil {
+			return fmt.Errorf("cannot change ownership for %s: %w", walkPath, chownErr)
+		}
+
+		return nil
+	})
+}
+
 func parseFileMode(modeStr string) (os.FileMode, error) {
 	if len(modeStr) == 3 || len(modeStr) == 4 {
 		mode, err := strconv.ParseUint(modeStr, 8, 32)
@@ -462,4 +530,20 @@ func parseFileMode(modeStr string) (os.FileMode, error) {
 	}
 
 	return 0, fmt.Errorf("mode must be 3 or 4 digit octal number (e.g., 755, 0644)")
+}
+
+func getUserName(uid uint32) (string, error) {
+	u, err := user.LookupId(fmt.Sprintf("%d", uid))
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
+}
+
+func getGroupName(gid uint32) (string, error) {
+	g, err := user.LookupGroupId(fmt.Sprintf("%d", gid))
+	if err != nil {
+		return "", err
+	}
+	return g.Name, nil
 }

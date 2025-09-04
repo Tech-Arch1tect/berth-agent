@@ -114,6 +114,7 @@ func RegisterRoutes(
 	api.POST("/stacks/:stackName/files/rename", filesHandler.Rename)
 	api.POST("/stacks/:stackName/files/copy", filesHandler.Copy)
 	api.POST("/stacks/:stackName/files/chmod", filesHandler.Chmod)
+	api.POST("/stacks/:stackName/files/chown", filesHandler.Chown)
 	api.GET("/stacks/:stackName/files/download", filesHandler.DownloadFile)
 
 	api.GET("/maintenance/info", maintenanceHandler.GetSystemInfo)

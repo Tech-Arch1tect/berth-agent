@@ -317,3 +317,38 @@ func (h *Handler) Chmod(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
+
+func (h *Handler) Chown(c echo.Context) error {
+	stackName := c.Param("stackName")
+
+	var req ChownRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid request body",
+			Code:  "INVALID_REQUEST",
+		})
+	}
+
+	if req.Path == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "path is required",
+			Code:  "MISSING_PATH",
+		})
+	}
+
+	if req.OwnerID == nil && req.GroupID == nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "owner_id or group_id is required",
+			Code:  "MISSING_OWNER_GROUP",
+		})
+	}
+
+	if err := h.service.Chown(stackName, req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: err.Error(),
+			Code:  "CHOWN_ERROR",
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
+}
