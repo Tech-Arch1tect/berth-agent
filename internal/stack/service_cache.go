@@ -197,6 +197,26 @@ func (c *ServiceCountCache) watchLoop() {
 }
 
 func (c *ServiceCountCache) handleFileEvent(event fsnotify.Event) {
+	if event.Op&fsnotify.Create == fsnotify.Create {
+		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+			if filepath.Dir(event.Name) == c.stackLocation {
+				stackName := filepath.Base(event.Name)
+				log.Printf("New stack directory created: %s", stackName)
+
+				if err := c.watcher.Add(event.Name); err != nil {
+					log.Printf("Warning: failed to watch new directory %s: %v", event.Name, err)
+				}
+
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					if err := c.loadStackCount(stackName); err != nil {
+						log.Printf("Failed to load count for new stack %s: %v", stackName, err)
+					}
+				}()
+				return
+			}
+		}
+	}
 
 	if !strings.HasSuffix(event.Name, ".yml") && !strings.HasSuffix(event.Name, ".yaml") {
 		return
