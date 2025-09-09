@@ -435,7 +435,7 @@ func (s *Service) GetContainerInfo(stackName string) (map[string][]Container, er
 func (s *Service) parseComposeServicesAndImages(stackPath, composeFile string) ([]ComposeService, error) {
 	stackName := filepath.Base(stackPath)
 
-	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
@@ -712,7 +712,7 @@ func (s *Service) getComposeNetworks(stackPath string) (map[string]Network, erro
 func (s *Service) parseComposeNetworks(stackPath, composeFile string) (map[string]Network, error) {
 	stackName := filepath.Base(stackPath)
 
-	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
@@ -929,7 +929,7 @@ func (s *Service) getComposeVolumes(stackPath string) (map[string]Volume, error)
 func (s *Service) parseComposeVolumes(stackPath, composeFile string) (map[string]Volume, error) {
 	stackName := filepath.Base(stackPath)
 
-	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
@@ -1276,7 +1276,7 @@ func (s *Service) getComposeEnvironment(stackPath string) (map[string][]ServiceE
 func (s *Service) parseComposeEnvironment(stackPath, composeFile string) (map[string][]ServiceEnvironment, error) {
 	stackName := filepath.Base(stackPath)
 
-	cmd, err := s.commandExec.ExecuteComposeWithFile(stackName, composeFile, "config", "--format", "json")
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compose command: %w", err)
 	}
