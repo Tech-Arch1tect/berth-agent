@@ -231,11 +231,24 @@ func (s *Service) sendMessage(writer io.Writer, msgType StreamMessageType, data 
 }
 
 func (s *Service) sendCompleteMessage(writer io.Writer, success bool, exitCode int) {
-	timestamp := time.Now().Format(time.RFC3339)
-	output := fmt.Sprintf("data: {\"type\":\"complete\",\"success\":%t,\"exitCode\":%d,\"timestamp\":\"%s\"}\n\n",
-		success, exitCode, timestamp)
+	message := StreamMessage{
+		Type:      string(StreamTypeComplete),
+		Data:      "",
+		Timestamp: time.Now(),
+	}
 
-	_, err := writer.Write([]byte(output))
+	messageJSON, err := json.Marshal(map[string]any{
+		"type":      message.Type,
+		"success":   success,
+		"exitCode":  exitCode,
+		"timestamp": message.Timestamp,
+	})
+	if err != nil {
+		return
+	}
+
+	output := fmt.Sprintf("data: %s\n\n", messageJSON)
+	_, err = writer.Write([]byte(output))
 	if err != nil {
 		return
 	}
