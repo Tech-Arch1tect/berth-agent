@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"berth-agent/internal/archive"
 	"errors"
 	"regexp"
 	"slices"
@@ -15,12 +16,14 @@ var (
 )
 
 var validCommands = map[string]bool{
-	"up":      true,
-	"down":    true,
-	"start":   true,
-	"stop":    true,
-	"restart": true,
-	"pull":    true,
+	"up":              true,
+	"down":            true,
+	"start":           true,
+	"stop":            true,
+	"restart":         true,
+	"pull":            true,
+	"create-archive":  true,
+	"extract-archive": true,
 }
 
 var validOptions = map[string]map[string]bool{
@@ -98,11 +101,19 @@ var numericValueRegex = regexp.MustCompile(`^\d+$`)
 var scaleValueRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*=\d+$`)
 
 func ValidateOperationRequest(req OperationRequest) error {
-
 	if !validCommands[req.Command] {
 		return ErrInvalidCommand
 	}
 
+	// Handle archive commands separately
+	if req.Command == "create-archive" {
+		return archive.ValidateCreateOptions(req.Options)
+	}
+	if req.Command == "extract-archive" {
+		return archive.ValidateExtractOptions(req.Options)
+	}
+
+	// Handle Docker commands
 	commandOptions, exists := validOptions[req.Command]
 	if !exists {
 		return ErrInvalidCommand

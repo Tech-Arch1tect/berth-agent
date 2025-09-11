@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"berth-agent/internal/archive"
 	"berth-agent/internal/validation"
 	"bufio"
 	"bytes"
@@ -20,17 +21,19 @@ import (
 )
 
 type Service struct {
-	stackLocation string
-	accessToken   string
-	operations    map[string]*Operation
-	mutex         sync.RWMutex
+	stackLocation  string
+	accessToken    string
+	operations     map[string]*Operation
+	mutex          sync.RWMutex
+	archiveService *archive.Service
 }
 
 func NewService(stackLocation, accessToken string) *Service {
 	return &Service{
-		stackLocation: stackLocation,
-		accessToken:   accessToken,
-		operations:    make(map[string]*Operation),
+		stackLocation:  stackLocation,
+		accessToken:    accessToken,
+		operations:     make(map[string]*Operation),
+		archiveService: archive.NewService(),
 	}
 }
 
@@ -107,6 +110,11 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
 	if err != nil {
 		return fmt.Errorf("invalid stack path: %w", err)
+	}
+
+	// Handle archive operations differently from Docker commands
+	if operation.Request.Command == "create-archive" || operation.Request.Command == "extract-archive" {
+		return s.handleArchiveOperation(ctx, operation, stackPath, writer)
 	}
 
 	cmd := s.buildCommand(operation.Request, stackPath)
@@ -190,6 +198,96 @@ func (s *Service) buildCommand(req OperationRequest, stackPath string) *exec.Cmd
 	}
 
 	return cmd
+}
+
+func (s *Service) handleArchiveOperation(ctx context.Context, operation *Operation, stackPath string, writer io.Writer) error {
+	progressWriter := archive.NewOperationsProgressWriter(writer)
+
+	var err error
+	switch operation.Request.Command {
+	case "create-archive":
+		err = s.handleCreateArchive(ctx, operation, stackPath, progressWriter)
+	case "extract-archive":
+		err = s.handleExtractArchive(ctx, operation, stackPath, progressWriter)
+	default:
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		s.sendMessage(writer, StreamTypeError, fmt.Sprintf("Unknown archive command: %s", operation.Request.Command))
+		return fmt.Errorf("unknown archive command: %s", operation.Request.Command)
+	}
+
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		progressWriter.WriteError(fmt.Sprintf("Archive operation failed: %v", err))
+		return err
+	}
+
+	exitCode := 0
+	s.updateOperationStatus(operation.ID, "completed", &exitCode)
+	progressWriter.WriteStdout("Archive operation completed successfully")
+	s.sendCompleteMessage(writer, true, exitCode)
+
+	return nil
+}
+
+func (s *Service) handleCreateArchive(ctx context.Context, operation *Operation, stackPath string, writer archive.ProgressWriter) error {
+	opts := archive.CreateOptions{
+		Format:      "zip",
+		Compression: "gzip",
+	}
+
+	options := operation.Request.Options
+	for i, opt := range options {
+		switch opt {
+		case "--format":
+			if i+1 < len(options) {
+				opts.Format = options[i+1]
+			}
+		case "--output":
+			if i+1 < len(options) {
+				opts.OutputPath = options[i+1]
+			}
+		case "--include":
+			if i+1 < len(options) {
+				opts.IncludePaths = append(opts.IncludePaths, options[i+1])
+			}
+		case "--exclude":
+			if i+1 < len(options) {
+				opts.ExcludePatterns = append(opts.ExcludePatterns, options[i+1])
+			}
+		case "--compression":
+			if i+1 < len(options) {
+				opts.Compression = options[i+1]
+			}
+		}
+	}
+
+	return s.archiveService.CreateArchive(ctx, stackPath, opts, writer)
+}
+
+func (s *Service) handleExtractArchive(ctx context.Context, operation *Operation, stackPath string, writer archive.ProgressWriter) error {
+	opts := archive.ExtractOptions{
+		DestinationPath: ".",
+	}
+
+	options := operation.Request.Options
+	for i, opt := range options {
+		switch opt {
+		case "--archive":
+			if i+1 < len(options) {
+				opts.ArchivePath = options[i+1]
+			}
+		case "--destination":
+			if i+1 < len(options) {
+				opts.DestinationPath = options[i+1]
+			}
+		case "--overwrite":
+			opts.Overwrite = true
+		case "--create-dirs":
+			opts.CreateDirs = true
+		}
+	}
+
+	return s.archiveService.ExtractArchive(ctx, stackPath, opts, writer)
 }
 
 func (s *Service) streamOutputWithContext(ctx context.Context, reader io.Reader, writer io.Writer, streamType StreamMessageType) {
