@@ -20,10 +20,12 @@ import (
 )
 
 type Stack struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	ComposeFile string `json:"compose_file"`
-	IsHealthy   bool   `json:"is_healthy"`
+	Name              string `json:"name"`
+	Path              string `json:"path"`
+	ComposeFile       string `json:"compose_file"`
+	IsHealthy         bool   `json:"is_healthy"`
+	TotalContainers   int    `json:"total_containers"`
+	RunningContainers int    `json:"running_containers"`
 }
 
 type StackDetails struct {
@@ -238,11 +240,16 @@ func (s *Service) ListStacks() ([]Stack, error) {
 			if _, err := os.Stat(composePath); err == nil {
 				stackName := entry.Name()
 				isHealthy := s.isStackHealthy(stackName)
+
+				totalContainers, runningContainers := s.getStackContainerCounts(stackName)
+
 				stack := Stack{
-					Name:        stackName,
-					Path:        stackPath,
-					ComposeFile: filename,
-					IsHealthy:   isHealthy,
+					Name:              stackName,
+					Path:              stackPath,
+					ComposeFile:       filename,
+					IsHealthy:         isHealthy,
+					TotalContainers:   totalContainers,
+					RunningContainers: runningContainers,
 				}
 				stacks = append(stacks, stack)
 				break
@@ -1625,4 +1632,29 @@ func (s *Service) isStackHealthy(stackName string) bool {
 	}
 
 	return runningServices == expectedCount
+}
+
+func (s *Service) getStackContainerCounts(stackName string) (total int, running int) {
+
+	expectedCount, exists := s.serviceCache.GetServiceCount(stackName)
+	if !exists {
+		return 0, 0
+	}
+
+	containers, err := s.getContainerInfoViaAPI(stackName)
+	if err != nil {
+
+		return expectedCount, 0
+	}
+
+	runningCount := 0
+	for _, containerList := range containers {
+		for _, container := range containerList {
+			if container.State == "running" {
+				runningCount++
+			}
+		}
+	}
+
+	return expectedCount, runningCount
 }
