@@ -162,6 +162,22 @@ func (c *Client) ImageList(ctx context.Context) ([]image.Summary, error) {
 	return images, nil
 }
 
+func (c *Client) ImageInspect(ctx context.Context, imageID string) (image.InspectResponse, error) {
+	imageInfo, _, err := c.cli.ImageInspectWithRaw(ctx, imageID)
+	if err != nil {
+		return image.InspectResponse{}, fmt.Errorf("failed to inspect image %s: %w", imageID, err)
+	}
+	return imageInfo, nil
+}
+
+func (c *Client) ImageHistory(ctx context.Context, imageID string) ([]image.HistoryResponseItem, error) {
+	history, err := c.cli.ImageHistory(ctx, imageID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image history for %s: %w", imageID, err)
+	}
+	return history, nil
+}
+
 func (c *Client) ContainerListAll(ctx context.Context) ([]container.Summary, error) {
 	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {

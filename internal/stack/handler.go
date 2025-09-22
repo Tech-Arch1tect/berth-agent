@@ -120,3 +120,21 @@ func (h *Handler) GetStacksSummary(c echo.Context) error {
 
 	return common.SendSuccess(c, summary)
 }
+
+func (h *Handler) GetContainerImageDetails(c echo.Context) error {
+	stackName := c.Param("name")
+	if stackName == "" {
+		return common.SendBadRequest(c, "stack name is required")
+	}
+
+	if err := validation.ValidateStackName(stackName); err != nil {
+		return common.SendBadRequest(c, "invalid stack name: "+err.Error())
+	}
+
+	imageDetails, err := h.service.GetContainerImageDetails(stackName)
+	if err != nil {
+		return common.SendNotFound(c, err.Error())
+	}
+
+	return common.SendSuccess(c, imageDetails)
+}

@@ -189,6 +189,53 @@ type StackStatistics struct {
 	UnhealthyStacks int `json:"unhealthy_stacks"`
 }
 
+type ContainerImageDetails struct {
+	ContainerName string              `json:"container_name"`
+	ImageID       string              `json:"image_id"`
+	ImageName     string              `json:"image_name"`
+	ImageInfo     ImageInspectInfo    `json:"image_info"`
+	ImageHistory  []ImageHistoryLayer `json:"image_history"`
+}
+
+type ImageInspectInfo struct {
+	Architecture  string      `json:"architecture"`
+	OS            string      `json:"os"`
+	Size          int64       `json:"size"`
+	VirtualSize   int64       `json:"virtual_size"`
+	Author        string      `json:"author"`
+	Created       string      `json:"created"`
+	DockerVersion string      `json:"docker_version"`
+	Config        ImageConfig `json:"config"`
+	RootFS        RootFS      `json:"rootfs"`
+	Parent        string      `json:"parent,omitempty"`
+	RepoTags      []string    `json:"repo_tags,omitempty"`
+	RepoDigests   []string    `json:"repo_digests,omitempty"`
+}
+
+type ImageConfig struct {
+	User         string              `json:"user,omitempty"`
+	Env          []string            `json:"env,omitempty"`
+	Cmd          []string            `json:"cmd,omitempty"`
+	Entrypoint   []string            `json:"entrypoint,omitempty"`
+	WorkingDir   string              `json:"working_dir,omitempty"`
+	ExposedPorts map[string]struct{} `json:"exposed_ports,omitempty"`
+	Labels       map[string]string   `json:"labels,omitempty"`
+}
+
+type RootFS struct {
+	Type   string   `json:"type"`
+	Layers []string `json:"layers,omitempty"`
+}
+
+type ImageHistoryLayer struct {
+	ID        string   `json:"id"`
+	Created   int64    `json:"created"`
+	CreatedBy string   `json:"created_by"`
+	Size      int64    `json:"size"`
+	Comment   string   `json:"comment,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+}
+
 type Service struct {
 	stackLocation string
 	commandExec   *docker.CommandExecutor
@@ -1657,4 +1704,97 @@ func (s *Service) getStackContainerCounts(stackName string) (total int, running 
 	}
 
 	return expectedCount, runningCount
+}
+
+func (s *Service) GetContainerImageDetails(stackName string) ([]ContainerImageDetails, error) {
+	ctx := context.Background()
+
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stack name '%s': %w", stackName, err)
+	}
+
+	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("stack '%s' not found", stackName)
+	}
+
+	containers, err := s.getContainerInfoViaAPI(stackName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container info: %w", err)
+	}
+
+	var imageDetails []ContainerImageDetails
+
+	for _, containerList := range containers {
+		for _, container := range containerList {
+			if container.Image == "" {
+				continue
+			}
+
+			imageInfo, err := s.dockerClient.ImageInspect(ctx, container.Image)
+			if err != nil {
+				log.Printf("Failed to inspect image %s for container %s: %v", container.Image, container.Name, err)
+				continue
+			}
+
+			history, err := s.dockerClient.ImageHistory(ctx, container.Image)
+			if err != nil {
+				log.Printf("Failed to get image history for %s: %v", container.Image, err)
+				history = nil
+			}
+
+			var historyLayers []ImageHistoryLayer
+			for _, layer := range history {
+				historyLayers = append(historyLayers, ImageHistoryLayer{
+					ID:        layer.ID,
+					Created:   layer.Created,
+					CreatedBy: layer.CreatedBy,
+					Size:      layer.Size,
+					Comment:   layer.Comment,
+					Tags:      layer.Tags,
+				})
+			}
+
+			exposedPorts := make(map[string]struct{})
+			if imageInfo.Config.ExposedPorts != nil {
+				for port := range imageInfo.Config.ExposedPorts {
+					exposedPorts[port] = struct{}{}
+				}
+			}
+
+			imageDetails = append(imageDetails, ContainerImageDetails{
+				ContainerName: container.Name,
+				ImageID:       imageInfo.ID,
+				ImageName:     container.Image,
+				ImageInfo: ImageInspectInfo{
+					Architecture:  imageInfo.Architecture,
+					OS:            imageInfo.Os,
+					Size:          imageInfo.Size,
+					VirtualSize:   imageInfo.Size,
+					Author:        imageInfo.Author,
+					Created:       imageInfo.Created,
+					DockerVersion: imageInfo.DockerVersion,
+					Parent:        imageInfo.Parent,
+					RepoTags:      imageInfo.RepoTags,
+					RepoDigests:   imageInfo.RepoDigests,
+					Config: ImageConfig{
+						User:         imageInfo.Config.User,
+						Env:          imageInfo.Config.Env,
+						Cmd:          imageInfo.Config.Cmd,
+						Entrypoint:   imageInfo.Config.Entrypoint,
+						WorkingDir:   imageInfo.Config.WorkingDir,
+						ExposedPorts: exposedPorts,
+						Labels:       imageInfo.Config.Labels,
+					},
+					RootFS: RootFS{
+						Type:   imageInfo.RootFS.Type,
+						Layers: imageInfo.RootFS.Layers,
+					},
+				},
+				ImageHistory: historyLayers,
+			})
+		}
+	}
+
+	return imageDetails, nil
 }

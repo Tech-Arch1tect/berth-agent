@@ -97,6 +97,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:name/networks", stackHandler.GetStackNetworks)
 	api.GET("/stacks/:name/volumes", stackHandler.GetStackVolumes)
 	api.GET("/stacks/:name/environment", stackHandler.GetStackEnvironmentVariables)
+	api.GET("/stacks/:name/images", stackHandler.GetContainerImageDetails)
 	api.GET("/stacks/:name/stats", statsHandler.GetStackStats)
 	api.GET("/stacks/:stackName/logs", logsHandler.GetStackLogs)
 	api.GET("/stacks/:stackName/containers/:containerName/logs", logsHandler.GetContainerLogs)
