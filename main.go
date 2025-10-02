@@ -6,6 +6,7 @@ import (
 	"berth-agent/internal/docker"
 	"berth-agent/internal/files"
 	"berth-agent/internal/health"
+	"berth-agent/internal/logging"
 	"berth-agent/internal/logs"
 	"berth-agent/internal/maintenance"
 	"berth-agent/internal/operations"
@@ -35,6 +36,7 @@ func main() {
 func runAgent() {
 	fx.New(
 		config.Module,
+		logging.Module,
 		ssl.Module,
 		stack.Module,
 		stats.Module,
@@ -59,6 +61,7 @@ func runAgent() {
 func runSidecar() {
 	fx.New(
 		config.Module,
+		logging.Module,
 		ssl.Module,
 		sidecar.Module,
 		fx.Provide(NewSidecarEcho),
@@ -67,10 +70,10 @@ func runSidecar() {
 	).Run()
 }
 
-func NewEcho() *echo.Echo {
+func NewEcho(loggingService *logging.Service) *echo.Echo {
 	e := echo.New()
-	e.Use(echomiddleware.Logger())
 	e.Use(echomiddleware.Recover())
+	e.Use(logging.RequestLoggingMiddleware(loggingService))
 	return e
 }
 
@@ -178,10 +181,10 @@ func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config, certManager 
 	})
 }
 
-func NewSidecarEcho() *echo.Echo {
+func NewSidecarEcho(loggingService *logging.Service) *echo.Echo {
 	e := echo.New()
-	e.Use(echomiddleware.Logger())
 	e.Use(echomiddleware.Recover())
+	e.Use(logging.RequestLoggingMiddleware(loggingService))
 	return e
 }
 

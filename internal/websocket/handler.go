@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"berth-agent/internal/auth"
 	"berth-agent/internal/common"
 	"strings"
 
@@ -20,15 +21,18 @@ func NewHandler(hub *Hub, accessToken string) *Handler {
 }
 
 func (h *Handler) HandleAgentWebSocket(c echo.Context) error {
-	auth := c.Request().Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
+	authHeader := c.Request().Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		auth.SetAuthFailure(c, "Bearer token required")
 		return common.SendUnauthorized(c, "Bearer token required")
 	}
 
-	token := strings.TrimPrefix(auth, "Bearer ")
+	token := strings.TrimPrefix(authHeader, "Bearer ")
 	if token != h.accessToken {
+		auth.SetAuthFailure(c, "Invalid token")
 		return common.SendUnauthorized(c, "Invalid token")
 	}
 
+	auth.SetAuthSuccess(c, token)
 	return h.hub.ServeWebSocket(c, token)
 }

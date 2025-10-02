@@ -1,14 +1,18 @@
 package terminal
 
 import (
+	"berth-agent/internal/logging"
 	"context"
 
+	"github.com/docker/docker/client"
 	"go.uber.org/fx"
 )
 
 func Module() fx.Option {
 	return fx.Module("terminal",
-		fx.Provide(NewHandler),
+		fx.Provide(func(dockerClient *client.Client, auditLog *logging.Service) *Handler {
+			return NewHandler(dockerClient, auditLog)
+		}),
 		fx.Invoke(registerLifecycle),
 	)
 }

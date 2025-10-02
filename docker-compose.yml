@@ -15,6 +15,7 @@ services:
       - /proc:/proc:ro
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
       - ./ssl:/app/ssl
+      - ./logs/agent/:/var/log/berth-agent/
 
   berth-updater:
     image: techarchitect/berth-agent:latest
@@ -27,4 +28,5 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
       - ./ssl:/app/ssl
+      - ./logs/sidecar/:/var/log/berth-agent/
     restart: unless-stopped

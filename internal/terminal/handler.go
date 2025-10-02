@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"berth-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 type Handler struct {
 	manager      *Manager
 	dockerClient *client.Client
+	auditLog     *logging.Service
 }
 
 type TerminalRequest struct {
@@ -37,10 +39,11 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func NewHandler(dockerClient *client.Client) *Handler {
+func NewHandler(dockerClient *client.Client, auditLog *logging.Service) *Handler {
 	return &Handler{
 		manager:      NewManager(dockerClient),
 		dockerClient: dockerClient,
+		auditLog:     auditLog,
 	}
 }
 
@@ -54,6 +57,8 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			"error": "Authorization header required",
 		})
 	}
+
+	c.Set("auth_status", "pending")
 
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
@@ -113,6 +118,8 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			}
 
 			sessionCreated = true
+
+			h.logTerminalSession(c, req, session.ID, true, "")
 
 			session.SetOutputCallback(func(output []byte) {
 				event := ws.TerminalOutputEvent{
@@ -273,6 +280,41 @@ func (h *Handler) validateContainerStackMatch(containerID, expectedStackName str
 	}
 
 	return nil
+}
+
+func (h *Handler) logTerminalSession(c echo.Context, req TerminalRequest, sessionID string, success bool, errorMsg string) {
+	if h.auditLog == nil {
+		return
+	}
+
+	entry := logging.NewRequestLogEntry()
+	entry.RequestID = c.Response().Header().Get("X-Request-ID")
+	entry.Method = "WEBSOCKET"
+	entry.Path = "/ws/terminal"
+	entry.SourceIP = c.RealIP()
+	entry.UserAgent = c.Request().UserAgent()
+	entry.StackName = req.StackName
+	entry.Metadata["action"] = "terminal_session_created"
+	entry.Metadata["session_id"] = sessionID
+	entry.Metadata["service_name"] = req.ServiceName
+
+	if req.ContainerName != "" {
+		entry.ContainerName = req.ContainerName
+	}
+
+	if authTokenHash, ok := c.Get("auth_token_hash").(string); ok {
+		entry.AuthTokenHash = authTokenHash
+	}
+	entry.AuthStatus = "success"
+
+	if success {
+		entry.StatusCode = 200
+	} else {
+		entry.StatusCode = 500
+		entry.Error = errorMsg
+	}
+
+	h.auditLog.LogRequest(entry)
 }
 
 func (h *Handler) sendError(conn *websocket.Conn, message, details string) {

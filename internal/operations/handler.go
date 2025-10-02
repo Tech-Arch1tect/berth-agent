@@ -38,6 +38,14 @@ func (h *Handler) StartOperation(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid operation request: "+err.Error())
 	}
 
+	c.Set("operation_command", req.Command)
+	if len(req.Services) > 0 {
+		c.Set("operation_services", req.Services)
+	}
+	if len(req.Options) > 0 {
+		c.Set("operation_options", req.Options)
+	}
+
 	operationID, err := h.service.StartOperation(c.Request().Context(), stackName, req)
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
