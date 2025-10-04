@@ -117,8 +117,24 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		return s.handleArchiveOperation(ctx, operation, stackPath, writer)
 	}
 
+	var tempDockerConfig string
+	if len(operation.Request.RegistryCredentials) > 0 {
+		var err error
+		tempDockerConfig, err = s.createTempDockerConfig(ctx, operation.Request.RegistryCredentials, writer)
+		if err != nil {
+			s.sendMessage(writer, StreamTypeError, fmt.Sprintf("Registry authentication failed: %v", err))
+			s.updateOperationStatus(operationID, "failed", nil)
+			return err
+		}
+		defer os.RemoveAll(tempDockerConfig)
+	}
+
 	cmd := s.buildCommand(operation.Request, stackPath)
 	cmd.Dir = stackPath
+
+	if tempDockerConfig != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("DOCKER_CONFIG=%s", tempDockerConfig))
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -435,4 +451,45 @@ func (s *Service) updateOperationStatus(operationID, status string, exitCode *in
 		op.Status = status
 		op.ExitCode = exitCode
 	}
+}
+
+func (s *Service) createTempDockerConfig(ctx context.Context, credentials []RegistryCredential, writer io.Writer) (string, error) {
+
+	tempDir, err := os.MkdirTemp("", "berth-docker-config-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp docker config directory: %w", err)
+	}
+
+	if err := os.Chmod(tempDir, 0700); err != nil {
+		os.RemoveAll(tempDir)
+		return "", fmt.Errorf("failed to set permissions on temp docker config: %w", err)
+	}
+
+	for _, cred := range credentials {
+		s.sendMessage(writer, StreamTypeProgress, fmt.Sprintf("Authenticating to %s...", cred.Registry))
+
+		cmd := exec.CommandContext(ctx, "docker", "login", cred.Registry, "-u", cred.Username, "--password-stdin")
+		cmd.Env = []string{
+			fmt.Sprintf("DOCKER_CONFIG=%s", tempDir),
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			"HOME=/tmp",
+		}
+		cmd.Stdin = strings.NewReader(cred.Password)
+
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			errorMsg := stderr.String()
+			if errorMsg == "" {
+				errorMsg = err.Error()
+			}
+			os.RemoveAll(tempDir)
+			return "", fmt.Errorf("docker login to %s failed: %s", cred.Registry, errorMsg)
+		}
+
+		s.sendMessage(writer, StreamTypeProgress, fmt.Sprintf("Successfully authenticated to %s", cred.Registry))
+	}
+
+	return tempDir, nil
 }
