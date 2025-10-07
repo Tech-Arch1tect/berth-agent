@@ -39,6 +39,10 @@ func (e *Editor) ApplyChanges(stackName string, changes ComposeChanges) error {
 		return fmt.Errorf("failed to apply image updates: %w", err)
 	}
 
+	if err := e.applyServicePortUpdates(&composeData, changes.ServicePortUpdates); err != nil {
+		return fmt.Errorf("failed to apply port updates: %w", err)
+	}
+
 	output, err := yaml.Marshal(&composeData)
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated compose file: %w", err)
@@ -113,6 +117,103 @@ func (e *Editor) applyServiceImageUpdates(root *yaml.Node, updates []ServiceImag
 			if err := e.updateNodeValue(serviceNode, "image", newImage); err != nil {
 				return fmt.Errorf("failed to update image tag for service '%s': %w", update.ServiceName, err)
 			}
+		}
+	}
+
+	return nil
+}
+
+func (e *Editor) applyServicePortUpdates(root *yaml.Node, updates []ServicePortUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	servicesNode, err := e.findServicesNode(root)
+	if err != nil {
+		return err
+	}
+
+	for _, update := range updates {
+		serviceNode, err := e.findServiceNode(servicesNode, update.ServiceName)
+		if err != nil {
+			return fmt.Errorf("service '%s' not found: %w", update.ServiceName, err)
+		}
+
+		if len(update.Ports) == 0 {
+			if err := e.removeServiceField(serviceNode, "ports"); err != nil {
+				return fmt.Errorf("failed to remove ports for service '%s': %w", update.ServiceName, err)
+			}
+			continue
+		}
+
+		if err := e.setServiceSequenceField(serviceNode, "ports", update.Ports); err != nil {
+			return fmt.Errorf("failed to update ports for service '%s': %w", update.ServiceName, err)
+		}
+	}
+
+	return nil
+}
+
+func (e *Editor) setServiceSequenceField(serviceNode *yaml.Node, key string, values []string) error {
+	if serviceNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("service node is not a mapping")
+	}
+
+	for i := 0; i < len(serviceNode.Content); i += 2 {
+		if serviceNode.Content[i].Value == key {
+			target := serviceNode.Content[i+1]
+			target.Kind = yaml.SequenceNode
+			target.Tag = "!!seq"
+			target.Content = target.Content[:0]
+			for _, value := range values {
+				trimmed := strings.TrimSpace(value)
+				if trimmed == "" {
+					continue
+				}
+				target.Content = append(target.Content, &yaml.Node{
+					Kind:  yaml.ScalarNode,
+					Tag:   "!!str",
+					Value: trimmed,
+				})
+			}
+			return nil
+		}
+	}
+
+	keyNode := &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Value: key,
+	}
+	seqNode := &yaml.Node{
+		Kind: yaml.SequenceNode,
+		Tag:  "!!seq",
+	}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		seqNode.Content = append(seqNode.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: trimmed,
+		})
+	}
+
+	serviceNode.Content = append(serviceNode.Content, keyNode, seqNode)
+
+	return nil
+}
+
+func (e *Editor) removeServiceField(serviceNode *yaml.Node, key string) error {
+	if serviceNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("service node is not a mapping")
+	}
+
+	for i := 0; i < len(serviceNode.Content); i += 2 {
+		if serviceNode.Content[i].Value == key {
+			serviceNode.Content = append(serviceNode.Content[:i], serviceNode.Content[i+2:]...)
+			return nil
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ type StackDetails struct {
 type ComposeService struct {
 	Name       string      `json:"name"`
 	Image      string      `json:"image,omitempty"`
+	Ports      []string    `json:"ports,omitempty"`
 	Containers []Container `json:"containers"`
 }
 
@@ -516,6 +518,27 @@ func (s *Service) parseComposeServicesAndImages(stackPath, composeFile string) (
 				if image, ok := serviceConfigMap["image"].(string); ok {
 					service.Image = image
 				}
+
+				if rawPorts, ok := serviceConfigMap["ports"]; ok {
+					switch typed := rawPorts.(type) {
+					case []any:
+						for _, entry := range typed {
+							if mapping, ok := parseComposePortEntry(entry); ok {
+								service.Ports = append(service.Ports, mapping)
+							}
+						}
+					case []string:
+						for _, entry := range typed {
+							if trimmed := strings.TrimSpace(entry); trimmed != "" {
+								service.Ports = append(service.Ports, trimmed)
+							}
+						}
+					case map[string]any:
+						if mapping, ok := composePortMapToString(typed); ok {
+							service.Ports = append(service.Ports, mapping)
+						}
+					}
+				}
 			}
 
 			services = append(services, service)
@@ -523,6 +546,97 @@ func (s *Service) parseComposeServicesAndImages(stackPath, composeFile string) (
 	}
 
 	return services, nil
+}
+
+func parseComposePortEntry(entry any) (string, bool) {
+	switch value := entry.(type) {
+	case string:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return "", false
+		}
+		return trimmed, true
+	case map[string]any:
+		return composePortMapToString(value)
+	default:
+		return "", false
+	}
+}
+
+func composePortMapToString(entry map[string]any) (string, bool) {
+	target, ok := extractComposePortNumber(entry, "target")
+	if !ok {
+		target, ok = extractComposePortNumber(entry, "target_port")
+	}
+	if !ok || target <= 0 {
+		return "", false
+	}
+
+	published, _ := extractComposePortNumber(entry, "published")
+	if published == 0 {
+		published, _ = extractComposePortNumber(entry, "published_port")
+	}
+
+	hostIP := ""
+	if rawHostIP, ok := entry["host_ip"].(string); ok {
+		hostIP = strings.TrimSpace(rawHostIP)
+	}
+
+	protocol := "tcp"
+	if rawProtocol, ok := entry["protocol"].(string); ok {
+		if trimmed := strings.TrimSpace(strings.ToLower(rawProtocol)); trimmed != "" {
+			protocol = trimmed
+		}
+	}
+
+	base := ""
+	if published > 0 {
+		if hostIP != "" {
+			base = fmt.Sprintf("%s:%d:%d", hostIP, published, target)
+		} else {
+			base = fmt.Sprintf("%d:%d", published, target)
+		}
+	} else {
+		base = fmt.Sprintf("%d", target)
+	}
+
+	if protocol != "" && protocol != "tcp" {
+		base = fmt.Sprintf("%s/%s", base, protocol)
+	}
+
+	return base, true
+}
+
+func extractComposePortNumber(entry map[string]any, key string) (int, bool) {
+	value, ok := entry[key]
+	if !ok {
+		return 0, false
+	}
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return 0, false
+		}
+		if parsed, err := strconv.Atoi(trimmed); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Container, error) {
