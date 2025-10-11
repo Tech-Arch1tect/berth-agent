@@ -376,17 +376,27 @@ func (s *Service) sendCompleteMessage(writer io.Writer, success bool, exitCode i
 }
 
 func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation, writer io.Writer) error {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		return fmt.Errorf("invalid stack path: %w", err)
+	}
+
+	s.sendMessage(writer, StreamTypeStdout, "Detected self-operation, forwarding to sidecar updater...")
+	s.sendMessage(writer, StreamTypeStdout, fmt.Sprintf("Sidecar will handle %s operation independently", operation.Request.Command))
+	s.sendMessage(writer, StreamTypeStdout, "Agent update will continue in background after this connection closes")
+
+	exitCode := 0
+	s.updateOperationStatus(operation.ID, "completed", &exitCode)
+	s.sendCompleteMessage(writer, true, exitCode)
+
+	time.Sleep(500 * time.Millisecond)
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
-	}
-
-	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
-	if err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
-		return fmt.Errorf("invalid stack path: %w", err)
 	}
 
 	payload := map[string]any{
@@ -398,13 +408,11 @@ func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation,
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
 	if err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -413,32 +421,13 @@ func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
 		return fmt.Errorf("failed to connect to sidecar: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		s.updateOperationStatus(operation.ID, "failed", nil)
 		return fmt.Errorf("sidecar returned status: %d", resp.StatusCode)
 	}
-
-	var sidecarResp map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&sidecarResp); err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
-		return fmt.Errorf("failed to parse sidecar response: %w", err)
-	}
-
-	s.sendMessage(writer, StreamTypeStdout, "Detected self-operation, forwarding to sidecar updater...")
-	if message, ok := sidecarResp["message"]; ok {
-		s.sendMessage(writer, StreamTypeStdout, message)
-	}
-	s.sendMessage(writer, StreamTypeStdout, fmt.Sprintf("Sidecar will handle %s operation independently", operation.Request.Command))
-	s.sendMessage(writer, StreamTypeStdout, "Agent update will continue in background after this connection closes")
-
-	exitCode := 0
-	s.updateOperationStatus(operation.ID, "completed", &exitCode)
-	s.sendCompleteMessage(writer, true, exitCode)
 
 	return nil
 }
