@@ -24,6 +24,7 @@ type Service struct {
 	stackLocation  string
 	accessToken    string
 	operations     map[string]*Operation
+	activeStreams  map[string]string
 	mutex          sync.RWMutex
 	archiveService *archive.Service
 }
@@ -33,6 +34,7 @@ func NewService(stackLocation, accessToken string) *Service {
 		stackLocation:  stackLocation,
 		accessToken:    accessToken,
 		operations:     make(map[string]*Operation),
+		activeStreams:  make(map[string]string),
 		archiveService: archive.NewService(),
 	}
 }
@@ -102,6 +104,23 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 	if !exists {
 		return fmt.Errorf("operation not found")
 	}
+
+	s.mutex.Lock()
+	if existingOpID, exists := s.activeStreams[operation.StackName]; exists {
+		s.mutex.Unlock()
+		errorMsg := fmt.Sprintf("Another operation (%s) is already running on stack '%s'", existingOpID, operation.StackName)
+		s.sendMessage(writer, StreamTypeError, errorMsg)
+		s.updateOperationStatus(operationID, "failed", nil)
+		return fmt.Errorf("%s", errorMsg)
+	}
+	s.activeStreams[operation.StackName] = operationID
+	s.mutex.Unlock()
+
+	defer func() {
+		s.mutex.Lock()
+		delete(s.activeStreams, operation.StackName)
+		s.mutex.Unlock()
+	}()
 
 	if operation.IsSelfOp {
 		return s.handleSelfOperation(ctx, operation, writer)
