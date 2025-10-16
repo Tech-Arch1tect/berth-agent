@@ -191,14 +191,6 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 		}
 	}()
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		healthCheck := []byte("echo 'Terminal Ready'\r")
-		if err := session.Write(healthCheck); err != nil {
-			log.Printf("Terminal: Health check failed for session %s: %v", sessionID, err)
-		}
-	}()
-
 	m.sessions[sessionID] = session
 	return session, nil
 }
