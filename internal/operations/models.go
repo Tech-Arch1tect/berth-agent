@@ -42,11 +42,12 @@ type CompleteMessage struct {
 }
 
 type Operation struct {
-	ID        string
-	StackName string
-	Request   OperationRequest
-	StartTime time.Time
-	Status    string
-	ExitCode  *int
-	IsSelfOp  bool
+	ID          string
+	StackName   string
+	Request     OperationRequest
+	StartTime   time.Time
+	Status      string
+	ExitCode    *int
+	IsSelfOp    bool
+	Broadcaster *Broadcaster
 }

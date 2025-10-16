@@ -21,26 +21,25 @@ import (
 )
 
 type Service struct {
-	stackLocation  string
-	accessToken    string
-	operations     map[string]*Operation
-	activeStreams  map[string]string
-	mutex          sync.RWMutex
-	archiveService *archive.Service
+	stackLocation    string
+	accessToken      string
+	operations       map[string]*Operation
+	activeOperations map[string]string
+	mutex            sync.RWMutex
+	archiveService   *archive.Service
 }
 
 func NewService(stackLocation, accessToken string) *Service {
 	return &Service{
-		stackLocation:  stackLocation,
-		accessToken:    accessToken,
-		operations:     make(map[string]*Operation),
-		activeStreams:  make(map[string]string),
-		archiveService: archive.NewService(),
+		stackLocation:    stackLocation,
+		accessToken:      accessToken,
+		operations:       make(map[string]*Operation),
+		activeOperations: make(map[string]string),
+		archiveService:   archive.NewService(),
 	}
 }
 
 func (s *Service) StartOperation(ctx context.Context, stackName string, req OperationRequest) (string, error) {
-
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
 	if err != nil {
 		return "", fmt.Errorf("invalid stack path: %w", err)
@@ -50,25 +49,33 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 		return "", fmt.Errorf("stack '%s' not found", stackName)
 	}
 
-	// Block stack-wide operations on berth-agent stack to prevent sidecar updating itself
 	if stackName == "berth-agent" && len(req.Services) == 0 {
 		return "", fmt.Errorf("stack-wide operations are not supported for berth-agent stack - please target specific services only")
+	}
+
+	s.mutex.Lock()
+	if existingOpID, exists := s.activeOperations[stackName]; exists {
+		s.mutex.Unlock()
+		return "", fmt.Errorf("another operation (%s) is already running on stack '%s'", existingOpID, stackName)
 	}
 
 	operationID := uuid.New().String()
 	isSelfOp := s.isSelfOperation(stackName, req)
 
+	broadcaster := NewBroadcaster(operationID)
+
 	operation := &Operation{
-		ID:        operationID,
-		StackName: stackName,
-		Request:   req,
-		StartTime: time.Now(),
-		Status:    "running",
-		IsSelfOp:  isSelfOp,
+		ID:          operationID,
+		StackName:   stackName,
+		Request:     req,
+		StartTime:   time.Now(),
+		Status:      "running",
+		IsSelfOp:    isSelfOp,
+		Broadcaster: broadcaster,
 	}
 
-	s.mutex.Lock()
 	s.operations[operationID] = operation
+	s.activeOperations[stackName] = operationID
 	s.mutex.Unlock()
 
 	return operationID, nil
@@ -79,12 +86,10 @@ func (s *Service) isSelfOperation(stackName string, req OperationRequest) bool {
 		return false
 	}
 
-	// Only "up" and "restart" operations need sidecar handling
 	if req.Command != "up" && req.Command != "restart" {
 		return false
 	}
 
-	// Only consider it a self-operation if targeting the berth-agent service specifically
 	if len(req.Services) == 1 && req.Services[0] == "berth-agent" {
 		return true
 	}
@@ -105,43 +110,63 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		return fmt.Errorf("operation not found")
 	}
 
-	s.mutex.Lock()
-	if existingOpID, exists := s.activeStreams[operation.StackName]; exists {
-		s.mutex.Unlock()
+	if operation.Broadcaster == nil {
+		return fmt.Errorf("operation broadcaster not initialized")
+	}
+
+	s.mutex.RLock()
+	if existingOpID, exists := s.activeOperations[operation.StackName]; exists && existingOpID != operationID {
+		s.mutex.RUnlock()
 		errorMsg := fmt.Sprintf("Another operation (%s) is already running on stack '%s'", existingOpID, operation.StackName)
-		s.sendMessage(writer, StreamTypeError, errorMsg)
-		s.updateOperationStatus(operationID, "failed", nil)
+		operation.Broadcaster.BroadcastError(errorMsg)
 		return fmt.Errorf("%s", errorMsg)
 	}
-	s.activeStreams[operation.StackName] = operationID
-	s.mutex.Unlock()
+	s.mutex.RUnlock()
+
+	subscriberID := fmt.Sprintf("sub-%d", time.Now().UnixNano())
+
+	err := operation.Broadcaster.Subscribe(subscriberID, writer)
+	if err != nil {
+		return err
+	}
+	defer operation.Broadcaster.Unsubscribe(subscriberID)
+
+	if operation.Broadcaster.IsStarted() {
+
+		s.waitForCompletion(ctx, operation)
+		return nil
+	}
+
+	operation.Broadcaster.MarkStarted()
 
 	defer func() {
 		s.mutex.Lock()
-		delete(s.activeStreams, operation.StackName)
+		if currentOpID, exists := s.activeOperations[operation.StackName]; exists && currentOpID == operationID {
+			delete(s.activeOperations, operation.StackName)
+		}
 		s.mutex.Unlock()
 	}()
 
 	if operation.IsSelfOp {
-		return s.handleSelfOperation(ctx, operation, writer)
+		return s.handleSelfOperationWithBroadcast(ctx, operation)
 	}
 
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
 	if err != nil {
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Invalid stack path: %v", err))
 		return fmt.Errorf("invalid stack path: %w", err)
 	}
 
-	// Handle archive operations differently from Docker commands
 	if operation.Request.Command == "create-archive" || operation.Request.Command == "extract-archive" {
-		return s.handleArchiveOperation(ctx, operation, stackPath, writer)
+		return s.handleArchiveOperationWithBroadcast(ctx, operation, stackPath)
 	}
 
 	var tempDockerConfig string
 	if len(operation.Request.RegistryCredentials) > 0 {
 		var err error
-		tempDockerConfig, err = s.createTempDockerConfig(ctx, operation.Request.RegistryCredentials, writer)
+		tempDockerConfig, err = s.createTempDockerConfigWithBroadcast(ctx, operation.Request.RegistryCredentials, operation.Broadcaster)
 		if err != nil {
-			s.sendMessage(writer, StreamTypeError, fmt.Sprintf("Registry authentication failed: %v", err))
+			operation.Broadcaster.BroadcastError(fmt.Sprintf("Registry authentication failed: %v", err))
 			s.updateOperationStatus(operationID, "failed", nil)
 			return err
 		}
@@ -157,16 +182,18 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to create stdout pipe: %v", err))
 		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to create stderr pipe: %v", err))
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		s.sendMessage(writer, StreamTypeError, fmt.Sprintf("Failed to start command: %v", err))
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to start command: %v", err))
 		return err
 	}
 
@@ -175,12 +202,12 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		s.streamOutputWithContext(ctx, stdout, writer, StreamTypeStdout)
+		s.streamOutputToBroadcaster(ctx, stdout, operation.Broadcaster, StreamTypeStdout)
 	}()
 
 	go func() {
 		defer wg.Done()
-		s.streamOutputWithContext(ctx, stderr, writer, StreamTypeStderr)
+		s.streamOutputToBroadcaster(ctx, stderr, operation.Broadcaster, StreamTypeStderr)
 	}()
 
 	wg.Wait()
@@ -189,20 +216,174 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode := exitError.ExitCode()
 			s.updateOperationStatus(operationID, "completed", &exitCode)
-			s.sendCompleteMessage(writer, false, exitCode)
+			operation.Broadcaster.BroadcastComplete(false, exitCode)
 		} else {
 			s.updateOperationStatus(operationID, "failed", nil)
-			s.sendMessage(writer, StreamTypeError, fmt.Sprintf("Command execution error: %v", err))
+			operation.Broadcaster.BroadcastError(fmt.Sprintf("Command execution error: %v", err))
 		}
 	} else {
 		exitCode := 0
 		s.updateOperationStatus(operationID, "completed", &exitCode)
-		s.sendCompleteMessage(writer, true, exitCode)
+		operation.Broadcaster.BroadcastComplete(true, exitCode)
 	}
 
 	time.Sleep(2 * time.Second)
 
 	return nil
+}
+
+func (s *Service) waitForCompletion(ctx context.Context, operation *Operation) error {
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			if operation.Broadcaster.IsCompleted() {
+				return nil
+			}
+		}
+	}
+}
+
+func (s *Service) streamOutputToBroadcaster(ctx context.Context, reader io.Reader, broadcaster *Broadcaster, streamType StreamMessageType) {
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			line := scanner.Text()
+			broadcaster.Broadcast(streamType, line)
+		}
+	}
+}
+
+func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operation *Operation) error {
+	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Invalid stack path: %v", err))
+		return fmt.Errorf("invalid stack path: %w", err)
+	}
+
+	operation.Broadcaster.Broadcast(StreamTypeStdout, "Detected self-operation, forwarding to sidecar updater...")
+	operation.Broadcaster.Broadcast(StreamTypeStdout, fmt.Sprintf("Sidecar will handle %s operation independently", operation.Request.Command))
+	operation.Broadcaster.Broadcast(StreamTypeStdout, "Agent update will continue in background after this connection closes")
+
+	exitCode := 0
+	s.updateOperationStatus(operation.ID, "completed", &exitCode)
+	operation.Broadcaster.BroadcastComplete(true, exitCode)
+
+	time.Sleep(500 * time.Millisecond)
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	payload := map[string]any{
+		"command":    operation.Request.Command,
+		"options":    operation.Request.Options,
+		"services":   operation.Request.Services,
+		"stack_path": stackPath,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.accessToken)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect to sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("sidecar returned status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (s *Service) handleArchiveOperationWithBroadcast(ctx context.Context, operation *Operation, stackPath string) error {
+	progressWriter := NewBroadcasterProgressWriter(operation.Broadcaster)
+
+	var err error
+	switch operation.Request.Command {
+	case "create-archive":
+		err = s.handleCreateArchive(ctx, operation, stackPath, progressWriter)
+	case "extract-archive":
+		err = s.handleExtractArchive(ctx, operation, stackPath, progressWriter)
+	default:
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Unknown archive command: %s", operation.Request.Command))
+		return fmt.Errorf("unknown archive command: %s", operation.Request.Command)
+	}
+
+	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Archive operation failed: %v", err))
+		return err
+	}
+
+	exitCode := 0
+	s.updateOperationStatus(operation.ID, "completed", &exitCode)
+	operation.Broadcaster.Broadcast(StreamTypeStdout, "Archive operation completed successfully")
+	operation.Broadcaster.BroadcastComplete(true, exitCode)
+
+	return nil
+}
+
+func (s *Service) createTempDockerConfigWithBroadcast(ctx context.Context, credentials []RegistryCredential, broadcaster *Broadcaster) (string, error) {
+	tempDir, err := os.MkdirTemp("", "berth-docker-config-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp docker config directory: %w", err)
+	}
+
+	if err := os.Chmod(tempDir, 0700); err != nil {
+		os.RemoveAll(tempDir)
+		return "", fmt.Errorf("failed to set permissions on temp docker config: %w", err)
+	}
+
+	for _, cred := range credentials {
+		broadcaster.Broadcast(StreamTypeProgress, fmt.Sprintf("Authenticating to %s...", cred.Registry))
+
+		cmd := exec.CommandContext(ctx, "docker", "login", cred.Registry, "-u", cred.Username, "--password-stdin")
+		cmd.Env = []string{
+			fmt.Sprintf("DOCKER_CONFIG=%s", tempDir),
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			"HOME=/tmp",
+		}
+		cmd.Stdin = strings.NewReader(cred.Password)
+
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			errorMsg := stderr.String()
+			if errorMsg == "" {
+				errorMsg = err.Error()
+			}
+			os.RemoveAll(tempDir)
+			return "", fmt.Errorf("docker login to %s failed: %s", cred.Registry, errorMsg)
+		}
+
+		broadcaster.Broadcast(StreamTypeProgress, fmt.Sprintf("Successfully authenticated to %s", cred.Registry))
+	}
+
+	return tempDir, nil
 }
 
 func (s *Service) buildCommand(req OperationRequest, stackPath string) *exec.Cmd {
@@ -233,35 +414,6 @@ func (s *Service) buildCommand(req OperationRequest, stackPath string) *exec.Cmd
 	}
 
 	return cmd
-}
-
-func (s *Service) handleArchiveOperation(ctx context.Context, operation *Operation, stackPath string, writer io.Writer) error {
-	progressWriter := archive.NewOperationsProgressWriter(writer)
-
-	var err error
-	switch operation.Request.Command {
-	case "create-archive":
-		err = s.handleCreateArchive(ctx, operation, stackPath, progressWriter)
-	case "extract-archive":
-		err = s.handleExtractArchive(ctx, operation, stackPath, progressWriter)
-	default:
-		s.updateOperationStatus(operation.ID, "failed", nil)
-		s.sendMessage(writer, StreamTypeError, fmt.Sprintf("Unknown archive command: %s", operation.Request.Command))
-		return fmt.Errorf("unknown archive command: %s", operation.Request.Command)
-	}
-
-	if err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
-		progressWriter.WriteError(fmt.Sprintf("Archive operation failed: %v", err))
-		return err
-	}
-
-	exitCode := 0
-	s.updateOperationStatus(operation.ID, "completed", &exitCode)
-	progressWriter.WriteStdout("Archive operation completed successfully")
-	s.sendCompleteMessage(writer, true, exitCode)
-
-	return nil
 }
 
 func (s *Service) handleCreateArchive(ctx context.Context, operation *Operation, stackPath string, writer archive.ProgressWriter) error {
@@ -325,132 +477,6 @@ func (s *Service) handleExtractArchive(ctx context.Context, operation *Operation
 	return s.archiveService.ExtractArchive(ctx, stackPath, opts, writer)
 }
 
-func (s *Service) streamOutputWithContext(ctx context.Context, reader io.Reader, writer io.Writer, streamType StreamMessageType) {
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			line := scanner.Text()
-			s.sendMessage(writer, streamType, line)
-		}
-	}
-}
-
-func (s *Service) sendMessage(writer io.Writer, msgType StreamMessageType, data string) {
-	message := StreamMessage{
-		Type:      string(msgType),
-		Data:      data,
-		Timestamp: time.Now(),
-	}
-
-	output := fmt.Sprintf("data: {\"type\":\"%s\",\"data\":\"%s\",\"timestamp\":\"%s\"}\n\n",
-		message.Type,
-		strings.ReplaceAll(data, "\"", "\\\""),
-		message.Timestamp.Format(time.RFC3339))
-
-	_, err := writer.Write([]byte(output))
-	if err != nil {
-		return
-	}
-
-	if flusher, ok := writer.(interface{ Flush() }); ok {
-		defer func() {
-			_ = recover()
-		}()
-		flusher.Flush()
-	}
-}
-
-func (s *Service) sendCompleteMessage(writer io.Writer, success bool, exitCode int) {
-	message := StreamMessage{
-		Type:      string(StreamTypeComplete),
-		Data:      "",
-		Timestamp: time.Now(),
-	}
-
-	messageJSON, err := json.Marshal(map[string]any{
-		"type":      message.Type,
-		"success":   success,
-		"exitCode":  exitCode,
-		"timestamp": message.Timestamp,
-	})
-	if err != nil {
-		return
-	}
-
-	output := fmt.Sprintf("data: %s\n\n", messageJSON)
-	_, err = writer.Write([]byte(output))
-	if err != nil {
-		return
-	}
-
-	if flusher, ok := writer.(interface{ Flush() }); ok {
-		defer func() {
-			_ = recover()
-		}()
-		flusher.Flush()
-	}
-}
-
-func (s *Service) handleSelfOperation(ctx context.Context, operation *Operation, writer io.Writer) error {
-	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
-	if err != nil {
-		s.updateOperationStatus(operation.ID, "failed", nil)
-		return fmt.Errorf("invalid stack path: %w", err)
-	}
-
-	s.sendMessage(writer, StreamTypeStdout, "Detected self-operation, forwarding to sidecar updater...")
-	s.sendMessage(writer, StreamTypeStdout, fmt.Sprintf("Sidecar will handle %s operation independently", operation.Request.Command))
-	s.sendMessage(writer, StreamTypeStdout, "Agent update will continue in background after this connection closes")
-
-	exitCode := 0
-	s.updateOperationStatus(operation.ID, "completed", &exitCode)
-	s.sendCompleteMessage(writer, true, exitCode)
-
-	time.Sleep(500 * time.Millisecond)
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-
-	payload := map[string]any{
-		"command":    operation.Request.Command,
-		"options":    operation.Request.Options,
-		"services":   operation.Request.Services,
-		"stack_path": stackPath,
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.accessToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to connect to sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("sidecar returned status: %d", resp.StatusCode)
-	}
-
-	return nil
-}
-
 func (s *Service) updateOperationStatus(operationID, status string, exitCode *int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -459,45 +485,4 @@ func (s *Service) updateOperationStatus(operationID, status string, exitCode *in
 		op.Status = status
 		op.ExitCode = exitCode
 	}
-}
-
-func (s *Service) createTempDockerConfig(ctx context.Context, credentials []RegistryCredential, writer io.Writer) (string, error) {
-
-	tempDir, err := os.MkdirTemp("", "berth-docker-config-*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp docker config directory: %w", err)
-	}
-
-	if err := os.Chmod(tempDir, 0700); err != nil {
-		os.RemoveAll(tempDir)
-		return "", fmt.Errorf("failed to set permissions on temp docker config: %w", err)
-	}
-
-	for _, cred := range credentials {
-		s.sendMessage(writer, StreamTypeProgress, fmt.Sprintf("Authenticating to %s...", cred.Registry))
-
-		cmd := exec.CommandContext(ctx, "docker", "login", cred.Registry, "-u", cred.Username, "--password-stdin")
-		cmd.Env = []string{
-			fmt.Sprintf("DOCKER_CONFIG=%s", tempDir),
-			"PATH=/usr/local/bin:/usr/bin:/bin",
-			"HOME=/tmp",
-		}
-		cmd.Stdin = strings.NewReader(cred.Password)
-
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			errorMsg := stderr.String()
-			if errorMsg == "" {
-				errorMsg = err.Error()
-			}
-			os.RemoveAll(tempDir)
-			return "", fmt.Errorf("docker login to %s failed: %s", cred.Registry, errorMsg)
-		}
-
-		s.sendMessage(writer, StreamTypeProgress, fmt.Sprintf("Successfully authenticated to %s", cred.Registry))
-	}
-
-	return tempDir, nil
 }
