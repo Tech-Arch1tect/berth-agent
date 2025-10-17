@@ -51,7 +51,11 @@ func (b *Broadcaster) Subscribe(subscriberID string, writer io.Writer) error {
 	}
 
 	for _, msg := range b.messageLog {
-		b.writeMessage(writer, msg)
+		if msg.Type == StreamTypeComplete {
+			b.writeCompleteMessage(writer, msg)
+		} else {
+			b.writeMessage(writer, msg)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "[BROADCASTER] Subscriber %s received %d historical messages for operation %s\n",
@@ -146,7 +150,7 @@ func (b *Broadcaster) writeMessage(writer io.Writer, msg Message) {
 	output := fmt.Sprintf("data: {\"type\":\"%s\",\"data\":\"%s\",\"timestamp\":\"%s\"}\n\n",
 		msg.Type,
 		escapeJSON(msg.Data),
-		msg.Timestamp.Format(time.RFC3339))
+		msg.Timestamp.Format(time.RFC3339Nano))
 
 	_, err := writer.Write([]byte(output))
 	if err != nil {
@@ -168,7 +172,7 @@ func (b *Broadcaster) writeCompleteMessage(writer io.Writer, msg Message) {
 		msg.Type,
 		*msg.Success,
 		*msg.ExitCode,
-		msg.Timestamp.Format(time.RFC3339))
+		msg.Timestamp.Format(time.RFC3339Nano))
 
 	_, err := writer.Write([]byte(output))
 	if err != nil {
