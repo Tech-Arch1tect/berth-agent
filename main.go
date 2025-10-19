@@ -7,6 +7,7 @@ import (
 	"berth-agent/internal/docker"
 	"berth-agent/internal/files"
 	"berth-agent/internal/health"
+	"berth-agent/internal/images"
 	"berth-agent/internal/logging"
 	"berth-agent/internal/logs"
 	"berth-agent/internal/maintenance"
@@ -50,6 +51,7 @@ func runAgent() {
 		files.Module,
 		docker.Module,
 		compose.FxModule,
+		images.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
 		fx.Provide(NewEventMonitorWithConfig),
@@ -92,6 +94,7 @@ func RegisterRoutes(
 	terminalHandler *terminal.Handler,
 	filesHandler *files.Handler,
 	composeHandler *compose.Handler,
+	imagesHandler *images.Handler,
 ) {
 	api := e.Group("/api")
 	api.Use(auth.TokenMiddleware(cfg.AccessToken))
@@ -126,6 +129,8 @@ func RegisterRoutes(
 	api.GET("/stacks/:stackName/files/stats", filesHandler.GetDirectoryStats)
 
 	api.PATCH("/compose", composeHandler.UpdateCompose)
+
+	api.POST("/images/check-updates", imagesHandler.CheckImageUpdates)
 
 	api.GET("/maintenance/info", maintenanceHandler.GetSystemInfo)
 	api.POST("/maintenance/prune", maintenanceHandler.PruneDocker)
