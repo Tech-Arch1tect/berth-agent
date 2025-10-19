@@ -3,6 +3,7 @@ package stats
 import (
 	"berth-agent/config"
 	"berth-agent/internal/docker"
+	"berth-agent/internal/logging"
 	"berth-agent/internal/stack"
 	"berth-agent/internal/validation"
 	"bufio"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type cpuCacheEntry struct {
@@ -32,16 +35,23 @@ type Service struct {
 	cgroupRoot    string
 	cpuCache      map[string]*cpuCacheEntry
 	cacheMutex    sync.RWMutex
+	logger        *logging.Logger
 }
 
-func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *stack.Service) *Service {
+func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *stack.Service, logger *logging.Logger) *Service {
 	service := &Service{
 		stackLocation: cfg.StackLocation,
 		dockerClient:  dockerClient,
 		stackService:  stackService,
 		cgroupRoot:    "/sys/fs/cgroup",
 		cpuCache:      make(map[string]*cpuCacheEntry),
+		logger:        logger.With(zap.String("component", "stats")),
 	}
+
+	logger.Info("Stats service initialized",
+		zap.String("stack_location", cfg.StackLocation),
+		zap.String("cgroup_root", service.cgroupRoot),
+	)
 
 	go service.cleanupCacheLoop()
 
@@ -49,17 +59,22 @@ func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *s
 }
 
 func (s *Service) GetStackStats(name string) (*StackStats, error) {
+	s.logger.Info("Collecting stack stats", zap.String("stack", name))
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
+		s.logger.Error("Invalid stack name", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Error("Stack not found", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", name)
 	}
 
 	containers, err := s.stackService.GetContainerInfo(name)
 	if err != nil {
+		s.logger.Error("Failed to get container info", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to get container info: %w", err)
 	}
 
@@ -94,14 +109,29 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 	}
 
 	if len(runningContainers) == 0 {
+		s.logger.Debug("No running containers found", zap.String("stack", name))
 		return stats, nil
 	}
 
+	s.logger.Debug("Found running containers",
+		zap.String("stack", name),
+		zap.Int("count", len(runningContainers)),
+	)
+
 	ctx := context.Background()
 	for i, job := range runningContainers {
+		s.logger.Debug("Inspecting container",
+			zap.String("container", job.name),
+			zap.String("id", job.id),
+		)
 		containerInfo, err := s.dockerClient.ContainerInspect(ctx, job.id)
 		if err == nil && containerInfo.State.Pid != 0 {
 			runningContainers[i].pid = containerInfo.State.Pid
+		} else if err != nil {
+			s.logger.Debug("Failed to inspect container",
+				zap.String("container", job.name),
+				zap.Error(err),
+			)
 		}
 	}
 
@@ -113,8 +143,17 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 		go func(containerName, serviceName, containerID string, pid int) {
 			defer wg.Done()
 
+			s.logger.Debug("Collecting container stats",
+				zap.String("container", containerName),
+				zap.String("service", serviceName),
+			)
+
 			containerStats, err := s.getContainerStatsFromCgroups(containerName, serviceName, containerID, pid)
 			if err != nil {
+				s.logger.Error("Failed to collect container stats",
+					zap.String("container", containerName),
+					zap.Error(err),
+				)
 				return
 			}
 
@@ -135,34 +174,62 @@ func (s *Service) GetStackStats(name string) (*StackStats, error) {
 		return stats.Containers[i].Name < stats.Containers[j].Name
 	})
 
+	s.logger.Info("Stack stats collected successfully",
+		zap.String("stack", name),
+		zap.Int("containers", len(stats.Containers)),
+	)
+
 	return stats, nil
 }
 
 func (s *Service) getContainerID(containerName string) (string, error) {
+	s.logger.Debug("Looking up container ID", zap.String("container", containerName))
+
 	ctx := context.Background()
 	containers, err := s.dockerClient.ContainerList(ctx, nil)
 	if err != nil {
+		s.logger.Error("Failed to list containers via Docker API",
+			zap.String("container", containerName),
+			zap.Error(err),
+		)
 		return "", fmt.Errorf("failed to list containers: %w", err)
 	}
 
 	for _, container := range containers {
 		for _, name := range container.Names {
 			if strings.TrimPrefix(name, "/") == containerName {
+				s.logger.Debug("Container ID found",
+					zap.String("container", containerName),
+					zap.String("id", container.ID),
+				)
 				return container.ID, nil
 			}
 		}
 	}
 
+	s.logger.Debug("Container not found in Docker API",
+		zap.String("container", containerName),
+	)
 	return "", fmt.Errorf("container %s not found", containerName)
 }
 
 func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, containerID string, pid int) (*ContainerStats, error) {
+	s.logger.Debug("Collecting stats from cgroups",
+		zap.String("container", containerName),
+		zap.String("id", containerID),
+		zap.Int("pid", pid),
+	)
+
 	stats := &ContainerStats{
 		Name:        containerName,
 		ServiceName: serviceName,
 	}
 
 	cgroupPath := s.getContainerCgroupPath(containerID)
+	s.logger.Debug("Using cgroup path",
+		zap.String("container", containerName),
+		zap.String("path", cgroupPath),
+	)
 
 	memoryStats, err := s.getMemoryStats(cgroupPath)
 	if err == nil {
@@ -174,12 +241,32 @@ func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, conta
 		stats.MemorySwap = memoryStats.Swap
 		stats.PageFaults = memoryStats.PageFaults
 		stats.PageMajorFaults = memoryStats.PageMajorFaults
+		s.logger.Debug("Memory stats collected",
+			zap.String("container", containerName),
+			zap.Uint64("usage", memoryStats.Usage),
+			zap.Float64("percent", memoryStats.Percent),
+		)
+	} else {
+		s.logger.Debug("Failed to collect memory stats",
+			zap.String("container", containerName),
+			zap.Error(err),
+		)
 	}
 
 	cpuStats, err := s.getCPUStats(cgroupPath)
 	if err == nil {
 		stats.CPUUserTime = cpuStats.UserTime
 		stats.CPUSystemTime = cpuStats.SystemTime
+		s.logger.Debug("CPU stats collected",
+			zap.String("container", containerName),
+			zap.Uint64("user_time", cpuStats.UserTime),
+			zap.Uint64("system_time", cpuStats.SystemTime),
+		)
+	} else {
+		s.logger.Debug("Failed to collect CPU stats",
+			zap.String("container", containerName),
+			zap.Error(err),
+		)
 	}
 
 	stats.CPUPercent = s.calculateCPUPercentFromCgroup(cgroupPath)
@@ -190,6 +277,16 @@ func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, conta
 		stats.BlockWriteBytes = blkioStats.WriteBytes
 		stats.BlockReadOps = blkioStats.ReadOps
 		stats.BlockWriteOps = blkioStats.WriteOps
+		s.logger.Debug("Block I/O stats collected",
+			zap.String("container", containerName),
+			zap.Uint64("read_bytes", blkioStats.ReadBytes),
+			zap.Uint64("write_bytes", blkioStats.WriteBytes),
+		)
+	} else {
+		s.logger.Debug("Failed to collect block I/O stats",
+			zap.String("container", containerName),
+			zap.Error(err),
+		)
 	}
 
 	networkStats, err := s.getNetworkStats(pid)
@@ -198,6 +295,16 @@ func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, conta
 		stats.NetworkTxBytes = networkStats.TxBytes
 		stats.NetworkRxPackets = networkStats.RxPackets
 		stats.NetworkTxPackets = networkStats.TxPackets
+		s.logger.Debug("Network stats collected",
+			zap.String("container", containerName),
+			zap.Uint64("rx_bytes", networkStats.RxBytes),
+			zap.Uint64("tx_bytes", networkStats.TxBytes),
+		)
+	} else {
+		s.logger.Debug("Failed to collect network stats",
+			zap.String("container", containerName),
+			zap.Error(err),
+		)
 	}
 
 	return stats, nil
@@ -310,11 +417,22 @@ func (s *Service) cleanupStaleCache() {
 	defer s.cacheMutex.Unlock()
 
 	cutoff := time.Now().Add(-5 * time.Minute)
+	initialSize := len(s.cpuCache)
+	removed := 0
 
 	for cacheKey, entry := range s.cpuCache {
 		if entry.lastAccessed.Before(cutoff) {
 			delete(s.cpuCache, cacheKey)
+			removed++
 		}
+	}
+
+	if removed > 0 {
+		s.logger.Debug("Cleaned up stale cache entries",
+			zap.Int("removed", removed),
+			zap.Int("initial_size", initialSize),
+			zap.Int("final_size", len(s.cpuCache)),
+		)
 	}
 }
 
@@ -336,6 +454,10 @@ func (s *Service) calculateCPUPercentFromCgroup(cgroupPath string) float64 {
 
 	cacheKey := cgroupPath
 	if cached, exists := s.cpuCache[cacheKey]; exists {
+		s.logger.Debug("CPU cache hit",
+			zap.String("cgroup", cgroupPath),
+			zap.Time("cached_at", cached.timestamp),
+		)
 		cached.lastAccessed = now
 
 		deltaTime := now.Sub(cached.timestamp).Seconds()
@@ -359,12 +481,22 @@ func (s *Service) calculateCPUPercentFromCgroup(cgroupPath string) float64 {
 			cpuPercent = 100.0
 		}
 
+		s.logger.Debug("CPU percentage calculated",
+			zap.String("cgroup", cgroupPath),
+			zap.Float64("percent", cpuPercent),
+			zap.Float64("delta_time", deltaTime),
+		)
+
 		cached.userUsec = userUsec
 		cached.systemUsec = systemUsec
 		cached.timestamp = now
 
 		return cpuPercent
 	}
+
+	s.logger.Debug("CPU cache miss - initializing",
+		zap.String("cgroup", cgroupPath),
+	)
 
 	s.cpuCache[cacheKey] = &cpuCacheEntry{
 		userUsec:     userUsec,

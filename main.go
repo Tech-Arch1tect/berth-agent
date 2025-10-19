@@ -24,6 +24,7 @@ import (
 	"github.com/labstack/echo/v4"
 	echomiddleware "github.com/labstack/echo/v4/middleware"
 	"go.uber.org/fx"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
 }
 
 func runAgent() {
-	fx.New(
+	app := fx.New(
 		config.Module,
 		logging.Module,
 		ssl.Module,
@@ -59,11 +60,13 @@ func runAgent() {
 		fx.Invoke(StartServer),
 		fx.Invoke(StartWebSocketHub),
 		fx.Invoke(StartEventMonitor),
-	).Run()
+		fx.Invoke(LogAgentStartup),
+	)
+	app.Run()
 }
 
 func runSidecar() {
-	fx.New(
+	app := fx.New(
 		config.Module,
 		logging.Module,
 		ssl.Module,
@@ -71,7 +74,9 @@ func runSidecar() {
 		fx.Provide(NewSidecarEcho),
 		fx.Invoke(RegisterSidecarRoutes),
 		fx.Invoke(StartSidecarServer),
-	).Run()
+		fx.Invoke(LogSidecarStartup),
+	)
+	app.Run()
 }
 
 func NewEcho(loggingService *logging.Service) *echo.Echo {
@@ -95,9 +100,10 @@ func RegisterRoutes(
 	filesHandler *files.Handler,
 	composeHandler *compose.Handler,
 	imagesHandler *images.Handler,
+	logger *logging.Logger,
 ) {
 	api := e.Group("/api")
-	api.Use(auth.TokenMiddleware(cfg.AccessToken))
+	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 
 	api.GET("/health", healthHandler.Health)
 	api.GET("/stacks", stackHandler.ListStacks)
@@ -144,48 +150,78 @@ func NewWebSocketHandler(hub *websocket.Hub, cfg *config.Config) *websocket.Hand
 	return websocket.NewHandler(hub, cfg.AccessToken)
 }
 
-func NewEventMonitorWithConfig(hub *websocket.Hub, cfg *config.Config) *docker.EventMonitor {
-	return docker.NewEventMonitor(hub, cfg.StackLocation)
+func NewEventMonitorWithConfig(hub *websocket.Hub, cfg *config.Config, logger *logging.Logger) *docker.EventMonitor {
+	return docker.NewEventMonitor(hub, cfg.StackLocation, logger)
 }
 
-func StartWebSocketHub(lc fx.Lifecycle, hub *websocket.Hub) {
+func LogAgentStartup(logger *logging.Logger, cfg *config.Config) {
+	logger.Info("berth-agent starting in agent mode",
+		zap.String("port", cfg.Port),
+		zap.String("stack_location", cfg.StackLocation),
+		zap.String("log_level", cfg.LogLevel),
+		zap.Bool("audit_log_enabled", cfg.AuditLogEnabled),
+	)
+}
+
+func LogSidecarStartup(logger *logging.Logger, cfg *config.Config) {
+	logger.Info("berth-agent starting in sidecar mode",
+		zap.String("log_level", cfg.LogLevel),
+	)
+}
+
+func StartWebSocketHub(lc fx.Lifecycle, hub *websocket.Hub, logger *logging.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			logger.Info("starting websocket hub")
 			go hub.Run()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			logger.Info("stopping websocket hub")
 			return nil
 		},
 	})
 }
 
-func StartEventMonitor(lc fx.Lifecycle, monitor *docker.EventMonitor) {
+func StartEventMonitor(lc fx.Lifecycle, monitor *docker.EventMonitor, logger *logging.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			logger.Info("starting docker event monitor")
 			return monitor.Start()
 		},
 		OnStop: func(ctx context.Context) error {
+			logger.Info("stopping docker event monitor")
 			monitor.Stop()
 			return nil
 		},
 	})
 }
 
-func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config, certManager *ssl.CertificateManager) {
+func StartServer(lc fx.Lifecycle, e *echo.Echo, cfg *config.Config, certManager *ssl.CertificateManager, logger *logging.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			certFile, keyFile, err := certManager.EnsureCertificates()
 			if err != nil {
+				logger.Error("failed to setup SSL certificates", zap.Error(err))
 				e.Logger.Fatal("Failed to setup SSL certificates:", err)
 				return err
 			}
 
+			logger.Info("starting HTTPS server",
+				zap.String("port", cfg.Port),
+				zap.String("cert_file", certFile),
+			)
+
 			go func() {
 				if err := e.StartTLS(":"+cfg.Port, certFile, keyFile); err != nil {
+					logger.Error("HTTPS server failed to start", zap.Error(err))
 					e.Logger.Fatal("HTTPS Server failed to start:", err)
 				}
 			}()
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			logger.Info("shutting down HTTPS server")
 			return e.Shutdown(ctx)
 		},
 	})
@@ -198,31 +234,39 @@ func NewSidecarEcho(loggingService *logging.Service) *echo.Echo {
 	return e
 }
 
-func RegisterSidecarRoutes(e *echo.Echo, handler *sidecar.Handler, cfg *config.Config) {
+func RegisterSidecarRoutes(e *echo.Echo, handler *sidecar.Handler, cfg *config.Config, logger *logging.Logger) {
 	api := e.Group("")
-	api.Use(auth.TokenMiddleware(cfg.AccessToken))
+	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 
 	api.POST("/operation", handler.HandleOperation)
 	api.GET("/health", handler.Health)
 }
 
-func StartSidecarServer(lc fx.Lifecycle, e *echo.Echo, certManager *ssl.CertificateManager) {
+func StartSidecarServer(lc fx.Lifecycle, e *echo.Echo, certManager *ssl.CertificateManager, logger *logging.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			certFile, keyFile, err := certManager.EnsureCertificates()
 			if err != nil {
+				logger.Error("failed to setup SSL certificates for sidecar", zap.Error(err))
 				e.Logger.Fatal("Failed to setup SSL certificates:", err)
 				return err
 			}
 
+			logger.Info("starting sidecar HTTPS server",
+				zap.String("port", "8081"),
+				zap.String("cert_file", certFile),
+			)
+
 			go func() {
 				if err := e.StartTLS(":8081", certFile, keyFile); err != nil {
+					logger.Error("sidecar HTTPS server failed to start", zap.Error(err))
 					e.Logger.Fatal("Sidecar HTTPS server failed to start:", err)
 				}
 			}()
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			logger.Info("shutting down sidecar HTTPS server")
 			return e.Shutdown(ctx)
 		},
 	})

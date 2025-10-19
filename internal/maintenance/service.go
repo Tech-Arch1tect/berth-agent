@@ -2,23 +2,30 @@ package maintenance
 
 import (
 	"berth-agent/internal/docker"
+	"berth-agent/internal/logging"
 	"context"
 	"fmt"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type Service struct {
 	dockerClient *docker.Client
+	logger       *logging.Logger
 }
 
-func NewService(dockerClient *docker.Client) *Service {
+func NewService(dockerClient *docker.Client, logger *logging.Logger) *Service {
 	return &Service{
 		dockerClient: dockerClient,
+		logger:       logger.With(zap.String("service", "maintenance")),
 	}
 }
 
 func (s *Service) GetSystemInfo(ctx context.Context) (*MaintenanceInfo, error) {
+	s.logger.Debug("collecting system information")
+
 	systemInfo, err := s.getSystemInfo(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system info: %w", err)
@@ -53,6 +60,14 @@ func (s *Service) GetSystemInfo(ctx context.Context) (*MaintenanceInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get build cache summary: %w", err)
 	}
+
+	s.logger.Info("system information collected",
+		zap.Int("total_images", imageSummary.TotalCount),
+		zap.Int("total_containers", containerSummary.TotalCount),
+		zap.Int("total_volumes", volumeSummary.TotalCount),
+		zap.Int("total_networks", networkSummary.TotalCount),
+		zap.Int64("total_size_bytes", diskUsage.TotalSize),
+	)
 
 	return &MaintenanceInfo{
 		SystemInfo:        *systemInfo,
@@ -106,8 +121,14 @@ func (s *Service) DeleteResource(ctx context.Context, req *DeleteRequest) (*Dele
 }
 
 func (s *Service) deleteImage(ctx context.Context, imageID string) (*DeleteResult, error) {
+	s.logger.Debug("deleting image", zap.String("image_id", imageID))
+
 	_, err := s.dockerClient.ImageRemove(ctx, imageID, true, false)
 	if err != nil {
+		s.logger.Error("failed to delete image",
+			zap.String("image_id", imageID),
+			zap.Error(err),
+		)
 		return &DeleteResult{
 			Type:    "image",
 			ID:      imageID,
@@ -115,6 +136,8 @@ func (s *Service) deleteImage(ctx context.Context, imageID string) (*DeleteResul
 			Error:   err.Error(),
 		}, nil
 	}
+
+	s.logger.Info("image deleted successfully", zap.String("image_id", imageID))
 
 	return &DeleteResult{
 		Type:    "image",
@@ -124,8 +147,14 @@ func (s *Service) deleteImage(ctx context.Context, imageID string) (*DeleteResul
 }
 
 func (s *Service) deleteContainer(ctx context.Context, containerID string) (*DeleteResult, error) {
+	s.logger.Debug("deleting container", zap.String("container_id", containerID))
+
 	err := s.dockerClient.ContainerRemove(ctx, containerID, true, true, true)
 	if err != nil {
+		s.logger.Error("failed to delete container",
+			zap.String("container_id", containerID),
+			zap.Error(err),
+		)
 		return &DeleteResult{
 			Type:    "container",
 			ID:      containerID,
@@ -133,6 +162,8 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) (*Del
 			Error:   err.Error(),
 		}, nil
 	}
+
+	s.logger.Info("container deleted successfully", zap.String("container_id", containerID))
 
 	return &DeleteResult{
 		Type:    "container",
@@ -142,8 +173,14 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) (*Del
 }
 
 func (s *Service) deleteVolume(ctx context.Context, volumeName string) (*DeleteResult, error) {
+	s.logger.Debug("deleting volume", zap.String("volume_name", volumeName))
+
 	err := s.dockerClient.VolumeRemove(ctx, volumeName, true)
 	if err != nil {
+		s.logger.Error("failed to delete volume",
+			zap.String("volume_name", volumeName),
+			zap.Error(err),
+		)
 		return &DeleteResult{
 			Type:    "volume",
 			ID:      volumeName,
@@ -151,6 +188,8 @@ func (s *Service) deleteVolume(ctx context.Context, volumeName string) (*DeleteR
 			Error:   err.Error(),
 		}, nil
 	}
+
+	s.logger.Info("volume deleted successfully", zap.String("volume_name", volumeName))
 
 	return &DeleteResult{
 		Type:    "volume",
@@ -160,8 +199,14 @@ func (s *Service) deleteVolume(ctx context.Context, volumeName string) (*DeleteR
 }
 
 func (s *Service) deleteNetwork(ctx context.Context, networkID string) (*DeleteResult, error) {
+	s.logger.Debug("deleting network", zap.String("network_id", networkID))
+
 	err := s.dockerClient.NetworkRemove(ctx, networkID)
 	if err != nil {
+		s.logger.Error("failed to delete network",
+			zap.String("network_id", networkID),
+			zap.Error(err),
+		)
 		return &DeleteResult{
 			Type:    "network",
 			ID:      networkID,
@@ -169,6 +214,8 @@ func (s *Service) deleteNetwork(ctx context.Context, networkID string) (*DeleteR
 			Error:   err.Error(),
 		}, nil
 	}
+
+	s.logger.Info("network deleted successfully", zap.String("network_id", networkID))
 
 	return &DeleteResult{
 		Type:    "network",
@@ -504,10 +551,19 @@ func (s *Service) getBuildCacheSummary(ctx context.Context) (*BuildCacheSummary,
 }
 
 func (s *Service) pruneImages(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
+	s.logger.Debug("pruning images",
+		zap.Bool("all", req.All),
+		zap.String("filters", req.Filters),
+	)
+
 	filters := s.parseFilters(req.Filters)
 
 	report, err := s.dockerClient.ImagePrune(ctx, req.All, filters)
 	if err != nil {
+		s.logger.Error("failed to prune images",
+			zap.Bool("all", req.All),
+			zap.Error(err),
+		)
 		return &PruneResult{
 			Type:  "images",
 			Error: err.Error(),
@@ -524,6 +580,11 @@ func (s *Service) pruneImages(ctx context.Context, req *PruneRequest) (*PruneRes
 		}
 	}
 
+	s.logger.Info("images pruned successfully",
+		zap.Int("items_deleted", len(deletedItems)),
+		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+	)
+
 	return &PruneResult{
 		Type:           "images",
 		ItemsDeleted:   deletedItems,
@@ -532,10 +593,13 @@ func (s *Service) pruneImages(ctx context.Context, req *PruneRequest) (*PruneRes
 }
 
 func (s *Service) pruneContainers(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
+	s.logger.Debug("pruning containers", zap.String("filters", req.Filters))
+
 	filters := s.parseFilters(req.Filters)
 
 	report, err := s.dockerClient.ContainerPrune(ctx, filters)
 	if err != nil {
+		s.logger.Error("failed to prune containers", zap.Error(err))
 		return &PruneResult{
 			Type:  "containers",
 			Error: err.Error(),
@@ -547,6 +611,11 @@ func (s *Service) pruneContainers(ctx context.Context, req *PruneRequest) (*Prun
 		itemsDeleted = make([]string, 0)
 	}
 
+	s.logger.Info("containers pruned successfully",
+		zap.Int("items_deleted", len(itemsDeleted)),
+		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+	)
+
 	return &PruneResult{
 		Type:           "containers",
 		ItemsDeleted:   itemsDeleted,
@@ -555,6 +624,11 @@ func (s *Service) pruneContainers(ctx context.Context, req *PruneRequest) (*Prun
 }
 
 func (s *Service) pruneVolumes(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
+	s.logger.Debug("pruning volumes",
+		zap.Bool("all", req.All),
+		zap.String("filters", req.Filters),
+	)
+
 	filters := s.parseFilters(req.Filters)
 
 	if req.All {
@@ -563,6 +637,10 @@ func (s *Service) pruneVolumes(ctx context.Context, req *PruneRequest) (*PruneRe
 
 	report, err := s.dockerClient.VolumePrune(ctx, filters)
 	if err != nil {
+		s.logger.Error("failed to prune volumes",
+			zap.Bool("all", req.All),
+			zap.Error(err),
+		)
 		return &PruneResult{
 			Type:  "volumes",
 			Error: err.Error(),
@@ -574,6 +652,11 @@ func (s *Service) pruneVolumes(ctx context.Context, req *PruneRequest) (*PruneRe
 		itemsDeleted = make([]string, 0)
 	}
 
+	s.logger.Info("volumes pruned successfully",
+		zap.Int("items_deleted", len(itemsDeleted)),
+		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+	)
+
 	return &PruneResult{
 		Type:           "volumes",
 		ItemsDeleted:   itemsDeleted,
@@ -582,10 +665,13 @@ func (s *Service) pruneVolumes(ctx context.Context, req *PruneRequest) (*PruneRe
 }
 
 func (s *Service) pruneNetworks(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
+	s.logger.Debug("pruning networks", zap.String("filters", req.Filters))
+
 	filters := s.parseFilters(req.Filters)
 
 	report, err := s.dockerClient.NetworkPrune(ctx, filters)
 	if err != nil {
+		s.logger.Error("failed to prune networks", zap.Error(err))
 		return &PruneResult{
 			Type:  "networks",
 			Error: err.Error(),
@@ -597,6 +683,10 @@ func (s *Service) pruneNetworks(ctx context.Context, req *PruneRequest) (*PruneR
 		itemsDeleted = make([]string, 0)
 	}
 
+	s.logger.Info("networks pruned successfully",
+		zap.Int("items_deleted", len(itemsDeleted)),
+	)
+
 	return &PruneResult{
 		Type:           "networks",
 		ItemsDeleted:   itemsDeleted,
@@ -605,10 +695,19 @@ func (s *Service) pruneNetworks(ctx context.Context, req *PruneRequest) (*PruneR
 }
 
 func (s *Service) pruneBuildCache(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
+	s.logger.Debug("pruning build cache",
+		zap.Bool("all", req.All),
+		zap.String("filters", req.Filters),
+	)
+
 	filters := s.parseFilters(req.Filters)
 
 	report, err := s.dockerClient.BuildCachePrune(ctx, req.All, filters)
 	if err != nil {
+		s.logger.Error("failed to prune build cache",
+			zap.Bool("all", req.All),
+			zap.Error(err),
+		)
 		return &PruneResult{
 			Type:  "build-cache",
 			Error: err.Error(),
@@ -620,6 +719,11 @@ func (s *Service) pruneBuildCache(ctx context.Context, req *PruneRequest) (*Prun
 		itemsDeleted = make([]string, 0)
 	}
 
+	s.logger.Info("build cache pruned successfully",
+		zap.Int("items_deleted", len(itemsDeleted)),
+		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+	)
+
 	return &PruneResult{
 		Type:           "build-cache",
 		ItemsDeleted:   itemsDeleted,
@@ -628,10 +732,19 @@ func (s *Service) pruneBuildCache(ctx context.Context, req *PruneRequest) (*Prun
 }
 
 func (s *Service) pruneSystem(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
+	s.logger.Debug("pruning system",
+		zap.Bool("all", req.All),
+		zap.String("filters", req.Filters),
+	)
+
 	filters := s.parseFilters(req.Filters)
 
 	report, err := s.dockerClient.SystemPrune(ctx, req.All, filters)
 	if err != nil {
+		s.logger.Error("failed to prune system",
+			zap.Bool("all", req.All),
+			zap.Error(err),
+		)
 		return &PruneResult{
 			Type:  "system",
 			Error: err.Error(),
@@ -657,6 +770,15 @@ func (s *Service) pruneSystem(ctx context.Context, req *PruneRequest) (*PruneRes
 			allDeleted = append(allDeleted, img.Untagged)
 		}
 	}
+
+	s.logger.Info("system pruned successfully",
+		zap.Int("items_deleted", len(allDeleted)),
+		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+		zap.Int("containers_deleted", len(report.ContainersDeleted)),
+		zap.Int("networks_deleted", len(report.NetworksDeleted)),
+		zap.Int("volumes_deleted", len(report.VolumesDeleted)),
+		zap.Int("images_deleted", len(report.ImagesDeleted)),
+	)
 
 	return &PruneResult{
 		Type:           "system",

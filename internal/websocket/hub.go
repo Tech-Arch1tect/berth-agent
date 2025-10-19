@@ -2,12 +2,14 @@ package websocket
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"sync"
 
+	"berth-agent/internal/logging"
+
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 )
 
 var upgrader = websocket.Upgrader{
@@ -22,6 +24,7 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	mutex      sync.RWMutex
+	logger     *logging.Logger
 }
 
 type Client struct {
@@ -30,23 +33,30 @@ type Client struct {
 	send chan []byte
 }
 
-func NewHub() *Hub {
+func NewHub(logger *logging.Logger) *Hub {
 	return &Hub{
 		broadcast:  make(chan []byte),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		clients:    make(map[*Client]bool),
+		logger:     logger,
 	}
 }
 
 func (h *Hub) Run() {
+	h.logger.Info("WebSocket hub started")
+
 	for {
 		select {
 		case client := <-h.register:
 			h.mutex.Lock()
 			h.clients[client] = true
+			clientCount := len(h.clients)
 			h.mutex.Unlock()
-			log.Printf("WebSocket client connected. Total clients: %d", len(h.clients))
+
+			h.logger.Debug("WebSocket client registered")
+			h.logger.Info("WebSocket client connected",
+				zap.Int("client_count", clientCount))
 
 		case client := <-h.unregister:
 			h.mutex.Lock()
@@ -54,20 +64,34 @@ func (h *Hub) Run() {
 				delete(h.clients, client)
 				close(client.send)
 			}
+			clientCount := len(h.clients)
 			h.mutex.Unlock()
-			log.Printf("WebSocket client disconnected. Total clients: %d", len(h.clients))
+
+			h.logger.Debug("WebSocket client unregistered")
+			h.logger.Info("WebSocket client disconnected",
+				zap.Int("client_count", clientCount))
 
 		case message := <-h.broadcast:
 			h.mutex.RLock()
+			recipientCount := 0
+			failedCount := 0
+
 			for client := range h.clients {
 				select {
 				case client.send <- message:
+					recipientCount++
 				default:
+					h.logger.Error("Failed to send message to client, removing client")
 					delete(h.clients, client)
 					close(client.send)
+					failedCount++
 				}
 			}
 			h.mutex.RUnlock()
+
+			h.logger.Debug("Message broadcast completed",
+				zap.Int("recipient_count", recipientCount),
+				zap.Int("failed_count", failedCount))
 		}
 	}
 }
@@ -80,20 +104,26 @@ func (h *Hub) BroadcastContainerStatus(event ContainerStatusEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Error marshalling container status event: %v", err)
+		h.logger.Error("Failed to marshal container status event",
+			zap.Error(err))
 		return
 	}
 
+	h.logger.Debug("Broadcasting container status",
+		zap.String("message_type", string(MessageTypeContainerStatus)))
 	h.broadcast <- data
 }
 
 func (h *Hub) BroadcastStackStatus(event StackStatusEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Error marshalling stack status event: %v", err)
+		h.logger.Error("Failed to marshal stack status event",
+			zap.Error(err))
 		return
 	}
 
+	h.logger.Debug("Broadcasting stack status",
+		zap.String("message_type", string(MessageTypeStackStatus)))
 	h.broadcast <- data
 }
 
@@ -105,10 +135,13 @@ func (h *Hub) BroadcastOperationProgress(event OperationProgressEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Error marshalling operation progress event: %v", err)
+		h.logger.Error("Failed to marshal operation progress event",
+			zap.Error(err))
 		return
 	}
 
+	h.logger.Debug("Broadcasting operation progress",
+		zap.String("message_type", string(MessageTypeOperationProgress)))
 	h.broadcast <- data
 }
 
@@ -121,7 +154,8 @@ func (h *Hub) ServeWebSocket(c echo.Context, authToken string) error {
 
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		h.logger.Error("WebSocket upgrade failed",
+			zap.Error(err))
 		return err
 	}
 
@@ -149,7 +183,8 @@ func (c *Client) readPump() {
 		_, _, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				c.hub.logger.Warn("Unexpected WebSocket close error",
+					zap.Error(err))
 			}
 			break
 		}

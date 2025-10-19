@@ -1,10 +1,10 @@
 package terminal
 
 import (
+	"berth-agent/internal/logging"
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"time"
 
@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 type Session struct {
@@ -30,18 +31,21 @@ type Session struct {
 	onClose      func(int)
 	cols         int
 	rows         int
+	logger       *logging.Logger
 }
 
 type Manager struct {
 	sessions     map[string]*Session
 	dockerClient *client.Client
 	mutex        sync.RWMutex
+	logger       *logging.Logger
 }
 
-func NewManager(dockerClient *client.Client) *Manager {
+func NewManager(dockerClient *client.Client, logger *logging.Logger) *Manager {
 	return &Manager{
 		sessions:     make(map[string]*Session),
 		dockerClient: dockerClient,
+		logger:       logger,
 	}
 }
 
@@ -60,7 +64,17 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 		dockerClient: m.dockerClient,
 		ctx:          ctx,
 		cancel:       cancel,
+		logger:       m.logger,
 	}
+
+	m.logger.Info("Creating terminal session",
+		zap.String("session_id", sessionID),
+		zap.String("stack_name", stackName),
+		zap.String("service_name", serviceName),
+		zap.String("container_id", containerID),
+		zap.Int("cols", cols),
+		zap.Int("rows", rows),
+	)
 
 	shells := [][]string{
 		{"/bin/bash", "-l"},
@@ -116,12 +130,19 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 
 		selectedShell = shell
 		execIDResp = resp
-		log.Printf("Terminal: Using shell: %v", shell)
+		m.logger.Info("Shell selected for terminal session",
+			zap.String("session_id", sessionID),
+			zap.Strings("shell", shell),
+		)
 		break
 	}
 
 	if len(selectedShell) == 0 {
 		cancel()
+		m.logger.Error("No compatible shell found in container",
+			zap.String("session_id", sessionID),
+			zap.String("container_id", containerID),
+		)
 		return nil, fmt.Errorf("no compatible shell found in container (tried: bash, sh, ash, dash)")
 	}
 
@@ -134,8 +155,18 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 	hijackedResp, err := m.dockerClient.ContainerExecAttach(ctx, execIDResp.ID, execStartConfig)
 	if err != nil {
 		cancel()
+		m.logger.Error("Failed to attach to exec session",
+			zap.String("session_id", sessionID),
+			zap.String("exec_id", execIDResp.ID),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to attach to exec: %w", err)
 	}
+
+	m.logger.Info("PTY allocated and attached",
+		zap.String("session_id", sessionID),
+		zap.String("exec_id", execIDResp.ID),
+	)
 
 	session.hijackedResp = &hijackedResp
 	session.cols = cols
@@ -169,7 +200,10 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 			n, err := hijackedResp.Reader.Read(buf)
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("Terminal: Read error for session %s: %v", sessionID, err)
+					session.logger.Error("Terminal I/O read error",
+						zap.String("session_id", sessionID),
+						zap.Error(err),
+					)
 				}
 				return
 			}
@@ -179,6 +213,11 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 					outputReceived = true
 					timeoutTimer.Stop()
 				}
+
+				session.logger.Debug("Terminal output received",
+					zap.String("session_id", sessionID),
+					zap.Int("bytes", n),
+				)
 
 				session.mutex.RLock()
 				callback := session.onOutput
@@ -192,6 +231,11 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 	}()
 
 	m.sessions[sessionID] = session
+	m.logger.Info("Terminal session created successfully",
+		zap.String("session_id", sessionID),
+		zap.String("stack_name", stackName),
+		zap.String("service_name", serviceName),
+	)
 	return session, nil
 }
 
@@ -208,8 +252,17 @@ func (m *Manager) CloseSession(sessionID string) error {
 
 	session, exists := m.sessions[sessionID]
 	if !exists {
+		m.logger.Warn("Attempted to close non-existent session",
+			zap.String("session_id", sessionID),
+		)
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
+
+	m.logger.Info("Closing terminal session",
+		zap.String("session_id", sessionID),
+		zap.String("stack_name", session.StackName),
+		zap.String("service_name", session.ServiceName),
+	)
 
 	session.closeSession(0)
 	delete(m.sessions, sessionID)
@@ -219,6 +272,10 @@ func (m *Manager) CloseSession(sessionID string) error {
 func (m *Manager) CloseAllSessions() {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
+
+	m.logger.Info("Closing all terminal sessions",
+		zap.Int("session_count", len(m.sessions)),
+	)
 
 	for sessionID, session := range m.sessions {
 		session.closeSession(0)
@@ -234,9 +291,17 @@ func (s *Session) Write(data []byte) error {
 		return fmt.Errorf("session is closed")
 	}
 
+	s.logger.Debug("Writing to terminal",
+		zap.String("session_id", s.ID),
+		zap.Int("bytes", len(data)),
+	)
+
 	_, err := s.hijackedResp.Conn.Write(data)
 	if err != nil {
-		log.Printf("Terminal: Write error for session %s: %v", s.ID, err)
+		s.logger.Error("Terminal I/O write error",
+			zap.String("session_id", s.ID),
+			zap.Error(err),
+		)
 	}
 	return err
 }
@@ -248,6 +313,12 @@ func (s *Session) Resize(cols, rows int) error {
 	if s.closed {
 		return fmt.Errorf("session is closed")
 	}
+
+	s.logger.Debug("Resizing terminal",
+		zap.String("session_id", s.ID),
+		zap.Int("cols", cols),
+		zap.Int("rows", rows),
+	)
 
 	s.cols = cols
 	s.rows = rows
@@ -265,7 +336,12 @@ func (s *Session) Resize(cols, rows int) error {
 	}
 
 	if err := s.dockerClient.ContainerExecResize(ctx, s.ExecID, resizeOptions); err != nil {
-		log.Printf("Terminal: Resize failed for session %s: %v", s.ID, err)
+		s.logger.Error("Terminal resize failed",
+			zap.String("session_id", s.ID),
+			zap.Int("cols", cols),
+			zap.Int("rows", rows),
+			zap.Error(err),
+		)
 		return fmt.Errorf("failed to resize terminal: %w", err)
 	}
 
@@ -292,6 +368,11 @@ func (s *Session) closeSession(exitCode int) {
 		return
 	}
 
+	s.logger.Info("Closing terminal session",
+		zap.String("session_id", s.ID),
+		zap.Int("exit_code", exitCode),
+	)
+
 	s.closed = true
 
 	if s.hijackedResp != nil {
@@ -311,9 +392,17 @@ func (s *Session) closeSession(exitCode int) {
 		defer cancel()
 
 		if err := s.dockerClient.ContainerExecStart(ctx, s.ExecID, container.ExecStartOptions{}); err != nil {
-			log.Printf("Terminal: Failed to terminate exec session: %v", err)
+			s.logger.Warn("Failed to terminate exec session during cleanup",
+				zap.String("session_id", s.ID),
+				zap.String("exec_id", s.ExecID),
+				zap.Error(err),
+			)
 		}
 	}
 
-	log.Printf("Terminal: Session %s closed", s.ID)
+	s.logger.Info("Terminal session closed",
+		zap.String("session_id", s.ID),
+		zap.String("stack_name", s.StackName),
+		zap.String("service_name", s.ServiceName),
+	)
 }

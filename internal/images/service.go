@@ -3,16 +3,18 @@ package images
 import (
 	"berth-agent/config"
 	"berth-agent/internal/docker"
+	"berth-agent/internal/logging"
 	"berth-agent/internal/stack"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 type Service struct {
@@ -20,24 +22,31 @@ type Service struct {
 	stackService       *stack.Service
 	stackLocation      string
 	insecureRegistries map[string]bool
+	logger             *logging.Logger
 }
 
-func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *stack.Service) *Service {
+func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *stack.Service, logger *logging.Logger) *Service {
 	insecureRegistries := make(map[string]bool)
 	ctx := context.Background()
 	if info, err := dockerClient.SystemInfo(ctx); err == nil {
 		for _, registry := range info.RegistryConfig.InsecureRegistryCIDRs {
 			insecureRegistries[registry.String()] = true
-			log.Printf("[Image Updates] Detected insecure registry from daemon config: %s", registry.String())
+			logger.Info("Detected insecure registry from daemon config",
+				zap.String("registry", registry.String()),
+			)
 		}
 		for registry, indexInfo := range info.RegistryConfig.IndexConfigs {
 			if !indexInfo.Secure {
 				insecureRegistries[registry] = true
-				log.Printf("[Image Updates] Detected insecure registry from daemon config: %s", registry)
+				logger.Info("Detected insecure registry from daemon config",
+					zap.String("registry", registry),
+				)
 			}
 		}
 	} else {
-		log.Printf("[Image Updates] WARNING: Failed to query Docker daemon for insecure registries: %v", err)
+		logger.Warn("Failed to query Docker daemon for insecure registries",
+			zap.Error(err),
+		)
 	}
 
 	return &Service{
@@ -45,39 +54,52 @@ func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *s
 		stackService:       stackService,
 		stackLocation:      cfg.StackLocation,
 		insecureRegistries: insecureRegistries,
+		logger:             logger,
 	}
 }
 
 func (s *Service) CheckImageUpdates(ctx context.Context, credentials []RegistryCredential, disabledRegistries []string) ([]ContainerImageCheckResult, error) {
-	log.Printf("[Image Updates] Starting image update check")
-	log.Printf("[Image Updates] Received %d registry credential(s)", len(credentials))
-	log.Printf("[Image Updates] Received %d disabled registr(ies)", len(disabledRegistries))
+	s.logger.Info("Starting image update check",
+		zap.Int("credential_count", len(credentials)),
+		zap.Int("disabled_registries_count", len(disabledRegistries)),
+	)
 
 	disabledRegistriesMap := make(map[string]bool)
 	for _, registry := range disabledRegistries {
 		disabledRegistriesMap[registry] = true
-		log.Printf("[Image Updates] Registry '%s' is disabled - will skip checks", registry)
+		s.logger.Info("Registry disabled - will skip checks",
+			zap.String("registry", registry),
+		)
 	}
 
 	results := []ContainerImageCheckResult{}
 
 	containers, err := s.getAllRunningContainers(ctx)
 	if err != nil {
-		log.Printf("[Image Updates] ERROR: Failed to get running containers: %v", err)
+		s.logger.Error("Failed to get running containers",
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to get running containers: %w", err)
 	}
 
-	log.Printf("[Image Updates] Found %d container(s) to check", len(containers))
+	s.logger.Info("Found containers to check",
+		zap.Int("container_count", len(containers)),
+	)
 
 	containersByStack := make(map[string][]containerInfo)
 	for _, container := range containers {
 		containersByStack[container.stackName] = append(containersByStack[container.stackName], container)
 	}
 
-	log.Printf("[Image Updates] Processing %d stack(s)", len(containersByStack))
+	s.logger.Info("Processing stacks",
+		zap.Int("stack_count", len(containersByStack)),
+	)
 
 	for stackName, stackContainers := range containersByStack {
-		log.Printf("[Image Updates] [Stack: %s] Processing %d container(s)", stackName, len(stackContainers))
+		s.logger.Info("Processing stack containers",
+			zap.String("stack", stackName),
+			zap.Int("container_count", len(stackContainers)),
+		)
 
 		neededRegistries := make(map[string]bool)
 		for _, container := range stackContainers {
@@ -87,25 +109,40 @@ func (s *Service) CheckImageUpdates(ctx context.Context, credentials []RegistryC
 			}
 		}
 
-		log.Printf("[Image Updates] [Stack: %s] Containers use %d unique registr(ies)", stackName, len(neededRegistries))
+		registryList := make([]string, 0, len(neededRegistries))
 		for registry := range neededRegistries {
-			log.Printf("[Image Updates] [Stack: %s] - Registry: %s", stackName, registry)
+			registryList = append(registryList, registry)
 		}
+		s.logger.Debug("Stack uses registries",
+			zap.String("stack", stackName),
+			zap.Int("registry_count", len(neededRegistries)),
+			zap.Strings("registries", registryList),
+		)
 
 		stackCredentials := s.filterCredentialsForStackAndRegistries(stackName, neededRegistries, credentials)
-		log.Printf("[Image Updates] [Stack: %s] Using %d registry credential(s)", stackName, len(stackCredentials))
+		s.logger.Debug("Using credentials for stack",
+			zap.String("stack", stackName),
+			zap.Int("credential_count", len(stackCredentials)),
+		)
 
 		var tempDockerConfig string
 		if len(stackCredentials) > 0 {
 			tempDockerConfig, err = s.createTempDockerConfig(ctx, stackCredentials)
 			if err != nil {
-				log.Printf("[Image Updates] [Stack: %s] WARNING: Failed to create temp docker config: %v", stackName, err)
-				log.Printf("[Image Updates] [Stack: %s] Continuing without credentials (public registries only)", stackName)
+				s.logger.Warn("Failed to create temp docker config",
+					zap.String("stack", stackName),
+					zap.Error(err),
+				)
+				s.logger.Info("Continuing without credentials (public registries only)",
+					zap.String("stack", stackName),
+				)
 			} else {
 				defer os.RemoveAll(tempDockerConfig)
 			}
 		} else {
-			log.Printf("[Image Updates] [Stack: %s] No credentials needed for this stack's registries", stackName)
+			s.logger.Debug("No credentials needed for this stack's registries",
+				zap.String("stack", stackName),
+			)
 		}
 
 		for _, container := range stackContainers {
@@ -127,8 +164,11 @@ func (s *Service) CheckImageUpdates(ctx context.Context, credentials []RegistryC
 		}
 	}
 
-	log.Printf("[Image Updates] Completed image update check: %d success, %d error(s), %d skipped (disabled registries)",
-		successCount, errorCount, skippedCount)
+	s.logger.Info("Completed image update check",
+		zap.Int("success_count", successCount),
+		zap.Int("error_count", errorCount),
+		zap.Int("skipped_count", skippedCount),
+	)
 
 	return results, nil
 }
@@ -151,7 +191,9 @@ func (s *Service) getAllRunningContainers(ctx context.Context) ([]containerInfo,
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	log.Printf("[Image Updates] Discovered %d container(s) with compose labels", len(containerList))
+	s.logger.Debug("Discovered containers with compose labels",
+		zap.Int("container_count", len(containerList)),
+	)
 
 	var containers []containerInfo
 	skippedCount := 0
@@ -165,8 +207,11 @@ func (s *Service) getAllRunningContainers(ctx context.Context) ([]containerInfo,
 
 		if s.isImageUpdateCheckDisabled(c.Labels) {
 			skippedCount++
-			log.Printf("[Image Updates] SKIPPED: Container '%s' in stack '%s' - opted out via label (berth.image-update-check.enabled=false)",
-				containerName, stackName)
+			s.logger.Info("Container opted out of image update checks",
+				zap.String("container", containerName),
+				zap.String("stack", stackName),
+				zap.String("reason", "berth.image-update-check.enabled=false"),
+			)
 			continue
 		}
 
@@ -175,23 +220,33 @@ func (s *Service) getAllRunningContainers(ctx context.Context) ([]containerInfo,
 		imageInfo, err := s.dockerClient.ImageInspect(ctx, c.Image)
 		if err == nil && len(imageInfo.RepoDigests) > 0 {
 			repoDigest := imageInfo.RepoDigests[0]
-			log.Printf("[Image Updates] Container '%s' in stack '%s' - current digest from RepoDigests[0]: %s",
-				containerName, stackName, repoDigest)
+			s.logger.Debug("Found current digest from RepoDigests",
+				zap.String("container", containerName),
+				zap.String("stack", stackName),
+				zap.String("repo_digest", repoDigest),
+			)
 
 			if idx := strings.Index(repoDigest, "@"); idx > 0 {
 				currentDigest = repoDigest[idx+1:]
 
 				if strings.HasPrefix(c.Image, "sha256:") {
 					imageName = repoDigest[:idx]
-					log.Printf("[Image Updates] Container '%s' in stack '%s' - extracted image name from RepoDigest: '%s'",
-						containerName, stackName, imageName)
+					s.logger.Debug("Extracted image name from RepoDigest",
+						zap.String("container", containerName),
+						zap.String("stack", stackName),
+						zap.String("image_name", imageName),
+					)
 				}
 			} else {
 				currentDigest = repoDigest
 			}
 		} else {
-			log.Printf("[Image Updates] Container '%s' in stack '%s' - no RepoDigests found (err: %v, count: %d)",
-				containerName, stackName, err, len(imageInfo.RepoDigests))
+			s.logger.Debug("No RepoDigests found",
+				zap.String("container", containerName),
+				zap.String("stack", stackName),
+				zap.Error(err),
+				zap.Int("digest_count", len(imageInfo.RepoDigests)),
+			)
 		}
 
 		containers = append(containers, containerInfo{
@@ -203,7 +258,9 @@ func (s *Service) getAllRunningContainers(ctx context.Context) ([]containerInfo,
 	}
 
 	if skippedCount > 0 {
-		log.Printf("[Image Updates] Skipped %d container(s) due to opt-out labels", skippedCount)
+		s.logger.Info("Skipped containers due to opt-out labels",
+			zap.Int("skipped_count", skippedCount),
+		)
 	}
 
 	return containers, nil
@@ -221,8 +278,11 @@ func (s *Service) filterCredentialsForStackAndRegistries(stackName string, neede
 
 	for _, cred := range credentials {
 		if !matchesPattern(cred.StackPattern, stackName) {
-			log.Printf("[Image Updates] [Stack: %s] Credential for registry '%s' does NOT match stack pattern '%s' - skipping",
-				stackName, cred.Registry, cred.StackPattern)
+			s.logger.Debug("Credential does not match stack pattern",
+				zap.String("stack", stackName),
+				zap.String("registry", cred.Registry),
+				zap.String("pattern", cred.StackPattern),
+			)
 			continue
 		}
 
@@ -236,13 +296,18 @@ func (s *Service) filterCredentialsForStackAndRegistries(stackName string, neede
 		}
 
 		if !registryNeeded {
-			log.Printf("[Image Updates] [Stack: %s] Credential for registry '%s' not needed (stack uses different registries) - skipping",
-				stackName, cred.Registry)
+			s.logger.Debug("Credential not needed for stack registries",
+				zap.String("stack", stackName),
+				zap.String("registry", cred.Registry),
+			)
 			continue
 		}
 
-		log.Printf("[Image Updates] [Stack: %s] Using credential for registry '%s' (matches pattern '%s' and is needed)",
-			stackName, cred.Registry, cred.StackPattern)
+		s.logger.Debug("Using credential for registry",
+			zap.String("stack", stackName),
+			zap.String("registry", cred.Registry),
+			zap.String("pattern", cred.StackPattern),
+		)
 		filtered = append(filtered, cred)
 	}
 
@@ -267,7 +332,6 @@ func matchesPattern(pattern, name string) bool {
 
 	matched, err := filepath.Match(pattern, name)
 	if err != nil {
-		log.Printf("[Image Updates] WARNING: Invalid pattern '%s': %v", pattern, err)
 		return false
 	}
 	return matched
@@ -285,7 +349,10 @@ func (s *Service) createTempDockerConfig(ctx context.Context, credentials []Regi
 	}
 
 	for _, cred := range credentials {
-		log.Printf("[Image Updates] Authenticating to registry: %s (username: %s)", cred.Registry, cred.Username)
+		s.logger.Debug("Authenticating to registry",
+			zap.String("registry", cred.Registry),
+			zap.String("username", cred.Username),
+		)
 
 		cmd := exec.CommandContext(ctx, "docker", "login", cred.Registry, "-u", cred.Username, "--password-stdin")
 		cmd.Env = []string{
@@ -303,12 +370,17 @@ func (s *Service) createTempDockerConfig(ctx context.Context, credentials []Regi
 			if errorMsg == "" {
 				errorMsg = err.Error()
 			}
-			log.Printf("[Image Updates] ERROR: Failed to authenticate to registry %s: %v", cred.Registry, errorMsg)
+			s.logger.Error("Failed to authenticate to registry",
+				zap.String("registry", cred.Registry),
+				zap.String("error_message", errorMsg),
+			)
 			os.RemoveAll(tempDir)
 			return "", fmt.Errorf("docker login to %s failed: %s", cred.Registry, errorMsg)
 		}
 
-		log.Printf("[Image Updates] Successfully authenticated to registry: %s", cred.Registry)
+		s.logger.Info("Successfully authenticated to registry",
+			zap.String("registry", cred.Registry),
+		)
 	}
 
 	return tempDir, nil
@@ -325,26 +397,38 @@ func (s *Service) checkContainerImage(ctx context.Context, container containerIn
 	}
 
 	if disabledRegistries[registry] {
-		log.Printf("[Image Updates] [Stack: %s] SKIPPED: Container '%s' - image from disabled registry: %s",
-			container.stackName, container.containerName, registry)
+		s.logger.Info("Container skipped - image from disabled registry",
+			zap.String("stack", container.stackName),
+			zap.String("container", container.containerName),
+			zap.String("registry", registry),
+		)
 		result.Error = ""
 		return result
 	}
 
-	log.Printf("[Image Updates] [Stack: %s] Checking container '%s' - image: %s (registry: %s)",
-		container.stackName, container.containerName, container.imageName, registry)
+	s.logger.Info("Checking container image",
+		zap.String("stack", container.stackName),
+		zap.String("container", container.containerName),
+		zap.String("image", container.imageName),
+		zap.String("registry", registry),
+	)
 
 	isInsecure := s.insecureRegistries[registry]
 	if isInsecure {
-		log.Printf("[Image Updates] [Stack: %s] Registry '%s' is marked as insecure in Docker daemon",
-			container.stackName, registry)
+		s.logger.Debug("Registry marked as insecure in Docker daemon",
+			zap.String("stack", container.stackName),
+			zap.String("registry", registry),
+		)
 	}
 
 	latestDigest, err := s.getLatestImageDigest(ctx, container.imageName, tempDockerConfig, isInsecure)
 	if err != nil {
 		result.Error = err.Error()
-		log.Printf("[Image Updates] [Stack: %s] ERROR checking container '%s': %v",
-			container.stackName, container.containerName, err)
+		s.logger.Error("Error checking container image",
+			zap.String("stack", container.stackName),
+			zap.String("container", container.containerName),
+			zap.Error(err),
+		)
 		return result
 	}
 
@@ -352,22 +436,35 @@ func (s *Service) checkContainerImage(ctx context.Context, container containerIn
 
 	if container.currentDigest != "" && latestDigest != "" {
 		if container.currentDigest == latestDigest {
-			log.Printf("[Image Updates] [Stack: %s] Container '%s' is up to date (digest: %s)",
-				container.stackName, container.containerName, truncateDigest(latestDigest))
+			s.logger.Debug("Container is up to date",
+				zap.String("stack", container.stackName),
+				zap.String("container", container.containerName),
+				zap.String("digest", truncateDigest(latestDigest)),
+			)
 		} else {
-			log.Printf("[Image Updates] [Stack: %s] UPDATE AVAILABLE for container '%s' (current: %s, latest: %s)",
-				container.stackName, container.containerName,
-				truncateDigest(container.currentDigest), truncateDigest(latestDigest))
+			s.logger.Warn("Update available for container",
+				zap.String("stack", container.stackName),
+				zap.String("container", container.containerName),
+				zap.String("current_digest", truncateDigest(container.currentDigest)),
+				zap.String("latest_digest", truncateDigest(latestDigest)),
+			)
 		}
 	} else {
-		log.Printf("[Image Updates] [Stack: %s] Container '%s' check completed (digest information may be incomplete)",
-			container.stackName, container.containerName)
+		s.logger.Debug("Container check completed with incomplete digest information",
+			zap.String("stack", container.stackName),
+			zap.String("container", container.containerName),
+		)
 	}
 
 	return result
 }
 
 func (s *Service) getLatestImageDigest(ctx context.Context, imageName string, tempDockerConfig string, isInsecure bool) (string, error) {
+	s.logger.Debug("Querying registry for latest image digest",
+		zap.String("image", imageName),
+		zap.Bool("insecure", isInsecure),
+	)
+
 	args := []string{"manifest", "inspect", imageName, "-v"}
 	if isInsecure {
 		args = append(args, "--insecure")
@@ -388,6 +485,10 @@ func (s *Service) getLatestImageDigest(ctx context.Context, imageName string, te
 		if errorMsg == "" {
 			errorMsg = err.Error()
 		}
+		s.logger.Error("Failed to query registry for image manifest",
+			zap.String("image", imageName),
+			zap.String("error_message", errorMsg),
+		)
 		return "", fmt.Errorf("failed to inspect image %s: %s", imageName, errorMsg)
 	}
 
@@ -406,16 +507,31 @@ func (s *Service) getLatestImageDigest(ctx context.Context, imageName string, te
 		}
 		if err2 := json.Unmarshal(stdout.Bytes(), &manifestArray); err2 == nil && len(manifestArray) > 0 {
 			if manifestArray[0].Descriptor.Digest != "" {
+				s.logger.Debug("Successfully retrieved image digest from registry",
+					zap.String("image", imageName),
+					zap.String("digest", truncateDigest(manifestArray[0].Descriptor.Digest)),
+				)
 				return manifestArray[0].Descriptor.Digest, nil
 			}
 		}
+		s.logger.Error("Failed to parse manifest JSON",
+			zap.String("image", imageName),
+			zap.Error(err),
+		)
 		return "", fmt.Errorf("failed to parse manifest JSON: %w", err)
 	}
 
 	if manifestData.Descriptor.Digest != "" {
+		s.logger.Debug("Successfully retrieved image digest from registry",
+			zap.String("image", imageName),
+			zap.String("digest", truncateDigest(manifestData.Descriptor.Digest)),
+		)
 		return manifestData.Descriptor.Digest, nil
 	}
 
+	s.logger.Error("No digest found in manifest",
+		zap.String("image", imageName),
+	)
 	return "", fmt.Errorf("no digest found in manifest for image %s", imageName)
 }
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 
 	ws "berth-agent/internal/websocket"
 )
@@ -23,6 +23,7 @@ type Handler struct {
 	manager      *Manager
 	dockerClient *client.Client
 	auditLog     *logging.Service
+	logger       *logging.Logger
 }
 
 type TerminalRequest struct {
@@ -39,20 +40,26 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func NewHandler(dockerClient *client.Client, auditLog *logging.Service) *Handler {
+func NewHandler(dockerClient *client.Client, auditLog *logging.Service, logger *logging.Logger) *Handler {
 	return &Handler{
-		manager:      NewManager(dockerClient),
+		manager:      NewManager(dockerClient, logger),
 		dockerClient: dockerClient,
 		auditLog:     auditLog,
+		logger:       logger,
 	}
 }
 
 func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
-	log.Printf("Terminal: New connection from %s", c.RealIP())
+	h.logger.Info("New WebSocket connection for terminal",
+		zap.String("source_ip", c.RealIP()),
+		zap.String("user_agent", c.Request().UserAgent()),
+	)
 
 	authHeader := c.Request().Header.Get("Authorization")
 	if authHeader == "" {
-		log.Printf("Terminal: Missing authorization header")
+		h.logger.Warn("WebSocket connection rejected - missing authorization header",
+			zap.String("source_ip", c.RealIP()),
+		)
 		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error": "Authorization header required",
 		})
@@ -62,10 +69,18 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
-		log.Printf("Terminal: WebSocket upgrade failed: %v", err)
+		h.logger.Error("WebSocket upgrade failed",
+			zap.String("source_ip", c.RealIP()),
+			zap.Error(err),
+		)
 		return err
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		_ = conn.Close()
+		h.logger.Info("WebSocket connection closed",
+			zap.String("source_ip", c.RealIP()),
+		)
+	}()
 
 	var session *Session
 	sessionCreated := false
@@ -74,7 +89,10 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		var rawMessage json.RawMessage
 		if err := conn.ReadJSON(&rawMessage); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Terminal: WebSocket read error: %v", err)
+				h.logger.Error("WebSocket read error",
+					zap.String("source_ip", c.RealIP()),
+					zap.Error(err),
+				)
 			}
 			break
 		}
@@ -98,17 +116,32 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				continue
 			}
 
-			log.Printf("Terminal: Starting session for %s/%s", req.StackName, req.ServiceName)
+			h.logger.Info("Starting terminal session",
+				zap.String("stack_name", req.StackName),
+				zap.String("service_name", req.ServiceName),
+				zap.String("container_name", req.ContainerName),
+			)
+
 			containerID, err := h.findContainerID(req.StackName, req.ServiceName, req.ContainerName)
 			if err != nil {
-				log.Printf("Terminal: Container not found: %v", err)
+				h.logger.Error("Container not found",
+					zap.String("stack_name", req.StackName),
+					zap.String("service_name", req.ServiceName),
+					zap.String("container_name", req.ContainerName),
+					zap.Error(err),
+				)
 				h.sendError(conn, "Container not found", err.Error())
 				continue
 			}
 
 			session, err = h.manager.CreateSession(req.StackName, req.ServiceName, containerID, req.Cols, req.Rows)
 			if err != nil {
-				log.Printf("Terminal: Failed to create session: %v", err)
+				h.logger.Error("Failed to create terminal session",
+					zap.String("stack_name", req.StackName),
+					zap.String("service_name", req.ServiceName),
+					zap.String("container_id", containerID),
+					zap.Error(err),
+				)
 				errorMsg := "Failed to create terminal session"
 				if strings.Contains(err.Error(), "no compatible shell found") {
 					errorMsg = "No compatible shell found in container"
@@ -131,7 +164,10 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 					Output:    output,
 				}
 				if err := conn.WriteJSON(event); err != nil {
-					log.Printf("Terminal: Failed to send output: %v", err)
+					h.logger.Error("Failed to send terminal output to WebSocket",
+						zap.String("session_id", session.ID),
+						zap.Error(err),
+					)
 				}
 			})
 
@@ -148,7 +184,11 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				_ = conn.Close()
 			})
 
-			log.Printf("Terminal: Session %s created successfully", session.ID)
+			h.logger.Info("Terminal session started successfully",
+				zap.String("session_id", session.ID),
+				zap.String("stack_name", req.StackName),
+				zap.String("service_name", req.ServiceName),
+			)
 			h.sendSuccess(conn, "Terminal session started", session.ID)
 
 		case ws.MessageTypeTerminalInput:
@@ -169,6 +209,10 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			}
 
 			if err := session.Write(inputEvent.Input); err != nil {
+				h.logger.Error("Failed to write input to terminal",
+					zap.String("session_id", session.ID),
+					zap.Error(err),
+				)
 				h.sendError(conn, "Failed to write to terminal", err.Error())
 				continue
 			}
@@ -191,6 +235,12 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			}
 
 			if err := session.Resize(resizeEvent.Cols, resizeEvent.Rows); err != nil {
+				h.logger.Error("Failed to resize terminal",
+					zap.String("session_id", session.ID),
+					zap.Int("cols", resizeEvent.Cols),
+					zap.Int("rows", resizeEvent.Rows),
+					zap.Error(err),
+				)
 				h.sendError(conn, "Failed to resize terminal", err.Error())
 				continue
 			}
@@ -205,7 +255,9 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 					}
 				}
 
-				log.Printf("Terminal: Closing session %s", session.ID)
+				h.logger.Info("Client requested terminal session close",
+					zap.String("session_id", session.ID),
+				)
 				_ = h.manager.CloseSession(session.ID)
 				session = nil
 			}

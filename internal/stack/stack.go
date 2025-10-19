@@ -3,11 +3,11 @@ package stack
 import (
 	"berth-agent/config"
 	"berth-agent/internal/docker"
+	"berth-agent/internal/logging"
 	"berth-agent/internal/validation"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
+	"go.uber.org/zap"
 )
 
 type Stack struct {
@@ -243,9 +244,10 @@ type Service struct {
 	commandExec   *docker.CommandExecutor
 	dockerClient  *docker.Client
 	serviceCache  *ServiceCountCache
+	logger        *logging.Logger
 }
 
-func NewService(cfg *config.Config, dockerClient *docker.Client) *Service {
+func NewService(cfg *config.Config, dockerClient *docker.Client, logger *logging.Logger) *Service {
 	cache := NewServiceCountCache(cfg.StackLocation)
 
 	service := &Service{
@@ -253,20 +255,24 @@ func NewService(cfg *config.Config, dockerClient *docker.Client) *Service {
 		commandExec:   docker.NewCommandExecutor(cfg.StackLocation),
 		dockerClient:  dockerClient,
 		serviceCache:  cache,
+		logger:        logger.With(zap.String("component", "stack")),
 	}
 
 	if err := cache.Start(); err != nil {
-		log.Printf("Warning: failed to start service count cache: %v", err)
+		logger.Warn("Failed to start service count cache", zap.Error(err))
 	}
 
 	return service
 }
 
 func (s *Service) ListStacks() ([]Stack, error) {
+	s.logger.Info("Listing stacks", zap.String("location", s.stackLocation))
+
 	var stacks []Stack
 
 	entries, err := os.ReadDir(s.stackLocation)
 	if err != nil {
+		s.logger.Error("Failed to read stack location", zap.String("location", s.stackLocation), zap.Error(err))
 		return nil, err
 	}
 
@@ -292,6 +298,13 @@ func (s *Service) ListStacks() ([]Stack, error) {
 
 				totalContainers, runningContainers := s.getStackContainerCounts(stackName)
 
+				s.logger.Debug("Discovered stack",
+					zap.String("stack", stackName),
+					zap.String("compose_file", filename),
+					zap.Bool("is_healthy", isHealthy),
+					zap.Int("total_containers", totalContainers),
+					zap.Int("running_containers", runningContainers))
+
 				stack := Stack{
 					Name:              stackName,
 					Path:              stackPath,
@@ -310,16 +323,22 @@ func (s *Service) ListStacks() ([]Stack, error) {
 		return stacks[i].Name < stacks[j].Name
 	})
 
+	s.logger.Info("Stack listing completed", zap.Int("count", len(stacks)))
+
 	return stacks, nil
 }
 
 func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
+	s.logger.Info("Retrieving stack details", zap.String("stack", name))
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
+		s.logger.Error("Invalid stack name", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Error("Stack not found", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", name)
 	}
 
@@ -340,8 +359,11 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 	}
 
 	if composeFile == "" {
+		s.logger.Error("No compose file found in stack", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("no compose file found in stack '%s'", name)
 	}
+
+	s.logger.Debug("Found compose file", zap.String("stack", name), zap.String("compose_file", composeFile))
 
 	type composeData struct {
 		services []ComposeService
@@ -407,6 +429,10 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 	sort.Slice(services, func(i, j int) bool {
 		return services[i].Name < services[j].Name
 	})
+
+	s.logger.Info("Stack details retrieved successfully",
+		zap.String("stack", name),
+		zap.Int("service_count", len(services)))
 
 	return &StackDetails{
 		Name:        name,
@@ -808,17 +834,22 @@ func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Contain
 }
 
 func (s *Service) GetStackNetworks(name string) ([]Network, error) {
+	s.logger.Info("Retrieving stack networks", zap.String("stack", name))
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
+		s.logger.Error("Invalid stack name for network retrieval", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Error("Stack not found for network retrieval", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", name)
 	}
 
 	composeNetworks, err := s.getComposeNetworks(stackPath)
 	if err != nil {
+		s.logger.Error("Failed to get compose networks", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to get compose networks: %w", err)
 	}
 
@@ -827,6 +858,7 @@ func (s *Service) GetStackNetworks(name string) ([]Network, error) {
 
 	dockerNetworkSummaries, err := s.dockerClient.ListNetworks(ctx)
 	if err != nil {
+		s.logger.Error("Failed to list Docker networks", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to list Docker networks: %w", err)
 	}
 
@@ -841,7 +873,12 @@ func (s *Service) GetStackNetworks(name string) ([]Network, error) {
 		}
 	}
 
-	return s.mergeNetworkInformation(name, composeNetworks, dockerNetworks), nil
+	networks := s.mergeNetworkInformation(name, composeNetworks, dockerNetworks)
+	s.logger.Info("Stack networks retrieved successfully",
+		zap.String("stack", name),
+		zap.Int("network_count", len(networks)))
+
+	return networks, nil
 }
 
 func (s *Service) isStackNetwork(networkName, stackName string) bool {
@@ -1026,17 +1063,22 @@ func (s *Service) mergeNetworkInformation(stackName string, composeNetworks map[
 }
 
 func (s *Service) GetStackVolumes(name string) ([]Volume, error) {
+	s.logger.Info("Retrieving stack volumes", zap.String("stack", name))
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
+		s.logger.Error("Invalid stack name for volume retrieval", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Error("Stack not found for volume retrieval", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", name)
 	}
 
 	composeVolumes, err := s.getComposeVolumes(stackPath)
 	if err != nil {
+		s.logger.Error("Failed to get compose volumes", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to get compose volumes: %w", err)
 	}
 
@@ -1045,6 +1087,7 @@ func (s *Service) GetStackVolumes(name string) ([]Volume, error) {
 
 	dockerVolumeList, err := s.dockerClient.ListVolumes(ctx)
 	if err != nil {
+		s.logger.Error("Failed to list Docker volumes", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to list Docker volumes: %w", err)
 	}
 
@@ -1057,10 +1100,16 @@ func (s *Service) GetStackVolumes(name string) ([]Volume, error) {
 
 	containerInfo, err := s.getStackContainerVolumes(name)
 	if err != nil {
+		s.logger.Error("Failed to get container volume info", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to get container volume info: %w", err)
 	}
 
-	return s.mergeVolumeInformation(name, composeVolumes, dockerVolumes, containerInfo), nil
+	volumes := s.mergeVolumeInformation(name, composeVolumes, dockerVolumes, containerInfo)
+	s.logger.Info("Stack volumes retrieved successfully",
+		zap.String("stack", name),
+		zap.Int("volume_count", len(volumes)))
+
+	return volumes, nil
 }
 
 func (s *Service) isStackVolume(volumeName, stackName string) bool {
@@ -1395,26 +1444,37 @@ func (s *Service) mergeVolumeInformation(stackName string, composeVolumes map[st
 }
 
 func (s *Service) GetStackEnvironmentVariables(name string) (map[string][]ServiceEnvironment, error) {
+	s.logger.Info("Retrieving stack environment variables", zap.String("stack", name))
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
+		s.logger.Error("Invalid stack name for environment retrieval", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Error("Stack not found for environment retrieval", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", name)
 	}
 
 	composeEnvironment, err := s.getComposeEnvironment(stackPath)
 	if err != nil {
+		s.logger.Error("Failed to get compose environment", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to get compose environment: %w", err)
 	}
 
 	runtimeEnvironment, err := s.getRuntimeEnvironment(stackPath)
 	if err != nil {
+		s.logger.Error("Failed to get runtime environment", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("failed to get runtime environment: %w", err)
 	}
 
-	return s.mergeEnvironmentInformation(composeEnvironment, runtimeEnvironment), nil
+	envVars := s.mergeEnvironmentInformation(composeEnvironment, runtimeEnvironment)
+	s.logger.Info("Stack environment variables retrieved successfully",
+		zap.String("stack", name),
+		zap.Int("service_count", len(envVars)))
+
+	return envVars, nil
 }
 
 func (s *Service) getComposeEnvironment(stackPath string) (map[string][]ServiceEnvironment, error) {
@@ -1770,11 +1830,19 @@ func (s *Service) isStackHealthy(stackName string) bool {
 
 	expectedCount, exists := s.serviceCache.GetServiceCount(stackName)
 	if !exists || expectedCount == 0 {
+		s.logger.Debug("Cache miss for stack service count", zap.String("stack", stackName))
 		return false
 	}
 
+	s.logger.Debug("Cache hit for stack service count",
+		zap.String("stack", stackName),
+		zap.Int("expected_count", expectedCount))
+
 	containers, err := s.getContainerInfoViaAPI(stackName)
 	if err != nil {
+		s.logger.Debug("Failed to get container info for health check",
+			zap.String("stack", stackName),
+			zap.Error(err))
 		return false
 	}
 
@@ -1792,19 +1860,33 @@ func (s *Service) isStackHealthy(stackName string) bool {
 		}
 	}
 
-	return runningServices == expectedCount
+	isHealthy := runningServices == expectedCount
+	s.logger.Debug("Stack health check completed",
+		zap.String("stack", stackName),
+		zap.Bool("is_healthy", isHealthy),
+		zap.Int("running_services", runningServices),
+		zap.Int("expected_services", expectedCount))
+
+	return isHealthy
 }
 
 func (s *Service) getStackContainerCounts(stackName string) (total int, running int) {
 
 	expectedCount, exists := s.serviceCache.GetServiceCount(stackName)
 	if !exists {
+		s.logger.Debug("Cache miss for stack container counts", zap.String("stack", stackName))
 		return 0, 0
 	}
 
+	s.logger.Debug("Cache hit for stack container counts",
+		zap.String("stack", stackName),
+		zap.Int("expected_count", expectedCount))
+
 	containers, err := s.getContainerInfoViaAPI(stackName)
 	if err != nil {
-
+		s.logger.Debug("Failed to get container info for count",
+			zap.String("stack", stackName),
+			zap.Error(err))
 		return expectedCount, 0
 	}
 
@@ -1817,23 +1899,33 @@ func (s *Service) getStackContainerCounts(stackName string) (total int, running 
 		}
 	}
 
+	s.logger.Debug("Container counts retrieved",
+		zap.String("stack", stackName),
+		zap.Int("total", expectedCount),
+		zap.Int("running", runningCount))
+
 	return expectedCount, runningCount
 }
 
 func (s *Service) GetContainerImageDetails(stackName string) ([]ContainerImageDetails, error) {
+	s.logger.Info("Retrieving container image details", zap.String("stack", stackName))
+
 	ctx := context.Background()
 
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
 	if err != nil {
+		s.logger.Error("Invalid stack name for image details retrieval", zap.String("stack", stackName), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", stackName, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Error("Stack not found for image details retrieval", zap.String("stack", stackName), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", stackName)
 	}
 
 	containers, err := s.getContainerInfoViaAPI(stackName)
 	if err != nil {
+		s.logger.Error("Failed to get container info for image details", zap.String("stack", stackName), zap.Error(err))
 		return nil, fmt.Errorf("failed to get container info: %w", err)
 	}
 
@@ -1847,13 +1939,20 @@ func (s *Service) GetContainerImageDetails(stackName string) ([]ContainerImageDe
 
 			imageInfo, err := s.dockerClient.ImageInspect(ctx, container.Image)
 			if err != nil {
-				log.Printf("Failed to inspect image %s for container %s: %v", container.Image, container.Name, err)
+				s.logger.Error("Failed to inspect image",
+					zap.String("stack", stackName),
+					zap.String("container", container.Name),
+					zap.String("image", container.Image),
+					zap.Error(err))
 				continue
 			}
 
 			history, err := s.dockerClient.ImageHistory(ctx, container.Image)
 			if err != nil {
-				log.Printf("Failed to get image history for %s: %v", container.Image, err)
+				s.logger.Warn("Failed to get image history",
+					zap.String("stack", stackName),
+					zap.String("image", container.Image),
+					zap.Error(err))
 				history = nil
 			}
 
@@ -1909,6 +2008,10 @@ func (s *Service) GetContainerImageDetails(stackName string) ([]ContainerImageDe
 			})
 		}
 	}
+
+	s.logger.Info("Container image details retrieved successfully",
+		zap.String("stack", stackName),
+		zap.Int("image_count", len(imageDetails)))
 
 	return imageDetails, nil
 }

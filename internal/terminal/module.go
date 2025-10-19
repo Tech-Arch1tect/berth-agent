@@ -10,8 +10,8 @@ import (
 
 func Module() fx.Option {
 	return fx.Module("terminal",
-		fx.Provide(func(dockerClient *client.Client, auditLog *logging.Service) *Handler {
-			return NewHandler(dockerClient, auditLog)
+		fx.Provide(func(dockerClient *client.Client, auditLog *logging.Service, logger *logging.Logger) *Handler {
+			return NewHandler(dockerClient, auditLog, logger)
 		}),
 		fx.Invoke(registerLifecycle),
 	)

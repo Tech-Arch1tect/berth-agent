@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"berth-agent/internal/logging"
 	"context"
 	"fmt"
 
@@ -13,20 +14,26 @@ import (
 	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 )
 
 type Client struct {
-	cli *client.Client
+	cli    *client.Client
+	logger *logging.Logger
 }
 
-func NewClient() (*Client, error) {
+func NewClient(logger *logging.Logger) (*Client, error) {
+	logger.Debug("creating docker client")
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
+		logger.Error("failed to create docker client", zap.Error(err))
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 
+	logger.Info("docker client created successfully")
 	return &Client{
-		cli: cli,
+		cli:    cli,
+		logger: logger,
 	}, nil
 }
 
@@ -279,6 +286,7 @@ type SystemPruneReport struct {
 }
 
 func (c *Client) SystemPrune(ctx context.Context, all bool, filterMap map[string][]string) (SystemPruneReport, error) {
+	c.logger.Info("starting system prune", zap.Bool("all", all))
 	args := filters.NewArgs()
 	for key, values := range filterMap {
 		for _, value := range values {
@@ -288,30 +296,47 @@ func (c *Client) SystemPrune(ctx context.Context, all bool, filterMap map[string
 
 	containerReport, err := c.cli.ContainersPrune(ctx, args)
 	if err != nil {
+		c.logger.Error("failed to prune containers", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune containers: %w", err)
 	}
+	c.logger.Debug("containers pruned", zap.Int("deleted", len(containerReport.ContainersDeleted)))
 
 	imageReport, err := c.cli.ImagesPrune(ctx, args)
 	if err != nil {
+		c.logger.Error("failed to prune images", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune images: %w", err)
 	}
+	c.logger.Debug("images pruned", zap.Int("deleted", len(imageReport.ImagesDeleted)))
 
 	volumeReport, err := c.cli.VolumesPrune(ctx, args)
 	if err != nil {
+		c.logger.Error("failed to prune volumes", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune volumes: %w", err)
 	}
+	c.logger.Debug("volumes pruned", zap.Int("deleted", len(volumeReport.VolumesDeleted)))
 
 	networkReport, err := c.cli.NetworksPrune(ctx, args)
 	if err != nil {
+		c.logger.Error("failed to prune networks", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune networks: %w", err)
 	}
+	c.logger.Debug("networks pruned", zap.Int("deleted", len(networkReport.NetworksDeleted)))
+
+	totalSpace := containerReport.SpaceReclaimed + imageReport.SpaceReclaimed + volumeReport.SpaceReclaimed
+	c.logger.Info("system prune completed",
+		zap.Uint64("space_reclaimed_bytes", totalSpace),
+		zap.Int("containers_deleted", len(containerReport.ContainersDeleted)),
+		zap.Int("images_deleted", len(imageReport.ImagesDeleted)),
+		zap.Int("volumes_deleted", len(volumeReport.VolumesDeleted)),
+		zap.Int("networks_deleted", len(networkReport.NetworksDeleted)),
+	)
 
 	return SystemPruneReport{
 		ContainersDeleted: containerReport.ContainersDeleted,
 		VolumesDeleted:    volumeReport.VolumesDeleted,
 		NetworksDeleted:   networkReport.NetworksDeleted,
 		ImagesDeleted:     imageReport.ImagesDeleted,
-		SpaceReclaimed:    containerReport.SpaceReclaimed + imageReport.SpaceReclaimed + volumeReport.SpaceReclaimed,
+		SpaceReclaimed:    totalSpace,
 	}, nil
 }
 

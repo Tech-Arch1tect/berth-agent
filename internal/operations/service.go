@@ -2,6 +2,7 @@ package operations
 
 import (
 	"berth-agent/internal/archive"
+	"berth-agent/internal/logging"
 	"berth-agent/internal/validation"
 	"bufio"
 	"bytes"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 type Service struct {
@@ -27,35 +29,62 @@ type Service struct {
 	activeOperations map[string]string
 	mutex            sync.RWMutex
 	archiveService   *archive.Service
+	logger           *logging.Logger
 }
 
-func NewService(stackLocation, accessToken string) *Service {
+func NewService(stackLocation, accessToken string, logger *logging.Logger) *Service {
+	logger.Debug("operations service initialized",
+		zap.String("stack_location", stackLocation),
+	)
 	return &Service{
 		stackLocation:    stackLocation,
 		accessToken:      accessToken,
 		operations:       make(map[string]*Operation),
 		activeOperations: make(map[string]string),
 		archiveService:   archive.NewService(),
+		logger:           logger,
 	}
 }
 
 func (s *Service) StartOperation(ctx context.Context, stackName string, req OperationRequest) (string, error) {
+	s.logger.Debug("starting operation request",
+		zap.String("stack_name", stackName),
+		zap.String("command", req.Command),
+		zap.Strings("services", req.Services),
+	)
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, stackName)
 	if err != nil {
+		s.logger.Error("invalid stack path",
+			zap.String("stack_name", stackName),
+			zap.Error(err),
+		)
 		return "", fmt.Errorf("invalid stack path: %w", err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		s.logger.Warn("stack not found",
+			zap.String("stack_name", stackName),
+			zap.String("stack_path", stackPath),
+		)
 		return "", fmt.Errorf("stack '%s' not found", stackName)
 	}
 
 	if stackName == "berth-agent" && len(req.Services) == 0 {
+		s.logger.Warn("stack-wide operation attempted on berth-agent",
+			zap.String("stack_name", stackName),
+			zap.String("command", req.Command),
+		)
 		return "", fmt.Errorf("stack-wide operations are not supported for berth-agent stack - please target specific services only")
 	}
 
 	s.mutex.Lock()
 	if existingOpID, exists := s.activeOperations[stackName]; exists {
 		s.mutex.Unlock()
+		s.logger.Warn("operation already running on stack",
+			zap.String("stack_name", stackName),
+			zap.String("existing_operation_id", existingOpID),
+		)
 		return "", fmt.Errorf("another operation (%s) is already running on stack '%s'", existingOpID, stackName)
 	}
 
@@ -77,6 +106,14 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 	s.operations[operationID] = operation
 	s.activeOperations[stackName] = operationID
 	s.mutex.Unlock()
+
+	s.logger.Info("operation started",
+		zap.String("operation_id", operationID),
+		zap.String("stack_name", stackName),
+		zap.String("command", req.Command),
+		zap.Bool("is_self_operation", isSelfOp),
+		zap.Strings("services", req.Services),
+	)
 
 	return operationID, nil
 }
@@ -192,7 +229,17 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
+	s.logger.Debug("starting docker compose command",
+		zap.String("operation_id", operationID),
+		zap.String("stack_name", operation.StackName),
+		zap.String("command", operation.Request.Command),
+	)
+
 	if err := cmd.Start(); err != nil {
+		s.logger.Error("failed to start command",
+			zap.String("operation_id", operationID),
+			zap.Error(err),
+		)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to start command: %v", err))
 		return err
 	}
@@ -215,14 +262,32 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 	if err := cmd.Wait(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode := exitError.ExitCode()
+			s.logger.Warn("operation completed with non-zero exit code",
+				zap.String("operation_id", operationID),
+				zap.String("stack_name", operation.StackName),
+				zap.Int("exit_code", exitCode),
+				zap.Duration("duration", time.Since(operation.StartTime)),
+			)
 			s.updateOperationStatus(operationID, "completed", &exitCode)
 			operation.Broadcaster.BroadcastComplete(false, exitCode)
 		} else {
+			s.logger.Error("operation failed",
+				zap.String("operation_id", operationID),
+				zap.String("stack_name", operation.StackName),
+				zap.Error(err),
+				zap.Duration("duration", time.Since(operation.StartTime)),
+			)
 			s.updateOperationStatus(operationID, "failed", nil)
 			operation.Broadcaster.BroadcastError(fmt.Sprintf("Command execution error: %v", err))
 		}
 	} else {
 		exitCode := 0
+		s.logger.Info("operation completed successfully",
+			zap.String("operation_id", operationID),
+			zap.String("stack_name", operation.StackName),
+			zap.String("command", operation.Request.Command),
+			zap.Duration("duration", time.Since(operation.StartTime)),
+		)
 		s.updateOperationStatus(operationID, "completed", &exitCode)
 		operation.Broadcaster.BroadcastComplete(true, exitCode)
 	}

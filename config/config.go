@@ -13,6 +13,7 @@ type Config struct {
 	StackLocation    string
 	AuditLogEnabled  bool
 	AuditLogFilePath string
+	LogLevel         string
 }
 
 func NewConfig() *Config {
@@ -22,6 +23,7 @@ func NewConfig() *Config {
 		StackLocation:    getEnv("STACK_LOCATION", "/opt/compose"),
 		AuditLogEnabled:  getEnvBool("AUDIT_LOG_ENABLED", false),
 		AuditLogFilePath: getEnv("AUDIT_LOG_FILE_PATH", "/var/log/berth-agent/audit.jsonl"),
+		LogLevel:         getEnv("LOG_LEVEL", "info"),
 	}
 }
 

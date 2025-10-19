@@ -9,7 +9,9 @@ import (
 
 var Module = fx.Options(
 	fx.Provide(NewServiceFromConfig),
+	fx.Provide(NewLoggerFromConfig),
 	fx.Invoke(RegisterShutdown),
+	fx.Invoke(RegisterLoggerShutdown),
 )
 
 func NewServiceFromConfig(cfg *config.Config) (*Service, error) {
@@ -19,10 +21,22 @@ func NewServiceFromConfig(cfg *config.Config) (*Service, error) {
 	)
 }
 
+func NewLoggerFromConfig(cfg *config.Config) (*Logger, error) {
+	return NewLogger(cfg.LogLevel)
+}
+
 func RegisterShutdown(lc fx.Lifecycle, service *Service) {
 	lc.Append(fx.Hook{
 		OnStop: func(ctx context.Context) error {
 			return service.Close()
+		},
+	})
+}
+
+func RegisterLoggerShutdown(lc fx.Lifecycle, logger *Logger) {
+	lc.Append(fx.Hook{
+		OnStop: func(ctx context.Context) error {
+			return logger.Sync()
 		},
 	})
 }

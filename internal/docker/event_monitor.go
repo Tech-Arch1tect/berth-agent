@@ -1,14 +1,16 @@
 package docker
 
 import (
+	"berth-agent/internal/logging"
 	"berth-agent/internal/websocket"
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"os/exec"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type EventMonitor struct {
@@ -16,6 +18,7 @@ type EventMonitor struct {
 	stackLocation string
 	ctx           context.Context
 	cancel        context.CancelFunc
+	logger        *logging.Logger
 }
 
 type DockerEvent struct {
@@ -31,35 +34,39 @@ type DockerEventActor struct {
 	Attributes map[string]string `json:"Attributes"`
 }
 
-func NewEventMonitor(hub *websocket.Hub, stackLocation string) *EventMonitor {
+func NewEventMonitor(hub *websocket.Hub, stackLocation string, logger *logging.Logger) *EventMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
+	logger.Debug("creating docker event monitor", zap.String("stack_location", stackLocation))
 	return &EventMonitor{
 		hub:           hub,
 		stackLocation: stackLocation,
 		ctx:           ctx,
 		cancel:        cancel,
+		logger:        logger,
 	}
 }
 
 func (em *EventMonitor) Start() error {
-	log.Println("Starting Docker event monitor")
+	em.logger.Info("docker event monitor starting")
 	go em.monitorDockerEvents()
 	return nil
 }
 
 func (em *EventMonitor) Stop() {
-	log.Println("Stopping Docker event monitor")
+	em.logger.Info("docker event monitor stopping")
 	em.cancel()
 }
 
 func (em *EventMonitor) monitorDockerEvents() {
+	em.logger.Debug("docker event monitor loop started")
 	for {
 		select {
 		case <-em.ctx.Done():
+			em.logger.Debug("docker event monitor loop stopped")
 			return
 		default:
 			if err := em.streamDockerEvents(); err != nil {
-				log.Printf("Docker event stream error: %v", err)
+				em.logger.Warn("docker event stream error, retrying in 5s", zap.Error(err))
 				time.Sleep(5 * time.Second)
 				continue
 			}
@@ -68,25 +75,30 @@ func (em *EventMonitor) monitorDockerEvents() {
 }
 
 func (em *EventMonitor) streamDockerEvents() error {
+	em.logger.Debug("starting docker events stream")
 	cmd := exec.CommandContext(em.ctx, "docker", "events", "--format", "{{json .}}", "--filter", "type=container")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		em.logger.Error("failed to create stdout pipe for docker events", zap.Error(err))
 		return err
 	}
 
 	if err := cmd.Start(); err != nil {
+		em.logger.Error("failed to start docker events command", zap.Error(err))
 		return err
 	}
 
+	em.logger.Info("docker events stream connected")
 	decoder := json.NewDecoder(stdout)
 	for {
 		var event DockerEvent
 		if err := decoder.Decode(&event); err != nil {
 			if err == io.EOF {
+				em.logger.Debug("docker events stream EOF")
 				break
 			}
-			log.Printf("Error decoding Docker event: %v", err)
+			em.logger.Warn("error decoding docker event", zap.Error(err))
 			continue
 		}
 
@@ -103,16 +115,29 @@ func (em *EventMonitor) handleDockerEvent(event DockerEvent) {
 
 	containerName := event.Actor.Attributes["name"]
 	if containerName == "" {
+		em.logger.Debug("skipping event with no container name")
 		return
 	}
 
 	stackName, serviceName := em.parseContainerName(containerName)
 	if stackName == "" {
+		em.logger.Debug("skipping non-stack container",
+			zap.String("container_name", containerName),
+		)
 		return
 	}
 
 	status := em.mapDockerActionToStatus(event.Action)
 	health := em.mapDockerActionToHealth(event.Action)
+
+	em.logger.Debug("docker container event",
+		zap.String("action", event.Action),
+		zap.String("stack_name", stackName),
+		zap.String("service_name", serviceName),
+		zap.String("container_name", containerName),
+		zap.String("status", status),
+		zap.String("health", health),
+	)
 
 	containerEvent := websocket.ContainerStatusEvent{
 		BaseMessage: websocket.BaseMessage{
