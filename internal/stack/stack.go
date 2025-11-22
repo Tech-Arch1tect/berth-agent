@@ -404,6 +404,9 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 	for i := range services {
 		if containerList, exists := containers[services[i].Name]; exists {
 			services[i].Containers = containerList
+			if services[i].Image == "" {
+				services[i].Image = "built-from-dockerfile"
+			}
 		} else {
 			services[i].Containers = []Container{{
 				Name:  fmt.Sprintf("%s-%s-1", name, services[i].Name),
