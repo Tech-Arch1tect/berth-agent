@@ -120,6 +120,7 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 			AttachStdout: true,
 			AttachStderr: true,
 			Tty:          true,
+			ConsoleSize:  &[2]uint{uint(rows), uint(cols)},
 			Cmd:          shell,
 		}
 
