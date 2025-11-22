@@ -1,11 +1,13 @@
 package compose
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"berth-agent/internal/docker"
 	"berth-agent/internal/logging"
 
 	"go.uber.org/zap"
@@ -14,12 +16,14 @@ import (
 
 type Editor struct {
 	stackLocation string
+	commandExec   *docker.CommandExecutor
 	logger        *logging.Logger
 }
 
 func NewEditor(stackLocation string, logger *logging.Logger) *Editor {
 	return &Editor{
 		stackLocation: stackLocation,
+		commandExec:   docker.NewCommandExecutor(stackLocation),
 		logger:        logger.With(zap.String("component", "compose.editor")),
 	}
 }
@@ -130,6 +134,43 @@ func (e *Editor) ApplyChanges(stackName string, changes ComposeChanges) error {
 			return fmt.Errorf("failed to write compose file and restore backup: %w (restore error: %v)", err, restoreErr)
 		}
 		return fmt.Errorf("failed to write compose file: %w", err)
+	}
+
+	e.logger.Debug("validating compose file with docker compose config",
+		zap.String("stack_name", stackName),
+	)
+
+	if err := e.validateComposeFile(stackName); err != nil {
+		e.logger.Error("compose file validation failed, restoring backup",
+			zap.String("stack_name", stackName),
+			zap.Error(err),
+		)
+
+		if restoreErr := os.Rename(backupPath, composePath); restoreErr != nil {
+			e.logger.Error("failed to restore backup after validation failure",
+				zap.String("compose_path", composePath),
+				zap.String("backup_path", backupPath),
+				zap.Error(restoreErr),
+			)
+			return fmt.Errorf("validation failed and backup restoration failed: %w (restore error: %v)", err, restoreErr)
+		}
+
+		e.logger.Info("backup restored successfully after validation failure",
+			zap.String("compose_path", composePath),
+		)
+
+		return fmt.Errorf("compose file validation failed: %w", err)
+	}
+
+	e.logger.Debug("compose file validation succeeded",
+		zap.String("stack_name", stackName),
+	)
+
+	if err := os.Remove(backupPath); err != nil {
+		e.logger.Warn("failed to remove backup file (not critical)",
+			zap.String("backup_path", backupPath),
+			zap.Error(err),
+		)
 	}
 
 	e.logger.Info("compose file updated successfully",
@@ -461,4 +502,30 @@ func (e *Editor) updateImageTag(currentImage, newTag string) string {
 		return parts[0] + ":" + newTag
 	}
 	return currentImage + ":" + newTag
+}
+
+func (e *Editor) validateComposeFile(stackName string) error {
+	cmd, err := e.commandExec.ExecuteComposeCommand(stackName, "config", "--quiet")
+	if err != nil {
+		return fmt.Errorf("failed to create validation command: %w", err)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errorMsg := strings.TrimSpace(stderr.String())
+		if errorMsg == "" {
+			errorMsg = err.Error()
+		}
+
+		e.logger.Debug("docker compose config validation output",
+			zap.String("stack_name", stackName),
+			zap.String("error", errorMsg),
+		)
+
+		return fmt.Errorf("%s", errorMsg)
+	}
+
+	return nil
 }
