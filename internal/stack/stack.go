@@ -2,6 +2,7 @@ package stack
 
 import (
 	"berth-agent/config"
+	"berth-agent/internal/compose"
 	"berth-agent/internal/docker"
 	"berth-agent/internal/logging"
 	"berth-agent/internal/validation"
@@ -1446,8 +1447,10 @@ func (s *Service) mergeVolumeInformation(stackName string, composeVolumes map[st
 	return result
 }
 
-func (s *Service) GetStackEnvironmentVariables(name string) (map[string][]ServiceEnvironment, error) {
-	s.logger.Info("Retrieving stack environment variables", zap.String("stack", name))
+func (s *Service) GetStackEnvironmentVariables(name string, unmask bool) (map[string][]ServiceEnvironment, error) {
+	s.logger.Info("Retrieving stack environment variables",
+		zap.String("stack", name),
+		zap.Bool("unmask", unmask))
 
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
@@ -1472,10 +1475,11 @@ func (s *Service) GetStackEnvironmentVariables(name string) (map[string][]Servic
 		return nil, fmt.Errorf("failed to get runtime environment: %w", err)
 	}
 
-	envVars := s.mergeEnvironmentInformation(composeEnvironment, runtimeEnvironment)
+	envVars := s.mergeEnvironmentInformation(composeEnvironment, runtimeEnvironment, unmask)
 	s.logger.Info("Stack environment variables retrieved successfully",
 		zap.String("stack", name),
-		zap.Int("service_count", len(envVars)))
+		zap.Int("service_count", len(envVars)),
+		zap.Bool("unmask", unmask))
 
 	return envVars, nil
 }
@@ -1622,7 +1626,7 @@ func (s *Service) getRuntimeEnvironment(stackPath string) (map[string][]ServiceE
 	return services, nil
 }
 
-func (s *Service) mergeEnvironmentInformation(composeEnv, runtimeEnv map[string][]ServiceEnvironment) map[string][]ServiceEnvironment {
+func (s *Service) mergeEnvironmentInformation(composeEnv, runtimeEnv map[string][]ServiceEnvironment, unmask bool) map[string][]ServiceEnvironment {
 	result := make(map[string][]ServiceEnvironment)
 
 	allServices := make(map[string]bool)
@@ -1661,7 +1665,7 @@ func (s *Service) mergeEnvironmentInformation(composeEnv, runtimeEnv map[string]
 		}
 
 		for _, envVar := range envVarMap {
-			if envVar.IsSensitive && envVar.Value != "" {
+			if !unmask && envVar.IsSensitive && envVar.Value != "" {
 				envVar.Value = "***"
 			}
 			mergedEnvVars = append(mergedEnvVars, envVar)
@@ -1691,19 +1695,7 @@ func (s *Service) parseEnvString(envStr string) (key, value string) {
 }
 
 func (s *Service) isSensitiveVariable(key string) bool {
-	sensitiveKeywords := []string{
-		"PASSWORD", "PASS", "SECRET", "TOKEN", "KEY", "API_KEY",
-		"AUTH", "CREDENTIAL", "PRIVATE", "CERT", "SSL", "TLS",
-		"JWT", "OAUTH", "BEARER", "SESSION", "COOKIE",
-	}
-
-	upperKey := strings.ToUpper(key)
-	for _, keyword := range sensitiveKeywords {
-		if strings.Contains(upperKey, keyword) {
-			return true
-		}
-	}
-	return false
+	return compose.IsSensitiveKey(key)
 }
 
 func matchesAnyPattern(stackName string, patterns []string) bool {

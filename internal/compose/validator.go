@@ -37,6 +37,17 @@ func ValidateChanges(changes ComposeChanges, logger *logging.Logger) error {
 		return err
 	}
 
+	logger.Debug("validating environment updates",
+		zap.Int("env_updates_count", len(changes.ServiceEnvUpdates)),
+	)
+
+	if err := validateServiceEnvironmentUpdates(changes.ServiceEnvUpdates, logger); err != nil {
+		logger.Error("environment update validation failed",
+			zap.Error(err),
+		)
+		return err
+	}
+
 	return nil
 }
 
@@ -171,6 +182,57 @@ func validateImageName(image string, logger *logging.Logger) error {
 				zap.String("image", image),
 			)
 			return fmt.Errorf("invalid image:tag format")
+		}
+	}
+
+	return nil
+}
+
+func validateServiceEnvironmentUpdates(updates []ServiceEnvironmentUpdate, logger *logging.Logger) error {
+	for _, update := range updates {
+		logger.Debug("validating environment update",
+			zap.String("service_name", update.ServiceName),
+			zap.Int("env_vars_count", len(update.Environment)),
+		)
+
+		if update.ServiceName == "" {
+			logger.Warn("environment update missing service name")
+			return fmt.Errorf("service name is required for environment update")
+		}
+
+		if update.Environment == nil {
+			logger.Warn("environment update missing environment array",
+				zap.String("service_name", update.ServiceName),
+			)
+			return fmt.Errorf("environment must be provided for service '%s'", update.ServiceName)
+		}
+
+		seenKeys := make(map[string]bool)
+
+		for _, envVar := range update.Environment {
+			if envVar.Key == "" {
+				logger.Warn("environment variable missing key",
+					zap.String("service_name", update.ServiceName),
+				)
+				return fmt.Errorf("environment variable key cannot be empty for service '%s'", update.ServiceName)
+			}
+
+			if strings.ContainsAny(envVar.Key, " \t\n\r=") {
+				logger.Warn("environment variable key contains invalid characters",
+					zap.String("service_name", update.ServiceName),
+					zap.String("key", envVar.Key),
+				)
+				return fmt.Errorf("environment variable key '%s' contains invalid characters for service '%s'", envVar.Key, update.ServiceName)
+			}
+
+			if seenKeys[envVar.Key] {
+				logger.Warn("duplicate environment variable key",
+					zap.String("service_name", update.ServiceName),
+					zap.String("key", envVar.Key),
+				)
+				return fmt.Errorf("duplicate environment variable key '%s' for service '%s'", envVar.Key, update.ServiceName)
+			}
+			seenKeys[envVar.Key] = true
 		}
 	}
 

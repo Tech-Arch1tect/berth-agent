@@ -49,9 +49,13 @@ func (h *Handler) PreviewChanges(c echo.Context) error {
 		zap.Int("preview_length", len(preview)),
 	)
 
-	return common.SendSuccess(c, PreviewComposeResponse{
+	response := PreviewComposeResponse{
 		Original: original,
 		Preview:  preview,
+	}
+
+	return common.SendSuccess(c, map[string]any{
+		"data": response,
 	})
 }
 

@@ -90,7 +90,9 @@ func (h *Handler) GetStackEnvironmentVariables(c echo.Context) error {
 		return common.SendBadRequest(c, "invalid stack name: "+err.Error())
 	}
 
-	envVars, err := h.service.GetStackEnvironmentVariables(stackName)
+	unmask := c.QueryParam("unmask") == "true"
+
+	envVars, err := h.service.GetStackEnvironmentVariables(stackName, unmask)
 	if err != nil {
 		return common.SendNotFound(c, err.Error())
 	}

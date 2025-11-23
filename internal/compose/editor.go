@@ -73,6 +73,10 @@ func (e *Editor) GeneratePreview(stackName string, changes ComposeChanges) (orig
 		return "", "", fmt.Errorf("failed to apply port updates: %w", err)
 	}
 
+	if err := e.applyServiceEnvironmentUpdates(&composeData, changes.ServiceEnvUpdates); err != nil {
+		return "", "", fmt.Errorf("failed to apply environment updates: %w", err)
+	}
+
 	output, err := yaml.Marshal(&composeData)
 	if err != nil {
 		e.logger.Error("failed to marshal YAML", zap.Error(err))
@@ -113,6 +117,10 @@ func (e *Editor) ApplyChanges(stackName string, changes ComposeChanges) error {
 
 	if err := e.applyServicePortUpdates(&composeData, changes.ServicePortUpdates); err != nil {
 		return fmt.Errorf("failed to apply port updates: %w", err)
+	}
+
+	if err := e.applyServiceEnvironmentUpdates(&composeData, changes.ServiceEnvUpdates); err != nil {
+		return fmt.Errorf("failed to apply environment updates: %w", err)
 	}
 
 	output, err := yaml.Marshal(&composeData)
@@ -273,6 +281,52 @@ func (e *Editor) applyServicePortUpdates(root *yaml.Node, updates []ServicePortU
 				zap.String("service", update.ServiceName),
 				zap.Error(err))
 			return fmt.Errorf("failed to update ports for service '%s': %w", update.ServiceName, err)
+		}
+	}
+
+	return nil
+}
+
+func (e *Editor) applyServiceEnvironmentUpdates(root *yaml.Node, updates []ServiceEnvironmentUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	servicesNode, err := e.findServicesNode(root)
+	if err != nil {
+		e.logger.Error("services section not found", zap.Error(err))
+		return err
+	}
+
+	for _, update := range updates {
+		serviceNode, err := e.findServiceNode(servicesNode, update.ServiceName)
+		if err != nil {
+			e.logger.Error("service not found",
+				zap.String("service", update.ServiceName),
+				zap.Error(err))
+			return fmt.Errorf("service '%s' not found: %w", update.ServiceName, err)
+		}
+
+		envStrings := make([]string, 0, len(update.Environment))
+		for _, envVar := range update.Environment {
+			envStrings = append(envStrings, fmt.Sprintf("%s=%s", envVar.Key, envVar.Value))
+		}
+
+		if len(envStrings) == 0 {
+			if err := e.removeServiceField(serviceNode, "environment"); err != nil {
+				e.logger.Error("failed to remove environment",
+					zap.String("service", update.ServiceName),
+					zap.Error(err))
+				return fmt.Errorf("failed to remove environment for service '%s': %w", update.ServiceName, err)
+			}
+			continue
+		}
+
+		if err := e.setServiceSequenceField(serviceNode, "environment", envStrings); err != nil {
+			e.logger.Error("failed to update environment",
+				zap.String("service", update.ServiceName),
+				zap.Error(err))
+			return fmt.Errorf("failed to update environment for service '%s': %w", update.ServiceName, err)
 		}
 	}
 
