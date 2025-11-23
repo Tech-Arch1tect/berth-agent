@@ -20,3 +20,8 @@ type UpdateComposeRequest struct {
 	StackName string         `json:"stack_name" binding:"required"`
 	Changes   ComposeChanges `json:"changes" binding:"required"`
 }
+
+type PreviewComposeResponse struct {
+	Original string `json:"original"`
+	Preview  string `json:"preview"`
+}

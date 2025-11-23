@@ -134,6 +134,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:stackName/files/download", filesHandler.DownloadFile)
 	api.GET("/stacks/:stackName/files/stats", filesHandler.GetDirectoryStats)
 
+	api.POST("/compose/preview", composeHandler.PreviewChanges)
 	api.PATCH("/compose", composeHandler.UpdateCompose)
 
 	api.POST("/images/check-updates", imagesHandler.CheckImageUpdates)
