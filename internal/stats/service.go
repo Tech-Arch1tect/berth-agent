@@ -370,7 +370,7 @@ func (s *Service) getMemoryStats(cgroupPath string) (*memoryStats, error) {
 	}
 
 	percent := 0.0
-	if limit > 0 && limit != 9223372036854775807 {
+	if limit > 0 {
 		percent = float64(usage) / float64(limit) * 100.0
 	}
 
@@ -578,7 +578,7 @@ func (s *Service) readUint64FromFile(filePath string) (uint64, error) {
 
 	content := strings.TrimSpace(string(data))
 	if content == "max" {
-		return 9223372036854775807, nil
+		return s.getHostTotalMemory(), nil
 	}
 
 	value, err := strconv.ParseUint(content, 10, 64)
@@ -587,6 +587,30 @@ func (s *Service) readUint64FromFile(filePath string) (uint64, error) {
 	}
 
 	return value, nil
+}
+
+func (s *Service) getHostTotalMemory() uint64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		s.logger.Debug("Failed to read /proc/meminfo", zap.Error(err))
+		return 0
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				kbValue, err := strconv.ParseUint(fields[1], 10, 64)
+				if err == nil {
+					return kbValue * 1024
+				}
+			}
+		}
+	}
+
+	s.logger.Debug("Failed to parse MemTotal from /proc/meminfo")
+	return 0
 }
 
 func (s *Service) parseMemoryStat(filePath string) (map[string]uint64, error) {
