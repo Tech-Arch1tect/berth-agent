@@ -53,7 +53,7 @@ type Container struct {
 	Created        string             `json:"created,omitempty"`
 	Started        string             `json:"started,omitempty"`
 	Finished       string             `json:"finished,omitempty"`
-	ExitCode       int                `json:"exit_code,omitempty"`
+	ExitCode       *int               `json:"exit_code,omitempty"`
 	RestartPolicy  *RestartPolicy     `json:"restart_policy,omitempty"`
 	ResourceLimits *ResourceLimits    `json:"resource_limits,omitempty"`
 	Health         *HealthStatus      `json:"health,omitempty"`
@@ -730,7 +730,8 @@ func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Contain
 			if containerDetails.State.FinishedAt != "" && containerDetails.State.FinishedAt != "0001-01-01T00:00:00Z" {
 				container.Finished = containerDetails.State.FinishedAt
 			}
-			container.ExitCode = containerDetails.State.ExitCode
+			exitCode := containerDetails.State.ExitCode
+			container.ExitCode = &exitCode
 
 			if containerDetails.HostConfig.RestartPolicy.Name != "" {
 				container.RestartPolicy = &RestartPolicy{
