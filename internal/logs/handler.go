@@ -36,7 +36,7 @@ func (h *Handler) GetStackLogs(c echo.Context) error {
 		Timestamps: h.parseBoolParam(c, "timestamps", true),
 	}
 
-	logs, err := h.service.GetLogs(c.Request().Context(), req)
+	logs, err := h.service.GetStackLogs(c.Request().Context(), req)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
@@ -49,24 +49,22 @@ func (h *Handler) GetStackLogs(c echo.Context) error {
 }
 
 func (h *Handler) GetContainerLogs(c echo.Context) error {
-	stackName := c.Param("stackName")
 	containerName := c.Param("containerName")
 
-	if stackName == "" || containerName == "" {
+	if containerName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Stack name and container name are required",
+			"error": "Container name is required",
 		})
 	}
 
 	req := LogRequest{
-		StackName:     stackName,
 		ContainerName: containerName,
 		Tail:          h.parseIntParam(c, "tail", 100),
 		Since:         c.QueryParam("since"),
 		Timestamps:    h.parseBoolParam(c, "timestamps", true),
 	}
 
-	logs, err := h.service.GetLogs(c.Request().Context(), req)
+	logs, err := h.service.GetContainerLogs(c.Request().Context(), req)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),

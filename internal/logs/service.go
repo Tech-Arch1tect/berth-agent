@@ -41,42 +41,26 @@ type LogRequest struct {
 	Timestamps    bool
 }
 
-func (s *Service) GetLogs(ctx context.Context, req LogRequest) ([]LogEntry, error) {
-	s.logger.Info("Starting log retrieval",
+func (s *Service) GetStackLogs(ctx context.Context, req LogRequest) ([]LogEntry, error) {
+	s.logger.Info("Starting stack log retrieval",
 		zap.String("stack", req.StackName),
-		zap.String("service", req.ServiceName),
-		zap.String("container", req.ContainerName),
 		zap.Int("tail", req.Tail),
 		zap.String("since", req.Since),
 		zap.Bool("timestamps", req.Timestamps),
 	)
 
 	args := []string{"compose", "logs"}
-
 	if req.Timestamps {
 		args = append(args, "--timestamps")
 	}
-
 	if req.Tail > 0 {
 		args = append(args, "--tail", strconv.Itoa(req.Tail))
 	}
-
 	if req.Since != "" {
 		args = append(args, "--since", req.Since)
 	}
 
-	if req.ServiceName != "" {
-		args = append(args, req.ServiceName)
-	} else if req.ContainerName != "" {
-		serviceName := s.extractServiceNameFromContainer(req.ContainerName, req.StackName)
-		if serviceName != "" {
-			args = append(args, serviceName)
-		} else {
-			args = append(args, req.ContainerName)
-		}
-	}
-
-	s.logger.Debug("Connecting to Docker container for logs",
+	s.logger.Debug("Executing docker compose logs",
 		zap.String("stack", req.StackName),
 		zap.Strings("docker_args", args),
 	)
@@ -87,10 +71,8 @@ func (s *Service) GetLogs(ctx context.Context, req LogRequest) ([]LogEntry, erro
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			s.logger.Error("Container not found or failed to retrieve logs",
+			s.logger.Error("Failed to retrieve stack logs",
 				zap.String("stack", req.StackName),
-				zap.String("service", req.ServiceName),
-				zap.String("container", req.ContainerName),
 				zap.String("stderr", string(exitErr.Stderr)),
 				zap.Error(err),
 			)
@@ -100,14 +82,66 @@ func (s *Service) GetLogs(ctx context.Context, req LogRequest) ([]LogEntry, erro
 				zap.Error(err),
 			)
 		}
-		return nil, fmt.Errorf("failed to get logs: %w", err)
+		return nil, fmt.Errorf("failed to get stack logs: %w", err)
 	}
 
 	entries := s.parseLogOutput(string(output), req.Timestamps)
 
-	s.logger.Info("Log retrieval completed",
+	s.logger.Info("Stack log retrieval completed",
 		zap.String("stack", req.StackName),
-		zap.String("service", req.ServiceName),
+		zap.Int("entries_count", len(entries)),
+	)
+
+	return entries, nil
+}
+
+func (s *Service) GetContainerLogs(ctx context.Context, req LogRequest) ([]LogEntry, error) {
+	s.logger.Info("Starting container log retrieval",
+		zap.String("container", req.ContainerName),
+		zap.Int("tail", req.Tail),
+		zap.String("since", req.Since),
+		zap.Bool("timestamps", req.Timestamps),
+	)
+
+	args := []string{"logs"}
+	if req.Timestamps {
+		args = append(args, "--timestamps")
+	}
+	if req.Tail > 0 {
+		args = append(args, "--tail", strconv.Itoa(req.Tail))
+	}
+	if req.Since != "" {
+		args = append(args, "--since", req.Since)
+	}
+	args = append(args, req.ContainerName)
+
+	s.logger.Debug("Executing docker logs",
+		zap.String("container", req.ContainerName),
+		zap.Strings("docker_args", args),
+	)
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			s.logger.Error("Failed to retrieve container logs",
+				zap.String("container", req.ContainerName),
+				zap.String("stderr", string(exitErr.Stderr)),
+				zap.Error(err),
+			)
+		} else {
+			s.logger.Error("Failed to execute docker command",
+				zap.String("container", req.ContainerName),
+				zap.Error(err),
+			)
+		}
+		return nil, fmt.Errorf("failed to get container logs: %w", err)
+	}
+
+	entries := s.parseContainerLogOutput(string(output), req.ContainerName, req.Timestamps)
+
+	s.logger.Info("Container log retrieval completed",
 		zap.String("container", req.ContainerName),
 		zap.Int("entries_count", len(entries)),
 	)
@@ -163,14 +197,46 @@ func (s *Service) parseLogOutput(output string, includeTimestamps bool) []LogEnt
 	return entries
 }
 
-func (s *Service) extractServiceNameFromContainer(containerName, stackName string) string {
-	if strings.HasPrefix(containerName, stackName+"-") && strings.Contains(containerName, "-") {
-		withoutStack := strings.TrimPrefix(containerName, stackName+"-")
+func (s *Service) parseContainerLogOutput(output string, containerName string, includeTimestamps bool) []LogEntry {
+	var entries []LogEntry
+	scanner := bufio.NewScanner(strings.NewReader(output))
 
-		lastDashIndex := strings.LastIndex(withoutStack, "-")
-		if lastDashIndex > 0 {
-			return withoutStack[:lastDashIndex]
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
 		}
+
+		entry := LogEntry{
+			Source: containerName,
+		}
+
+		if includeTimestamps {
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) >= 2 {
+				if timestamp, err := time.Parse(time.RFC3339Nano, parts[0]); err == nil {
+					entry.Timestamp = timestamp
+					line = parts[1]
+				}
+			}
+		}
+
+		if entry.Timestamp.IsZero() {
+			entry.Timestamp = time.Now()
+		}
+
+		entry.Message = line
+
+		if strings.Contains(entry.Message, "ERROR") || strings.Contains(entry.Message, "error") {
+			entry.Level = "error"
+		} else if strings.Contains(entry.Message, "WARN") || strings.Contains(entry.Message, "warn") {
+			entry.Level = "warn"
+		} else if strings.Contains(entry.Message, "INFO") || strings.Contains(entry.Message, "info") {
+			entry.Level = "info"
+		}
+
+		entries = append(entries, entry)
 	}
-	return ""
+
+	return entries
 }
