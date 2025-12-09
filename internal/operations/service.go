@@ -176,13 +176,7 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 
 	operation.Broadcaster.MarkStarted()
 
-	defer func() {
-		s.mutex.Lock()
-		if currentOpID, exists := s.activeOperations[operation.StackName]; exists && currentOpID == operationID {
-			delete(s.activeOperations, operation.StackName)
-		}
-		s.mutex.Unlock()
-	}()
+	defer s.unlockStack(operation.StackName, operationID)
 
 	if operation.IsSelfOp {
 		return s.handleSelfOperationWithBroadcast(ctx, operation)
@@ -292,7 +286,9 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		operation.Broadcaster.BroadcastComplete(true, exitCode)
 	}
 
-	time.Sleep(2 * time.Second)
+	s.unlockStack(operation.StackName, operationID)
+
+	time.Sleep(500 * time.Millisecond)
 
 	return nil
 }
@@ -339,6 +335,8 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 	exitCode := 0
 	s.updateOperationStatus(operation.ID, "completed", &exitCode)
 	operation.Broadcaster.BroadcastComplete(true, exitCode)
+
+	s.unlockStack(operation.StackName, operation.ID)
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -407,6 +405,8 @@ func (s *Service) handleArchiveOperationWithBroadcast(ctx context.Context, opera
 	s.updateOperationStatus(operation.ID, "completed", &exitCode)
 	operation.Broadcaster.Broadcast(StreamTypeStdout, "Archive operation completed successfully")
 	operation.Broadcaster.BroadcastComplete(true, exitCode)
+
+	s.unlockStack(operation.StackName, operation.ID)
 
 	return nil
 }
@@ -550,4 +550,12 @@ func (s *Service) updateOperationStatus(operationID, status string, exitCode *in
 		op.Status = status
 		op.ExitCode = exitCode
 	}
+}
+
+func (s *Service) unlockStack(stackName, operationID string) {
+	s.mutex.Lock()
+	if currentOpID, exists := s.activeOperations[stackName]; exists && currentOpID == operationID {
+		delete(s.activeOperations, stackName)
+	}
+	s.mutex.Unlock()
 }
