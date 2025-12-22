@@ -34,6 +34,12 @@ type TerminalRequest struct {
 	Rows          int    `json:"rows"`
 }
 
+const (
+	terminalPingInterval = 30 * time.Second
+	terminalPongWait     = 60 * time.Second
+	terminalWriteWait    = 10 * time.Second
+)
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
@@ -75,11 +81,46 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		)
 		return err
 	}
+
+	done := make(chan struct{})
+
 	defer func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
 		_ = conn.Close()
 		h.logger.Info("WebSocket connection closed",
 			zap.String("source_ip", c.RealIP()),
 		)
+	}()
+
+	_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
+		return nil
+	})
+
+	go func() {
+		ticker := time.NewTicker(terminalPingInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(terminalWriteWait))
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					h.logger.Debug("Ping failed, connection likely closed",
+						zap.String("source_ip", c.RealIP()),
+						zap.Error(err),
+					)
+					return
+				}
+			case <-done:
+				return
+			}
+		}
 	}()
 
 	var session *Session
@@ -96,6 +137,8 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			}
 			break
 		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
 
 		var baseMsg ws.BaseMessage
 		if err := json.Unmarshal(rawMessage, &baseMsg); err != nil {
