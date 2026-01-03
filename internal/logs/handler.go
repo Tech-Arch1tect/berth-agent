@@ -3,6 +3,7 @@ package logs
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -49,6 +50,7 @@ func (h *Handler) GetStackLogs(c echo.Context) error {
 }
 
 func (h *Handler) GetContainerLogs(c echo.Context) error {
+	stackName := c.Param("stackName")
 	containerName := c.Param("containerName")
 
 	if containerName == "" {
@@ -58,6 +60,7 @@ func (h *Handler) GetContainerLogs(c echo.Context) error {
 	}
 
 	req := LogRequest{
+		StackName:     stackName,
 		ContainerName: containerName,
 		Tail:          h.parseIntParam(c, "tail", 100),
 		Since:         c.QueryParam("since"),
@@ -66,6 +69,11 @@ func (h *Handler) GetContainerLogs(c echo.Context) error {
 
 	logs, err := h.service.GetContainerLogs(c.Request().Context(), req)
 	if err != nil {
+		if strings.Contains(err.Error(), "does not belong to stack") {
+			return c.JSON(http.StatusForbidden, map[string]string{
+				"error": err.Error(),
+			})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})

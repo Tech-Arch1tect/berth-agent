@@ -4,6 +4,7 @@ import (
 	"berth-agent/internal/logging"
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -97,11 +98,23 @@ func (s *Service) GetStackLogs(ctx context.Context, req LogRequest) ([]LogEntry,
 
 func (s *Service) GetContainerLogs(ctx context.Context, req LogRequest) ([]LogEntry, error) {
 	s.logger.Info("Starting container log retrieval",
+		zap.String("stack", req.StackName),
 		zap.String("container", req.ContainerName),
 		zap.Int("tail", req.Tail),
 		zap.String("since", req.Since),
 		zap.Bool("timestamps", req.Timestamps),
 	)
+
+	if req.StackName != "" {
+		if err := s.validateContainerInStack(ctx, req.StackName, req.ContainerName); err != nil {
+			s.logger.Warn("Container stack validation failed",
+				zap.String("container", req.ContainerName),
+				zap.String("stack", req.StackName),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("container %s does not belong to stack %s", req.ContainerName, req.StackName)
+		}
+	}
 
 	args := []string{"logs"}
 	if req.Timestamps {
@@ -239,4 +252,39 @@ func (s *Service) parseContainerLogOutput(output string, containerName string, i
 	}
 
 	return entries
+}
+
+func (s *Service) validateContainerInStack(ctx context.Context, stackName, containerName string) error {
+	stackDir := fmt.Sprintf("%s/%s", s.stackLocation, stackName)
+
+	cmd := exec.CommandContext(ctx, "docker", "compose", "ps", "--format", "json", "-a")
+	cmd.Dir = stackDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("failed to list stack containers: %s", string(exitErr.Stderr))
+		}
+		return fmt.Errorf("failed to list stack containers: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		var containerInfo struct {
+			Name string `json:"Name"`
+		}
+		if err := json.Unmarshal([]byte(line), &containerInfo); err != nil {
+			continue
+		}
+
+		if containerInfo.Name == containerName {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("container not found in stack")
 }
