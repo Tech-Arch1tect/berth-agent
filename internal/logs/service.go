@@ -68,20 +68,13 @@ func (s *Service) GetStackLogs(ctx context.Context, req LogRequest) ([]LogEntry,
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = fmt.Sprintf("%s/%s", s.stackLocation, req.StackName)
 
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			s.logger.Error("Failed to retrieve stack logs",
-				zap.String("stack", req.StackName),
-				zap.String("stderr", string(exitErr.Stderr)),
-				zap.Error(err),
-			)
-		} else {
-			s.logger.Error("Failed to execute docker command",
-				zap.String("stack", req.StackName),
-				zap.Error(err),
-			)
-		}
+		s.logger.Error("Failed to retrieve stack logs",
+			zap.String("stack", req.StackName),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to get stack logs: %w", err)
 	}
 
@@ -134,20 +127,13 @@ func (s *Service) GetContainerLogs(ctx context.Context, req LogRequest) ([]LogEn
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			s.logger.Error("Failed to retrieve container logs",
-				zap.String("container", req.ContainerName),
-				zap.String("stderr", string(exitErr.Stderr)),
-				zap.Error(err),
-			)
-		} else {
-			s.logger.Error("Failed to execute docker command",
-				zap.String("container", req.ContainerName),
-				zap.Error(err),
-			)
-		}
+		s.logger.Error("Failed to retrieve container logs",
+			zap.String("container", req.ContainerName),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to get container logs: %w", err)
 	}
 
