@@ -35,7 +35,6 @@ type LogEntry struct {
 
 type LogRequest struct {
 	StackName     string
-	ServiceName   string
 	ContainerName string
 	Tail          int
 	Since         string
