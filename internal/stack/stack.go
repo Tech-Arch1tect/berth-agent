@@ -2,7 +2,6 @@ package stack
 
 import (
 	"berth-agent/config"
-	"berth-agent/internal/compose"
 	"berth-agent/internal/docker"
 	"berth-agent/internal/logging"
 	"berth-agent/internal/validation"
@@ -1695,8 +1694,20 @@ func (s *Service) parseEnvString(envStr string) (key, value string) {
 	return key, value
 }
 
+var sensitiveKeywords = []string{
+	"PASSWORD", "PASS", "SECRET", "TOKEN", "KEY", "API_KEY",
+	"AUTH", "CREDENTIAL", "PRIVATE", "CERT", "SSL", "TLS",
+	"JWT", "OAUTH", "BEARER", "SESSION", "COOKIE",
+}
+
 func (s *Service) isSensitiveVariable(key string) bool {
-	return compose.IsSensitiveKey(key)
+	upperKey := strings.ToUpper(key)
+	for _, keyword := range sensitiveKeywords {
+		if strings.Contains(upperKey, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesAnyPattern(stackName string, patterns []string) bool {
