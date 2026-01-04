@@ -3,10 +3,13 @@ package composeeditor
 import (
 	"berth-agent/config"
 	"berth-agent/internal/logging"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/cli"
@@ -285,53 +288,195 @@ func (s *Service) convertHealthcheck(hc *HealthcheckConfig) *types.HealthCheckCo
 }
 
 func (s *Service) writeComposeFile(filePath string, project *types.Project) error {
-	content := map[string]any{}
+	doc := &yaml.Node{Kind: yaml.MappingNode}
+
+	addSection := func(key string, node *yaml.Node) {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+		doc.Content = append(doc.Content, keyNode, node)
+	}
 
 	if len(project.Services) > 0 {
-		services := map[string]any{}
-		for name, svc := range project.Services {
-			services[name] = s.serviceToMap(svc)
+		servicesNode := &yaml.Node{Kind: yaml.MappingNode}
+		serviceNames := make([]string, 0, len(project.Services))
+		for name := range project.Services {
+			serviceNames = append(serviceNames, name)
 		}
-		content["services"] = services
+		sort.Strings(serviceNames)
+
+		for _, name := range serviceNames {
+			svc := project.Services[name]
+			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: name}
+			servicesNode.Content = append(servicesNode.Content, keyNode, s.serviceToNode(svc))
+		}
+		addSection("services", servicesNode)
 	}
 
 	if len(project.Networks) > 0 {
-		content["networks"] = project.Networks
+		networks := s.cleanNetworks(project.Networks, project.Name)
+		if len(networks) > 0 {
+			var netNode yaml.Node
+			netNode.Encode(networks)
+			addSection("networks", &netNode)
+		}
 	}
 
 	if len(project.Volumes) > 0 {
-		content["volumes"] = project.Volumes
+		volumes := s.cleanVolumes(project.Volumes)
+		if len(volumes) > 0 {
+			var volNode yaml.Node
+			volNode.Encode(volumes)
+			addSection("volumes", &volNode)
+		}
 	}
 
 	if len(project.Secrets) > 0 {
-		content["secrets"] = project.Secrets
+		var secNode yaml.Node
+		secNode.Encode(project.Secrets)
+		addSection("secrets", &secNode)
 	}
 
 	if len(project.Configs) > 0 {
-		content["configs"] = project.Configs
+		var cfgNode yaml.Node
+		cfgNode.Encode(project.Configs)
+		addSection("configs", &cfgNode)
 	}
 
-	data, err := yaml.Marshal(content)
-	if err != nil {
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(doc); err != nil {
 		return fmt.Errorf("failed to marshal compose: %w", err)
 	}
+	encoder.Close()
 
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	if err := os.WriteFile(filePath, buf.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
 	return nil
 }
 
-func (s *Service) serviceToMap(svc types.ServiceConfig) map[string]any {
+func (s *Service) cleanNetworks(networks types.Networks, projectName string) map[string]any {
+	result := map[string]any{}
+	defaultNetworkName := projectName + "_default"
+
+	for name, network := range networks {
+		if name == "default" && network.Name == defaultNetworkName {
+			continue
+		}
+		netConfig := map[string]any{}
+		if network.Driver != "" && network.Driver != "bridge" {
+			netConfig["driver"] = network.Driver
+		}
+		if len(network.DriverOpts) > 0 {
+			netConfig["driver_opts"] = network.DriverOpts
+		}
+		if network.External {
+			netConfig["external"] = true
+		}
+		if network.Ipam.Driver != "" || len(network.Ipam.Config) > 0 {
+			netConfig["ipam"] = network.Ipam
+		}
+		if len(network.Labels) > 0 {
+			netConfig["labels"] = network.Labels
+		}
+		if len(netConfig) == 0 {
+			result[name] = nil
+		} else {
+			result[name] = netConfig
+		}
+	}
+	return result
+}
+
+func (s *Service) cleanVolumes(volumes types.Volumes) map[string]any {
 	result := map[string]any{}
 
+	for name, volume := range volumes {
+		volConfig := map[string]any{}
+		if volume.Driver != "" && volume.Driver != "local" {
+			volConfig["driver"] = volume.Driver
+		}
+		if len(volume.DriverOpts) > 0 {
+			volConfig["driver_opts"] = volume.DriverOpts
+		}
+		if volume.External {
+			volConfig["external"] = true
+		}
+		if len(volume.Labels) > 0 {
+			volConfig["labels"] = volume.Labels
+		}
+		if len(volConfig) == 0 {
+			result[name] = nil
+		} else {
+			result[name] = volConfig
+		}
+	}
+	return result
+}
+
+func (s *Service) shellJoin(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if len(args) == 1 {
+		return args[0]
+	}
+	var result []string
+	for _, arg := range args {
+		if strings.ContainsAny(arg, " \t\n\"'\\") {
+			result = append(result, fmt.Sprintf("%q", arg))
+		} else {
+			result = append(result, arg)
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (s *Service) toFlowStyleArray(items []string) *yaml.Node {
+	node := &yaml.Node{
+		Kind:  yaml.SequenceNode,
+		Style: yaml.FlowStyle,
+	}
+	for _, item := range items {
+		node.Content = append(node.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Value: item,
+		})
+	}
+	return node
+}
+
+func (s *Service) serviceToNode(svc types.ServiceConfig) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+
+	addKeyValue := func(key string, value any) {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+		var valNode yaml.Node
+		if err := valNode.Encode(value); err == nil {
+			node.Content = append(node.Content, keyNode, &valNode)
+		}
+	}
+
+	addKeyNode := func(key string, valNode *yaml.Node) {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+		node.Content = append(node.Content, keyNode, valNode)
+	}
+
 	if svc.Image != "" {
-		result["image"] = svc.Image
+		addKeyValue("image", svc.Image)
 	}
 
 	if svc.Build != nil {
-		result["build"] = svc.Build
+		addKeyValue("build", svc.Build)
+	}
+
+	if len(svc.Entrypoint) > 0 {
+		addKeyValue("entrypoint", s.shellJoin(svc.Entrypoint))
+	}
+
+	if len(svc.Command) > 0 {
+		addKeyValue("command", s.shellJoin(svc.Command))
 	}
 
 	if len(svc.Ports) > 0 {
@@ -350,19 +495,7 @@ func (s *Service) serviceToMap(svc types.ServiceConfig) map[string]any {
 			}
 			ports = append(ports, port)
 		}
-		result["ports"] = ports
-	}
-
-	if len(svc.Environment) > 0 {
-		env := map[string]any{}
-		for k, v := range svc.Environment {
-			if v != nil {
-				env[k] = *v
-			} else {
-				env[k] = nil
-			}
-		}
-		result["environment"] = env
+		addKeyNode("ports", s.toFlowStyleArray(ports))
 	}
 
 	if len(svc.Volumes) > 0 {
@@ -374,76 +507,150 @@ func (s *Service) serviceToMap(svc types.ServiceConfig) map[string]any {
 			}
 			volumes = append(volumes, vol)
 		}
-		result["volumes"] = volumes
+		addKeyNode("volumes", s.toFlowStyleArray(volumes))
 	}
 
-	if len(svc.Command) > 0 {
-		if len(svc.Command) == 1 {
-			result["command"] = svc.Command[0]
-		} else {
-			result["command"] = svc.Command
+	if len(svc.Environment) > 0 {
+		envNode := s.orderedMapNode(svc.Environment)
+		addKeyNode("environment", envNode)
+	}
+
+	if len(svc.DependsOn) > 0 {
+		depsNode := &yaml.Node{Kind: yaml.MappingNode}
+		depNames := make([]string, 0, len(svc.DependsOn))
+		for name := range svc.DependsOn {
+			depNames = append(depNames, name)
 		}
+		sort.Strings(depNames)
+		for _, name := range depNames {
+			dep := svc.DependsOn[name]
+			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: name}
+			valNode := &yaml.Node{Kind: yaml.MappingNode}
+			condKey := &yaml.Node{Kind: yaml.ScalarNode, Value: "condition"}
+			condVal := &yaml.Node{Kind: yaml.ScalarNode, Value: dep.Condition}
+			valNode.Content = append(valNode.Content, condKey, condVal)
+			depsNode.Content = append(depsNode.Content, keyNode, valNode)
+		}
+		addKeyNode("depends_on", depsNode)
 	}
 
-	if len(svc.Entrypoint) > 0 {
-		if len(svc.Entrypoint) == 1 {
-			result["entrypoint"] = svc.Entrypoint[0]
-		} else {
-			result["entrypoint"] = svc.Entrypoint
+	if len(svc.Networks) > 0 {
+		hasNonDefault := false
+		for name, config := range svc.Networks {
+			if name != "default" || config != nil {
+				hasNonDefault = true
+				break
+			}
+		}
+		if hasNonDefault {
+			netNode := &yaml.Node{Kind: yaml.MappingNode}
+			netNames := make([]string, 0, len(svc.Networks))
+			for name := range svc.Networks {
+				netNames = append(netNames, name)
+			}
+			sort.Strings(netNames)
+			for _, name := range netNames {
+				config := svc.Networks[name]
+				if name == "default" && config == nil {
+					continue
+				}
+				keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: name}
+				var valNode yaml.Node
+				valNode.Encode(config)
+				netNode.Content = append(netNode.Content, keyNode, &valNode)
+			}
+			if len(netNode.Content) > 0 {
+				addKeyNode("networks", netNode)
+			}
 		}
 	}
 
 	if svc.Restart != "" {
-		result["restart"] = svc.Restart
-	}
-
-	if len(svc.Labels) > 0 {
-		result["labels"] = svc.Labels
-	}
-
-	if len(svc.DependsOn) > 0 {
-		deps := map[string]any{}
-		for name, dep := range svc.DependsOn {
-			deps[name] = map[string]any{
-				"condition": dep.Condition,
-			}
-		}
-		result["depends_on"] = deps
+		addKeyValue("restart", svc.Restart)
 	}
 
 	if svc.HealthCheck != nil {
-		hc := map[string]any{}
+		hcNode := &yaml.Node{Kind: yaml.MappingNode}
+		addHcKey := func(key string, value any) {
+			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+			var valNode yaml.Node
+			valNode.Encode(value)
+			hcNode.Content = append(hcNode.Content, keyNode, &valNode)
+		}
+		addHcNode := func(key string, valNode *yaml.Node) {
+			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+			hcNode.Content = append(hcNode.Content, keyNode, valNode)
+		}
+
 		if svc.HealthCheck.Disable {
-			hc["disable"] = true
+			addHcKey("disable", true)
 		} else {
 			if len(svc.HealthCheck.Test) > 0 {
-				hc["test"] = svc.HealthCheck.Test
+				addHcNode("test", s.toFlowStyleArray(svc.HealthCheck.Test))
 			}
 			if svc.HealthCheck.Interval != nil && *svc.HealthCheck.Interval != 0 {
-				hc["interval"] = time.Duration(*svc.HealthCheck.Interval).String()
+				addHcKey("interval", time.Duration(*svc.HealthCheck.Interval).String())
 			}
 			if svc.HealthCheck.Timeout != nil && *svc.HealthCheck.Timeout != 0 {
-				hc["timeout"] = time.Duration(*svc.HealthCheck.Timeout).String()
+				addHcKey("timeout", time.Duration(*svc.HealthCheck.Timeout).String())
 			}
 			if svc.HealthCheck.Retries != nil {
-				hc["retries"] = *svc.HealthCheck.Retries
+				addHcKey("retries", *svc.HealthCheck.Retries)
 			}
 			if svc.HealthCheck.StartPeriod != nil && *svc.HealthCheck.StartPeriod != 0 {
-				hc["start_period"] = time.Duration(*svc.HealthCheck.StartPeriod).String()
+				addHcKey("start_period", time.Duration(*svc.HealthCheck.StartPeriod).String())
 			}
 		}
-		if len(hc) > 0 {
-			result["healthcheck"] = hc
+		if len(hcNode.Content) > 0 {
+			addKeyNode("healthcheck", hcNode)
 		}
 	}
 
-	if len(svc.Networks) > 0 {
-		result["networks"] = svc.Networks
+	if len(svc.Labels) > 0 {
+		labelsNode := s.orderedStringMapNode(svc.Labels)
+		addKeyNode("labels", labelsNode)
 	}
 
 	if svc.Deploy != nil {
-		result["deploy"] = svc.Deploy
+		addKeyValue("deploy", svc.Deploy)
 	}
 
-	return result
+	return node
+}
+
+func (s *Service) orderedMapNode(m map[string]*string) *yaml.Node {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, k := range keys {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: k}
+		var valNode *yaml.Node
+		if m[k] != nil {
+			valNode = &yaml.Node{Kind: yaml.ScalarNode, Value: *m[k]}
+		} else {
+			valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}
+		}
+		node.Content = append(node.Content, keyNode, valNode)
+	}
+	return node
+}
+
+func (s *Service) orderedStringMapNode(m map[string]string) *yaml.Node {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, k := range keys {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: k}
+		valNode := &yaml.Node{Kind: yaml.ScalarNode, Value: m[k]}
+		node.Content = append(node.Content, keyNode, valNode)
+	}
+	return node
 }
