@@ -33,3 +33,30 @@ func (h *Handler) GetComposeConfig(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, config)
 }
+
+func (h *Handler) UpdateCompose(c echo.Context) error {
+	stackName := c.Param("name")
+	if stackName == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "stack name is required",
+		})
+	}
+
+	var req UpdateComposeRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+	}
+
+	if err := h.service.UpdateCompose(c.Request().Context(), stackName, req.Changes); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, UpdateComposeResponse{
+		Success: true,
+		Message: "Compose file updated successfully",
+	})
+}

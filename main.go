@@ -114,6 +114,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:name/environment", stackHandler.GetStackEnvironmentVariables)
 	api.GET("/stacks/:name/images", stackHandler.GetContainerImageDetails)
 	api.GET("/stacks/:name/compose", composeEditorHandler.GetComposeConfig)
+	api.PATCH("/stacks/:name/compose", composeEditorHandler.UpdateCompose)
 	api.GET("/stacks/:name/stats", statsHandler.GetStackStats)
 	api.GET("/stacks/:stackName/logs", logsHandler.GetStackLogs)
 	api.GET("/stacks/:stackName/containers/:containerName/logs", logsHandler.GetContainerLogs)
