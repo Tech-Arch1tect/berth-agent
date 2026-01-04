@@ -3,6 +3,7 @@ package main
 import (
 	"berth-agent/config"
 	"berth-agent/internal/auth"
+	"berth-agent/internal/composeeditor"
 	"berth-agent/internal/docker"
 	"berth-agent/internal/files"
 	"berth-agent/internal/health"
@@ -51,6 +52,7 @@ func runAgent() {
 		files.Module,
 		docker.Module,
 		images.Module,
+		composeeditor.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
 		fx.Provide(NewEventMonitorWithConfig),
@@ -97,6 +99,7 @@ func RegisterRoutes(
 	terminalHandler *terminal.Handler,
 	filesHandler *files.Handler,
 	imagesHandler *images.Handler,
+	composeEditorHandler *composeeditor.Handler,
 	logger *logging.Logger,
 ) {
 	api := e.Group("/api")
@@ -110,6 +113,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:name/volumes", stackHandler.GetStackVolumes)
 	api.GET("/stacks/:name/environment", stackHandler.GetStackEnvironmentVariables)
 	api.GET("/stacks/:name/images", stackHandler.GetContainerImageDetails)
+	api.GET("/stacks/:name/compose", composeEditorHandler.GetComposeConfig)
 	api.GET("/stacks/:name/stats", statsHandler.GetStackStats)
 	api.GET("/stacks/:stackName/logs", logsHandler.GetStackLogs)
 	api.GET("/stacks/:stackName/containers/:containerName/logs", logsHandler.GetContainerLogs)
