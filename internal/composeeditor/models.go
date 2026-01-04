@@ -26,6 +26,8 @@ type ServiceChanges struct {
 	Healthcheck *HealthcheckConfig         `json:"healthcheck,omitempty"`
 	Restart     *string                    `json:"restart,omitempty"`
 	Labels      map[string]*string         `json:"labels,omitempty"`
+	Deploy      *DeployConfig              `json:"deploy,omitempty"`
+	Build       *BuildConfig               `json:"build,omitempty"`
 }
 
 type PortMapping struct {
@@ -60,6 +62,43 @@ type HealthcheckConfig struct {
 	StartPeriod   string   `json:"start_period,omitempty"`
 	StartInterval string   `json:"start_interval,omitempty"`
 	Disable       bool     `json:"disable,omitempty"`
+}
+
+type DeployConfig struct {
+	Mode          *string              `json:"mode,omitempty"`
+	Replicas      *int                 `json:"replicas,omitempty"`
+	Resources     *ResourcesConfig     `json:"resources,omitempty"`
+	RestartPolicy *RestartPolicyConfig `json:"restart_policy,omitempty"`
+	Placement     *PlacementConfig     `json:"placement,omitempty"`
+}
+
+type ResourcesConfig struct {
+	Limits       *ResourceLimits `json:"limits,omitempty"`
+	Reservations *ResourceLimits `json:"reservations,omitempty"`
+}
+
+type ResourceLimits struct {
+	CPUs   string `json:"cpus,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+type RestartPolicyConfig struct {
+	Condition   string `json:"condition,omitempty"`
+	Delay       string `json:"delay,omitempty"`
+	MaxAttempts *int   `json:"max_attempts,omitempty"`
+	Window      string `json:"window,omitempty"`
+}
+
+type PlacementConfig struct {
+	Constraints []string `json:"constraints,omitempty"`
+}
+
+type BuildConfig struct {
+	Context    string            `json:"context,omitempty"`
+	Dockerfile string            `json:"dockerfile,omitempty"`
+	Args       map[string]string `json:"args,omitempty"`
+	Target     string            `json:"target,omitempty"`
+	CacheFrom  []string          `json:"cache_from,omitempty"`
 }
 
 type UpdateComposeRequest struct {

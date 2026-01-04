@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -197,6 +198,14 @@ func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) e
 			svc.HealthCheck = s.convertHealthcheck(serviceChanges.Healthcheck)
 		}
 
+		if serviceChanges.Deploy != nil {
+			svc.Deploy = s.convertDeploy(serviceChanges.Deploy)
+		}
+
+		if serviceChanges.Build != nil {
+			svc.Build = s.convertBuild(serviceChanges.Build)
+		}
+
 		project.Services[serviceName] = svc
 	}
 
@@ -282,6 +291,127 @@ func (s *Service) convertHealthcheck(hc *HealthcheckConfig) *types.HealthCheckCo
 	}
 	if hc.Retries != nil {
 		result.Retries = hc.Retries
+	}
+
+	return result
+}
+
+func (s *Service) convertDeploy(deploy *DeployConfig) *types.DeployConfig {
+	result := &types.DeployConfig{}
+
+	if deploy.Mode != nil {
+		result.Mode = *deploy.Mode
+	}
+	if deploy.Replicas != nil {
+		result.Replicas = deploy.Replicas
+	}
+
+	if deploy.Resources != nil {
+		result.Resources = types.Resources{}
+		if deploy.Resources.Limits != nil {
+			result.Resources.Limits = &types.Resource{
+				NanoCPUs:    s.parseCPUs(deploy.Resources.Limits.CPUs),
+				MemoryBytes: s.parseMemorySize(deploy.Resources.Limits.Memory),
+			}
+		}
+		if deploy.Resources.Reservations != nil {
+			result.Resources.Reservations = &types.Resource{
+				NanoCPUs:    s.parseCPUs(deploy.Resources.Reservations.CPUs),
+				MemoryBytes: s.parseMemorySize(deploy.Resources.Reservations.Memory),
+			}
+		}
+	}
+
+	if deploy.RestartPolicy != nil {
+		result.RestartPolicy = &types.RestartPolicy{
+			Condition: deploy.RestartPolicy.Condition,
+		}
+		if deploy.RestartPolicy.Delay != "" {
+			if d, err := time.ParseDuration(deploy.RestartPolicy.Delay); err == nil {
+				dur := types.Duration(d)
+				result.RestartPolicy.Delay = &dur
+			}
+		}
+		if deploy.RestartPolicy.MaxAttempts != nil {
+			attempts := uint64(*deploy.RestartPolicy.MaxAttempts)
+			result.RestartPolicy.MaxAttempts = &attempts
+		}
+		if deploy.RestartPolicy.Window != "" {
+			if d, err := time.ParseDuration(deploy.RestartPolicy.Window); err == nil {
+				dur := types.Duration(d)
+				result.RestartPolicy.Window = &dur
+			}
+		}
+	}
+
+	if deploy.Placement != nil && len(deploy.Placement.Constraints) > 0 {
+		result.Placement = types.Placement{
+			Constraints: deploy.Placement.Constraints,
+		}
+	}
+
+	return result
+}
+
+func (s *Service) parseCPUs(cpus string) types.NanoCPUs {
+	if cpus == "" {
+		return 0
+	}
+	val, err := strconv.ParseFloat(cpus, 32)
+	if err != nil {
+		return 0
+	}
+	return types.NanoCPUs(val)
+}
+
+func (s *Service) parseMemorySize(size string) types.UnitBytes {
+	if size == "" {
+		return 0
+	}
+
+	size = strings.ToLower(size)
+	var multiplier int64 = 1
+	var numStr string
+
+	if strings.HasSuffix(size, "g") || strings.HasSuffix(size, "gb") {
+		multiplier = 1024 * 1024 * 1024
+		numStr = strings.TrimSuffix(strings.TrimSuffix(size, "gb"), "g")
+	} else if strings.HasSuffix(size, "m") || strings.HasSuffix(size, "mb") {
+		multiplier = 1024 * 1024
+		numStr = strings.TrimSuffix(strings.TrimSuffix(size, "mb"), "m")
+	} else if strings.HasSuffix(size, "k") || strings.HasSuffix(size, "kb") {
+		multiplier = 1024
+		numStr = strings.TrimSuffix(strings.TrimSuffix(size, "kb"), "k")
+	} else if strings.HasSuffix(size, "b") {
+		numStr = strings.TrimSuffix(size, "b")
+	} else {
+		numStr = size
+	}
+
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0
+	}
+	return types.UnitBytes(int64(num) * multiplier)
+}
+
+func (s *Service) convertBuild(build *BuildConfig) *types.BuildConfig {
+	result := &types.BuildConfig{
+		Context:    build.Context,
+		Dockerfile: build.Dockerfile,
+		Target:     build.Target,
+	}
+
+	if len(build.Args) > 0 {
+		result.Args = make(types.MappingWithEquals)
+		for k, v := range build.Args {
+			val := v
+			result.Args[k] = &val
+		}
+	}
+
+	if len(build.CacheFrom) > 0 {
+		result.CacheFrom = build.CacheFrom
 	}
 
 	return result
