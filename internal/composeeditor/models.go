@@ -12,11 +12,22 @@ type ComposeConfig struct {
 }
 
 type ComposeChanges struct {
-	ServiceChanges map[string]ServiceChanges `json:"service_changes,omitempty"`
-	NetworkChanges map[string]*NetworkConfig `json:"network_changes,omitempty"`
-	VolumeChanges  map[string]*VolumeConfig  `json:"volume_changes,omitempty"`
-	SecretChanges  map[string]*SecretConfig  `json:"secret_changes,omitempty"`
-	ConfigChanges  map[string]*ConfigConfig  `json:"config_changes,omitempty"`
+	ServiceChanges map[string]ServiceChanges   `json:"service_changes,omitempty"`
+	NetworkChanges map[string]*NetworkConfig   `json:"network_changes,omitempty"`
+	VolumeChanges  map[string]*VolumeConfig    `json:"volume_changes,omitempty"`
+	SecretChanges  map[string]*SecretConfig    `json:"secret_changes,omitempty"`
+	ConfigChanges  map[string]*ConfigConfig    `json:"config_changes,omitempty"`
+	AddServices    map[string]NewServiceConfig `json:"add_services,omitempty"`
+	DeleteServices []string                    `json:"delete_services,omitempty"`
+	RenameServices map[string]string           `json:"rename_services,omitempty"`
+}
+
+type NewServiceConfig struct {
+	Image       string            `json:"image"`
+	Ports       []PortMapping     `json:"ports,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
+	Volumes     []VolumeMount     `json:"volumes,omitempty"`
+	Restart     string            `json:"restart,omitempty"`
 }
 
 type ServiceChanges struct {

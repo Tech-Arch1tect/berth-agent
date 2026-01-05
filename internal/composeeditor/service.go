@@ -151,6 +151,23 @@ func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) e
 		s.applyConfigChanges(project, changes.ConfigChanges)
 	}
 
+	for oldName, newName := range changes.RenameServices {
+		if err := s.renameService(project, oldName, newName); err != nil {
+			return err
+		}
+	}
+
+	for _, serviceName := range changes.DeleteServices {
+		delete(project.Services, serviceName)
+	}
+
+	for serviceName, newSvc := range changes.AddServices {
+		if _, exists := project.Services[serviceName]; exists {
+			return fmt.Errorf("service already exists: %s", serviceName)
+		}
+		project.Services[serviceName] = s.convertNewService(serviceName, newSvc)
+	}
+
 	for serviceName, serviceChanges := range changes.ServiceChanges {
 		svc, exists := project.Services[serviceName]
 		if !exists {
@@ -320,6 +337,58 @@ func (s *Service) applyConfigChanges(project *types.Project, changes map[string]
 			project.Configs[name] = cfg
 		}
 	}
+}
+
+func (s *Service) renameService(project *types.Project, oldName, newName string) error {
+	svc, exists := project.Services[oldName]
+	if !exists {
+		return fmt.Errorf("service not found: %s", oldName)
+	}
+	if _, exists := project.Services[newName]; exists {
+		return fmt.Errorf("service already exists: %s", newName)
+	}
+
+	svc.Name = newName
+	project.Services[newName] = svc
+	delete(project.Services, oldName)
+
+	for name, otherSvc := range project.Services {
+		if otherSvc.DependsOn != nil {
+			if dep, hasDep := otherSvc.DependsOn[oldName]; hasDep {
+				otherSvc.DependsOn[newName] = dep
+				delete(otherSvc.DependsOn, oldName)
+				project.Services[name] = otherSvc
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) convertNewService(name string, cfg NewServiceConfig) types.ServiceConfig {
+	svc := types.ServiceConfig{
+		Name:    name,
+		Image:   cfg.Image,
+		Restart: cfg.Restart,
+	}
+
+	if len(cfg.Ports) > 0 {
+		svc.Ports = s.convertPorts(cfg.Ports)
+	}
+
+	if len(cfg.Environment) > 0 {
+		svc.Environment = make(types.MappingWithEquals)
+		for k, v := range cfg.Environment {
+			val := v
+			svc.Environment[k] = &val
+		}
+	}
+
+	if len(cfg.Volumes) > 0 {
+		svc.Volumes = s.convertVolumes(cfg.Volumes)
+	}
+
+	return svc
 }
 
 func (s *Service) convertPorts(ports []PortMapping) []types.ServicePortConfig {
