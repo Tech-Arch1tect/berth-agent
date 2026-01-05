@@ -134,6 +134,23 @@ func (s *Service) UpdateCompose(ctx context.Context, stackName string, changes C
 }
 
 func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) error {
+
+	if changes.NetworkChanges != nil {
+		s.applyNetworkChanges(project, changes.NetworkChanges)
+	}
+
+	if changes.VolumeChanges != nil {
+		s.applyVolumeChanges(project, changes.VolumeChanges)
+	}
+
+	if changes.SecretChanges != nil {
+		s.applySecretChanges(project, changes.SecretChanges)
+	}
+
+	if changes.ConfigChanges != nil {
+		s.applyConfigChanges(project, changes.ConfigChanges)
+	}
+
 	for serviceName, serviceChanges := range changes.ServiceChanges {
 		svc, exists := project.Services[serviceName]
 		if !exists {
@@ -210,6 +227,99 @@ func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) e
 	}
 
 	return nil
+}
+
+func (s *Service) applyNetworkChanges(project *types.Project, changes map[string]*NetworkConfig) {
+	if project.Networks == nil {
+		project.Networks = make(types.Networks)
+	}
+
+	for name, config := range changes {
+		if config == nil {
+			delete(project.Networks, name)
+		} else {
+			net := types.NetworkConfig{
+				Driver:     config.Driver,
+				DriverOpts: config.DriverOpts,
+				External:   types.External(config.External),
+				Name:       config.Name,
+				Labels:     config.Labels,
+			}
+			if config.Ipam != nil {
+				net.Ipam = types.IPAMConfig{
+					Driver: config.Ipam.Driver,
+				}
+				for _, pool := range config.Ipam.Config {
+					net.Ipam.Config = append(net.Ipam.Config, &types.IPAMPool{
+						Subnet:  pool.Subnet,
+						Gateway: pool.Gateway,
+						IPRange: pool.IpRange,
+					})
+				}
+			}
+			project.Networks[name] = net
+		}
+	}
+}
+
+func (s *Service) applyVolumeChanges(project *types.Project, changes map[string]*VolumeConfig) {
+	if project.Volumes == nil {
+		project.Volumes = make(types.Volumes)
+	}
+	for name, config := range changes {
+		if config == nil {
+			delete(project.Volumes, name)
+		} else {
+			vol := types.VolumeConfig{
+				Driver:     config.Driver,
+				DriverOpts: config.DriverOpts,
+				External:   types.External(config.External),
+				Name:       config.Name,
+				Labels:     config.Labels,
+			}
+			project.Volumes[name] = vol
+		}
+	}
+}
+
+func (s *Service) applySecretChanges(project *types.Project, changes map[string]*SecretConfig) {
+	if project.Secrets == nil {
+		project.Secrets = make(types.Secrets)
+	}
+
+	for name, config := range changes {
+		if config == nil {
+			delete(project.Secrets, name)
+		} else {
+			sec := types.SecretConfig{
+				File:        config.File,
+				Environment: config.Environment,
+				External:    types.External(config.External),
+				Name:        config.Name,
+			}
+			project.Secrets[name] = sec
+		}
+	}
+}
+
+func (s *Service) applyConfigChanges(project *types.Project, changes map[string]*ConfigConfig) {
+	if project.Configs == nil {
+		project.Configs = make(types.Configs)
+	}
+
+	for name, config := range changes {
+		if config == nil {
+			delete(project.Configs, name)
+		} else {
+			cfg := types.ConfigObjConfig{
+				File:        config.File,
+				Environment: config.Environment,
+				External:    types.External(config.External),
+				Name:        config.Name,
+			}
+			project.Configs[name] = cfg
+		}
+	}
 }
 
 func (s *Service) convertPorts(ports []PortMapping) []types.ServicePortConfig {

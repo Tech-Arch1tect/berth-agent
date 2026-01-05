@@ -13,6 +13,10 @@ type ComposeConfig struct {
 
 type ComposeChanges struct {
 	ServiceChanges map[string]ServiceChanges `json:"service_changes,omitempty"`
+	NetworkChanges map[string]*NetworkConfig `json:"network_changes,omitempty"`
+	VolumeChanges  map[string]*VolumeConfig  `json:"volume_changes,omitempty"`
+	SecretChanges  map[string]*SecretConfig  `json:"secret_changes,omitempty"`
+	ConfigChanges  map[string]*ConfigConfig  `json:"config_changes,omitempty"`
 }
 
 type ServiceChanges struct {
@@ -117,6 +121,48 @@ type BuildConfig struct {
 	CacheFrom  []string          `json:"cache_from,omitempty"`
 	CacheTo    []string          `json:"cache_to,omitempty"`
 	Platforms  []string          `json:"platforms,omitempty"`
+}
+
+type NetworkConfig struct {
+	Driver     string            `json:"driver,omitempty"`
+	DriverOpts map[string]string `json:"driver_opts,omitempty"`
+	External   bool              `json:"external,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Ipam       *IpamConfig       `json:"ipam,omitempty"`
+}
+
+type IpamConfig struct {
+	Driver string     `json:"driver,omitempty"`
+	Config []IpamPool `json:"config,omitempty"`
+}
+
+type IpamPool struct {
+	Subnet  string `json:"subnet,omitempty"`
+	Gateway string `json:"gateway,omitempty"`
+	IpRange string `json:"ip_range,omitempty"`
+}
+
+type VolumeConfig struct {
+	Driver     string            `json:"driver,omitempty"`
+	DriverOpts map[string]string `json:"driver_opts,omitempty"`
+	External   bool              `json:"external,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+}
+
+type SecretConfig struct {
+	File        string `json:"file,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	External    bool   `json:"external,omitempty"`
+	Name        string `json:"name,omitempty"`
+}
+
+type ConfigConfig struct {
+	File        string `json:"file,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	External    bool   `json:"external,omitempty"`
+	Name        string `json:"name,omitempty"`
 }
 
 type UpdateComposeRequest struct {
