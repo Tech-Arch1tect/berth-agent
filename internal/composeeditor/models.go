@@ -65,11 +65,22 @@ type HealthcheckConfig struct {
 }
 
 type DeployConfig struct {
-	Mode          *string              `json:"mode,omitempty"`
-	Replicas      *int                 `json:"replicas,omitempty"`
-	Resources     *ResourcesConfig     `json:"resources,omitempty"`
-	RestartPolicy *RestartPolicyConfig `json:"restart_policy,omitempty"`
-	Placement     *PlacementConfig     `json:"placement,omitempty"`
+	Mode           *string               `json:"mode,omitempty"`
+	Replicas       *int                  `json:"replicas,omitempty"`
+	Resources      *ResourcesConfig      `json:"resources,omitempty"`
+	RestartPolicy  *RestartPolicyConfig  `json:"restart_policy,omitempty"`
+	Placement      *PlacementConfig      `json:"placement,omitempty"`
+	UpdateConfig   *UpdateRollbackConfig `json:"update_config,omitempty"`
+	RollbackConfig *UpdateRollbackConfig `json:"rollback_config,omitempty"`
+}
+
+type UpdateRollbackConfig struct {
+	Parallelism     *int    `json:"parallelism,omitempty"`
+	Delay           string  `json:"delay,omitempty"`
+	FailureAction   string  `json:"failure_action,omitempty"`
+	Monitor         string  `json:"monitor,omitempty"`
+	MaxFailureRatio float64 `json:"max_failure_ratio,omitempty"`
+	Order           string  `json:"order,omitempty"`
 }
 
 type ResourcesConfig struct {
@@ -90,7 +101,12 @@ type RestartPolicyConfig struct {
 }
 
 type PlacementConfig struct {
-	Constraints []string `json:"constraints,omitempty"`
+	Constraints []string              `json:"constraints,omitempty"`
+	Preferences []PlacementPreference `json:"preferences,omitempty"`
+}
+
+type PlacementPreference struct {
+	Spread string `json:"spread"`
 }
 
 type BuildConfig struct {
@@ -99,6 +115,8 @@ type BuildConfig struct {
 	Args       map[string]string `json:"args,omitempty"`
 	Target     string            `json:"target,omitempty"`
 	CacheFrom  []string          `json:"cache_from,omitempty"`
+	CacheTo    []string          `json:"cache_to,omitempty"`
+	Platforms  []string          `json:"platforms,omitempty"`
 }
 
 type UpdateComposeRequest struct {

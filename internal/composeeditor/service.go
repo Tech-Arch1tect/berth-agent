@@ -344,10 +344,55 @@ func (s *Service) convertDeploy(deploy *DeployConfig) *types.DeployConfig {
 		}
 	}
 
-	if deploy.Placement != nil && len(deploy.Placement.Constraints) > 0 {
+	if deploy.Placement != nil {
 		result.Placement = types.Placement{
 			Constraints: deploy.Placement.Constraints,
 		}
+		if len(deploy.Placement.Preferences) > 0 {
+			for _, pref := range deploy.Placement.Preferences {
+				result.Placement.Preferences = append(result.Placement.Preferences, types.PlacementPreferences{
+					Spread: pref.Spread,
+				})
+			}
+		}
+	}
+
+	if deploy.UpdateConfig != nil {
+		result.UpdateConfig = s.convertUpdateRollbackConfig(deploy.UpdateConfig)
+	}
+
+	if deploy.RollbackConfig != nil {
+		result.RollbackConfig = s.convertUpdateRollbackConfig(deploy.RollbackConfig)
+	}
+
+	return result
+}
+
+func (s *Service) convertUpdateRollbackConfig(config *UpdateRollbackConfig) *types.UpdateConfig {
+	result := &types.UpdateConfig{}
+
+	if config.Parallelism != nil {
+		p := uint64(*config.Parallelism)
+		result.Parallelism = &p
+	}
+	if config.Delay != "" {
+		if d, err := time.ParseDuration(config.Delay); err == nil {
+			result.Delay = types.Duration(d)
+		}
+	}
+	if config.FailureAction != "" {
+		result.FailureAction = config.FailureAction
+	}
+	if config.Monitor != "" {
+		if d, err := time.ParseDuration(config.Monitor); err == nil {
+			result.Monitor = types.Duration(d)
+		}
+	}
+	if config.MaxFailureRatio != 0 {
+		result.MaxFailureRatio = float32(config.MaxFailureRatio)
+	}
+	if config.Order != "" {
+		result.Order = config.Order
 	}
 
 	return result
@@ -412,6 +457,14 @@ func (s *Service) convertBuild(build *BuildConfig) *types.BuildConfig {
 
 	if len(build.CacheFrom) > 0 {
 		result.CacheFrom = build.CacheFrom
+	}
+
+	if len(build.CacheTo) > 0 {
+		result.CacheTo = build.CacheTo
+	}
+
+	if len(build.Platforms) > 0 {
+		result.Platforms = build.Platforms
 	}
 
 	return result
