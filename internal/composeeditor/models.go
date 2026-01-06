@@ -31,18 +31,26 @@ type NewServiceConfig struct {
 }
 
 type ServiceChanges struct {
-	Image       *string                    `json:"image,omitempty"`
-	Ports       []PortMapping              `json:"ports,omitempty"`
-	Environment map[string]*string         `json:"environment,omitempty"`
-	Volumes     []VolumeMount              `json:"volumes,omitempty"`
-	Command     *CommandConfig             `json:"command,omitempty"`
-	Entrypoint  *CommandConfig             `json:"entrypoint,omitempty"`
-	DependsOn   map[string]DependsOnConfig `json:"depends_on,omitempty"`
-	Healthcheck *HealthcheckConfig         `json:"healthcheck,omitempty"`
-	Restart     *string                    `json:"restart,omitempty"`
-	Labels      map[string]*string         `json:"labels,omitempty"`
-	Deploy      *DeployConfig              `json:"deploy,omitempty"`
-	Build       *BuildConfig               `json:"build,omitempty"`
+	Image       *string                          `json:"image,omitempty"`
+	Ports       []PortMapping                    `json:"ports,omitempty"`
+	Environment map[string]*string               `json:"environment,omitempty"`
+	Volumes     []VolumeMount                    `json:"volumes,omitempty"`
+	Command     *CommandConfig                   `json:"command,omitempty"`
+	Entrypoint  *CommandConfig                   `json:"entrypoint,omitempty"`
+	DependsOn   map[string]DependsOnConfig       `json:"depends_on,omitempty"`
+	Healthcheck *HealthcheckConfig               `json:"healthcheck,omitempty"`
+	Restart     *string                          `json:"restart,omitempty"`
+	Labels      map[string]*string               `json:"labels,omitempty"`
+	Deploy      *DeployConfig                    `json:"deploy,omitempty"`
+	Build       *BuildConfig                     `json:"build,omitempty"`
+	Networks    map[string]*ServiceNetworkConfig `json:"networks,omitempty"`
+}
+
+type ServiceNetworkConfig struct {
+	Aliases     []string `json:"aliases,omitempty"`
+	Ipv4Address string   `json:"ipv4_address,omitempty"`
+	Ipv6Address string   `json:"ipv6_address,omitempty"`
+	Priority    int      `json:"priority,omitempty"`
 }
 
 type PortMapping struct {

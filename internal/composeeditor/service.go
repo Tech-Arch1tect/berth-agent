@@ -240,6 +240,10 @@ func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) e
 			svc.Build = s.convertBuild(serviceChanges.Build)
 		}
 
+		if serviceChanges.Networks != nil {
+			svc.Networks = s.convertServiceNetworks(serviceChanges.Networks)
+		}
+
 		project.Services[serviceName] = svc
 	}
 
@@ -646,6 +650,31 @@ func (s *Service) convertBuild(build *BuildConfig) *types.BuildConfig {
 		result.Platforms = build.Platforms
 	}
 
+	return result
+}
+
+func (s *Service) convertServiceNetworks(networks map[string]*ServiceNetworkConfig) map[string]*types.ServiceNetworkConfig {
+	if networks == nil {
+		return nil
+	}
+
+	result := make(map[string]*types.ServiceNetworkConfig)
+	for name, config := range networks {
+		if config == nil {
+			continue
+		}
+		netConfig := &types.ServiceNetworkConfig{
+			Aliases:     config.Aliases,
+			Ipv4Address: config.Ipv4Address,
+			Ipv6Address: config.Ipv6Address,
+			Priority:    config.Priority,
+		}
+		result[name] = netConfig
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
 	return result
 }
 
