@@ -85,7 +85,7 @@ func (s *Service) loadProject(stackPath, composeFile string) (*types.Project, er
 	options, err := cli.NewProjectOptions(
 		[]string{composeFile},
 		cli.WithWorkingDirectory(stackPath),
-		cli.WithResolvedPaths(true),
+		cli.WithResolvedPaths(false),
 		cli.WithDiscardEnvFile,
 	)
 	if err != nil {
