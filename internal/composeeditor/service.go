@@ -100,6 +100,38 @@ func (s *Service) loadProject(stackPath, composeFile string) (*types.Project, er
 	return project, nil
 }
 
+func (s *Service) validateComposeYaml(stackPath, yamlContent string) error {
+	tempFile, err := os.CreateTemp(stackPath, "compose-validate-*.yml")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	if _, err := tempFile.WriteString(yamlContent); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	tempFile.Close()
+
+	options, err := cli.NewProjectOptions(
+		[]string{tempPath},
+		cli.WithWorkingDirectory(stackPath),
+		cli.WithResolvedPaths(false),
+		cli.WithDiscardEnvFile,
+	)
+	if err != nil {
+		return fmt.Errorf("invalid compose configuration: %w", err)
+	}
+
+	_, err = cli.ProjectFromOptions(context.Background(), options)
+	if err != nil {
+		return fmt.Errorf("invalid compose file: %w", err)
+	}
+
+	return nil
+}
+
 func (s *Service) UpdateCompose(ctx context.Context, stackName string, changes ComposeChanges) error {
 	stackPath := filepath.Join(s.stackLocation, stackName)
 
@@ -126,7 +158,16 @@ func (s *Service) UpdateCompose(ctx context.Context, stackName string, changes C
 		return fmt.Errorf("failed to apply changes: %w", err)
 	}
 
-	if err := s.writeComposeFile(composeFile, project); err != nil {
+	yamlContent, err := s.projectToYaml(project)
+	if err != nil {
+		return fmt.Errorf("failed to generate compose yaml: %w", err)
+	}
+
+	if err := s.validateComposeYaml(stackPath, yamlContent); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	if err := os.WriteFile(composeFile, []byte(yamlContent), 0644); err != nil {
 		return fmt.Errorf("failed to write compose file: %w", err)
 	}
 
