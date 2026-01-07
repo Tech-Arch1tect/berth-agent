@@ -133,6 +133,40 @@ func (s *Service) UpdateCompose(ctx context.Context, stackName string, changes C
 	return nil
 }
 
+func (s *Service) PreviewCompose(ctx context.Context, stackName string, changes ComposeChanges) (originalYaml, modifiedYaml string, err error) {
+	stackPath := filepath.Join(s.stackLocation, stackName)
+
+	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
+		return "", "", fmt.Errorf("stack not found: %s", stackName)
+	}
+
+	composeFile, err := s.findComposeFile(stackPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to find compose file: %w", err)
+	}
+
+	project, err := s.loadProject(stackPath, composeFile)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse compose file: %w", err)
+	}
+
+	originalYaml, err = s.projectToYaml(project)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate original yaml: %w", err)
+	}
+
+	if err := s.applyChanges(project, changes); err != nil {
+		return "", "", fmt.Errorf("failed to apply changes: %w", err)
+	}
+
+	modifiedYaml, err = s.projectToYaml(project)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate modified yaml: %w", err)
+	}
+
+	return originalYaml, modifiedYaml, nil
+}
+
 func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) error {
 
 	if changes.NetworkChanges != nil {
@@ -678,7 +712,7 @@ func (s *Service) convertServiceNetworks(networks map[string]*ServiceNetworkConf
 	return result
 }
 
-func (s *Service) writeComposeFile(filePath string, project *types.Project) error {
+func (s *Service) projectToYaml(project *types.Project) (string, error) {
 	doc := &yaml.Node{Kind: yaml.MappingNode}
 
 	addSection := func(key string, node *yaml.Node) {
@@ -736,11 +770,20 @@ func (s *Service) writeComposeFile(filePath string, project *types.Project) erro
 	encoder := yaml.NewEncoder(&buf)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(doc); err != nil {
-		return fmt.Errorf("failed to marshal compose: %w", err)
+		return "", fmt.Errorf("failed to marshal compose: %w", err)
 	}
 	encoder.Close()
 
-	if err := os.WriteFile(filePath, buf.Bytes(), 0644); err != nil {
+	return buf.String(), nil
+}
+
+func (s *Service) writeComposeFile(filePath string, project *types.Project) error {
+	yamlContent, err := s.projectToYaml(project)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filePath, []byte(yamlContent), 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

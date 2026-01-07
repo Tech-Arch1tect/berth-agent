@@ -186,9 +186,12 @@ type ConfigConfig struct {
 
 type UpdateComposeRequest struct {
 	Changes ComposeChanges `json:"changes"`
+	Preview bool           `json:"preview,omitempty"`
 }
 
 type UpdateComposeResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message,omitempty"`
+	Success      bool   `json:"success"`
+	Message      string `json:"message,omitempty"`
+	OriginalYaml string `json:"original_yaml,omitempty"`
+	ModifiedYaml string `json:"modified_yaml,omitempty"`
 }

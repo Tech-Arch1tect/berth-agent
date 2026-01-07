@@ -49,6 +49,20 @@ func (h *Handler) UpdateCompose(c echo.Context) error {
 		})
 	}
 
+	if req.Preview {
+		originalYaml, modifiedYaml, err := h.service.PreviewCompose(c.Request().Context(), stackName, req.Changes)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+		return c.JSON(http.StatusOK, UpdateComposeResponse{
+			Success:      true,
+			OriginalYaml: originalYaml,
+			ModifiedYaml: modifiedYaml,
+		})
+	}
+
 	if err := h.service.UpdateCompose(c.Request().Context(), stackName, req.Changes); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
