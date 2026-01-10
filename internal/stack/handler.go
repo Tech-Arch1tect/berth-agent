@@ -26,6 +26,31 @@ func (h *Handler) ListStacks(c echo.Context) error {
 	return common.SendSuccess(c, stacks)
 }
 
+func (h *Handler) CreateStack(c echo.Context) error {
+	var req CreateStackRequest
+	if err := c.Bind(&req); err != nil {
+		return common.SendBadRequest(c, "invalid request body")
+	}
+
+	if req.Name == "" {
+		return common.SendBadRequest(c, "stack name is required")
+	}
+
+	stack, err := h.service.CreateStack(req.Name)
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return common.SendConflict(c, err.Error())
+		}
+		return common.SendBadRequest(c, err.Error())
+	}
+
+	return common.SendCreated(c, CreateStackResponse{
+		Success: true,
+		Message: "Stack created successfully",
+		Stack:   stack,
+	})
+}
+
 func (h *Handler) GetStackDetails(c echo.Context) error {
 	stackName := c.Param("name")
 	if stackName == "" {

@@ -328,6 +328,46 @@ func (s *Service) ListStacks() ([]Stack, error) {
 	return stacks, nil
 }
 
+func (s *Service) CreateStack(name string) (*Stack, error) {
+	s.logger.Info("Creating new stack", zap.String("name", name))
+
+	if err := validation.ValidateStackName(name); err != nil {
+		s.logger.Error("Invalid stack name", zap.String("name", name), zap.Error(err))
+		return nil, fmt.Errorf("invalid stack name: %w", err)
+	}
+
+	stackPath := filepath.Join(s.stackLocation, name)
+	if _, err := os.Stat(stackPath); err == nil {
+		s.logger.Warn("Stack already exists", zap.String("name", name), zap.String("path", stackPath))
+		return nil, fmt.Errorf("stack '%s' already exists", name)
+	}
+
+	if err := os.MkdirAll(stackPath, 0755); err != nil {
+		s.logger.Error("Failed to create stack directory", zap.String("path", stackPath), zap.Error(err))
+		return nil, fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	template := `services:
+  hello-world:
+    image: hello-world
+`
+	composePath := filepath.Join(stackPath, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(template), 0644); err != nil {
+		os.RemoveAll(stackPath)
+		s.logger.Error("Failed to write compose file", zap.String("path", composePath), zap.Error(err))
+		return nil, fmt.Errorf("failed to write compose file: %w", err)
+	}
+
+	s.logger.Info("Stack created successfully", zap.String("name", name), zap.String("path", stackPath))
+
+	return &Stack{
+		Name:        name,
+		Path:        stackPath,
+		ComposeFile: "docker-compose.yml",
+		IsHealthy:   false,
+	}, nil
+}
+
 func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 	s.logger.Info("Retrieving stack details", zap.String("stack", name))
 

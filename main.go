@@ -107,6 +107,7 @@ func RegisterRoutes(
 
 	api.GET("/health", healthHandler.Health)
 	api.GET("/stacks", stackHandler.ListStacks)
+	api.POST("/stacks", stackHandler.CreateStack)
 	api.GET("/stacks/summary", stackHandler.GetStacksSummary)
 	api.GET("/stacks/:name", stackHandler.GetStackDetails)
 	api.GET("/stacks/:name/networks", stackHandler.GetStackNetworks)
