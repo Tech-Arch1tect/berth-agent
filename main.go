@@ -17,6 +17,7 @@ import (
 	"berth-agent/internal/stack"
 	"berth-agent/internal/stats"
 	"berth-agent/internal/terminal"
+	"berth-agent/internal/vulnscan"
 	"berth-agent/internal/websocket"
 	"context"
 	"os"
@@ -53,6 +54,7 @@ func runAgent() {
 		docker.Module,
 		images.Module,
 		composeeditor.Module,
+		vulnscan.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
 		fx.Provide(NewEventMonitorWithConfig),
@@ -100,6 +102,7 @@ func RegisterRoutes(
 	filesHandler *files.Handler,
 	imagesHandler *images.Handler,
 	composeEditorHandler *composeeditor.Handler,
+	vulnscanHandler *vulnscan.Handler,
 	logger *logging.Logger,
 ) {
 	api := e.Group("/api")
@@ -138,6 +141,10 @@ func RegisterRoutes(
 	api.GET("/stacks/:stackName/files/stats", filesHandler.GetDirectoryStats)
 
 	api.POST("/images/check-updates", imagesHandler.CheckImageUpdates)
+
+	api.GET("/vulnscan/status", vulnscanHandler.GetScannerStatus)
+	api.POST("/stacks/:stackName/scan", vulnscanHandler.StartScan)
+	api.GET("/scans/:scanId", vulnscanHandler.GetScan)
 
 	api.GET("/maintenance/info", maintenanceHandler.GetSystemInfo)
 	api.POST("/maintenance/prune", maintenanceHandler.PruneDocker)

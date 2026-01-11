@@ -8,22 +8,24 @@ import (
 )
 
 type Config struct {
-	AccessToken      string
-	Port             string
-	StackLocation    string
-	AuditLogEnabled  bool
-	AuditLogFilePath string
-	LogLevel         string
+	AccessToken            string
+	Port                   string
+	StackLocation          string
+	AuditLogEnabled        bool
+	AuditLogFilePath       string
+	LogLevel               string
+	VulnscanPersistenceDir string
 }
 
 func NewConfig() *Config {
 	return &Config{
-		AccessToken:      getEnv("ACCESS_TOKEN", ""),
-		Port:             getEnv("PORT", "8080"),
-		StackLocation:    getEnv("STACK_LOCATION", "/opt/compose"),
-		AuditLogEnabled:  getEnvBool("AUDIT_LOG_ENABLED", false),
-		AuditLogFilePath: getEnv("AUDIT_LOG_FILE_PATH", "/var/log/berth-agent/audit.jsonl"),
-		LogLevel:         getEnv("LOG_LEVEL", "info"),
+		AccessToken:            getEnv("ACCESS_TOKEN", ""),
+		Port:                   getEnv("PORT", "8080"),
+		StackLocation:          getEnv("STACK_LOCATION", "/opt/compose"),
+		AuditLogEnabled:        getEnvBool("AUDIT_LOG_ENABLED", false),
+		AuditLogFilePath:       getEnv("AUDIT_LOG_FILE_PATH", "/var/log/berth-agent/audit.jsonl"),
+		LogLevel:               getEnv("LOG_LEVEL", "info"),
+		VulnscanPersistenceDir: getEnv("VULNSCAN_PERSISTENCE_DIR", "/var/lib/berth-agent/scans"),
 	}
 }
 
