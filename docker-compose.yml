@@ -16,6 +16,7 @@ services:
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
       - ./ssl:/app/ssl
       - ./logs/agent/:/var/log/berth-agent/
+      - ./data/scans/:/var/lib/berth-agent/scans/
 
   berth-updater:
     image: techarchitect/berth-agent:latest
