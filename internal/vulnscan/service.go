@@ -176,36 +176,32 @@ func (s *Service) getStackImages(stackName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "docker", "compose", "config", "--format", "json")
+	cmd := exec.CommandContext(ctx, "docker", "compose", "images", "--format", "json")
 	cmd.Dir = filepath.Join(s.stackLocation, stackName)
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get compose config: %w", err)
+		return nil, fmt.Errorf("failed to get compose images: %w", err)
 	}
 
-	var config map[string]any
-	if err := json.Unmarshal(output, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse compose config: %w", err)
+	var composeImages []struct {
+		Repository string `json:"Repository"`
+		Tag        string `json:"Tag"`
 	}
-
-	projectName := stackName
-	if name, ok := config["name"].(string); ok && name != "" {
-		projectName = name
+	if err := json.Unmarshal(output, &composeImages); err != nil {
+		return nil, fmt.Errorf("failed to parse compose images: %w", err)
 	}
 
 	imageSet := make(map[string]bool)
-	if servicesSection, ok := config["services"].(map[string]any); ok {
-		for serviceName, serviceConfig := range servicesSection {
-			if serviceConfigMap, ok := serviceConfig.(map[string]any); ok {
-				if image, ok := serviceConfigMap["image"].(string); ok && image != "" {
-					imageSet[image] = true
-				} else if _, hasBuild := serviceConfigMap["build"]; hasBuild {
-					builtImageName := projectName + "-" + serviceName
-					imageSet[builtImageName] = true
-				}
-			}
+	for _, img := range composeImages {
+		if img.Repository == "" {
+			continue
 		}
+		imageName := img.Repository
+		if img.Tag != "" {
+			imageName = img.Repository + ":" + img.Tag
+		}
+		imageSet[imageName] = true
 	}
 
 	images := make([]string, 0, len(imageSet))
