@@ -4,6 +4,7 @@ import (
 	"berth-agent/internal/common"
 	"berth-agent/internal/validation"
 	"regexp"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -28,7 +29,15 @@ func (h *Handler) StartScan(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
 	}
 
-	scan, err := h.service.StartScan(c.Request().Context(), stackName)
+	var serviceFilter []string
+	if servicesParam := c.QueryParam("services"); servicesParam != "" {
+		serviceFilter = strings.Split(servicesParam, ",")
+		for i := range serviceFilter {
+			serviceFilter[i] = strings.TrimSpace(serviceFilter[i])
+		}
+	}
+
+	scan, err := h.service.StartScan(c.Request().Context(), stackName, serviceFilter)
 	if err != nil {
 		return common.SendBadRequest(c, err.Error())
 	}

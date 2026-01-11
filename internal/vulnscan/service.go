@@ -103,7 +103,7 @@ func (s *Service) IsAvailable() bool {
 	return s.scanner.IsAvailable()
 }
 
-func (s *Service) StartScan(ctx context.Context, stackName string) (*Scan, error) {
+func (s *Service) StartScan(ctx context.Context, stackName string, serviceFilter []string) (*Scan, error) {
 	if !s.scanner.IsAvailable() {
 		return nil, fmt.Errorf("vulnerability scanning is not available: grype not installed")
 	}
@@ -121,7 +121,7 @@ func (s *Service) StartScan(ctx context.Context, stackName string) (*Scan, error
 	}
 	s.mutex.Unlock()
 
-	images, err := s.getStackImages(stackName)
+	images, err := s.getStackImages(stackName, serviceFilter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get images for stack: %w", err)
 	}
@@ -172,11 +172,15 @@ func (s *Service) GetScan(scanID string) (*Scan, bool) {
 	return scan, exists
 }
 
-func (s *Service) getStackImages(stackName string) ([]string, error) {
+func (s *Service) getStackImages(stackName string, serviceFilter []string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "docker", "compose", "images", "--format", "json")
+	args := []string{"compose", "images"}
+	args = append(args, serviceFilter...)
+	args = append(args, "--format", "json")
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = filepath.Join(s.stackLocation, stackName)
 
 	output, err := cmd.Output()
@@ -210,6 +214,21 @@ func (s *Service) getStackImages(stackName string) ([]string, error) {
 	}
 
 	return images, nil
+}
+
+func (s *Service) filterImages(available []string, filter []string) []string {
+	filterSet := make(map[string]bool)
+	for _, img := range filter {
+		filterSet[img] = true
+	}
+
+	var result []string
+	for _, img := range available {
+		if filterSet[img] {
+			result = append(result, img)
+		}
+	}
+	return result
 }
 
 func (s *Service) executeScan(scan *Scan) {
