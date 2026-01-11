@@ -1,6 +1,7 @@
 package vulnscan
 
 import (
+	"berth-agent/internal/logging"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,10 +15,10 @@ import (
 type GrypeScanner struct {
 	grypePath string
 	available bool
-	logger    *zap.Logger
+	logger    *logging.Logger
 }
 
-func NewGrypeScanner(logger *zap.Logger) *GrypeScanner {
+func NewGrypeScanner(logger *logging.Logger) *GrypeScanner {
 	scanner := &GrypeScanner{
 		grypePath: "grype",
 		available: false,

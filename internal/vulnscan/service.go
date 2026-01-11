@@ -1,6 +1,7 @@
 package vulnscan
 
 import (
+	"berth-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,7 @@ type Service struct {
 
 	scanner     *GrypeScanner
 	persistence *ScanPersistence
-	logger      *zap.Logger
+	logger      *logging.Logger
 
 	scans       map[string]*Scan
 	activeScans map[string]string
@@ -36,7 +37,7 @@ type ServiceConfig struct {
 	TotalTimeout    time.Duration
 }
 
-func NewService(cfg ServiceConfig, logger *zap.Logger) (*Service, error) {
+func NewService(cfg ServiceConfig, logger *logging.Logger) (*Service, error) {
 	persistence, err := NewScanPersistence(cfg.PersistenceDir, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialise persistence: %w", err)

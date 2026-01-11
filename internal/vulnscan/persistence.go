@@ -1,6 +1,7 @@
 package vulnscan
 
 import (
+	"berth-agent/internal/logging"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,10 +13,10 @@ import (
 
 type ScanPersistence struct {
 	persistenceDir string
-	logger         *zap.Logger
+	logger         *logging.Logger
 }
 
-func NewScanPersistence(persistenceDir string, logger *zap.Logger) (*ScanPersistence, error) {
+func NewScanPersistence(persistenceDir string, logger *logging.Logger) (*ScanPersistence, error) {
 	if err := os.MkdirAll(persistenceDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create persistence directory: %w", err)
 	}
