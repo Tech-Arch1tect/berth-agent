@@ -58,13 +58,6 @@ type Vulnerability struct {
 	CVSS             float64 `json:"cvss,omitempty"`
 }
 
-type StartScanRequest struct {
-}
-
-type StartScanResponse struct {
-	ScanID string `json:"scan_id"`
-}
-
 type GetScanResponse struct {
 	ID            string        `json:"id"`
 	StackName     string        `json:"stack_name"`

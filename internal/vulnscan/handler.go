@@ -33,8 +33,16 @@ func (h *Handler) StartScan(c echo.Context) error {
 		return common.SendBadRequest(c, err.Error())
 	}
 
-	return common.SendSuccess(c, StartScanResponse{
-		ScanID: scan.ID,
+	return common.SendSuccess(c, GetScanResponse{
+		ID:            scan.ID,
+		StackName:     scan.StackName,
+		Status:        scan.Status,
+		TotalImages:   scan.TotalImages,
+		ScannedImages: scan.ScannedImages,
+		StartedAt:     scan.StartedAt,
+		CompletedAt:   scan.CompletedAt,
+		Error:         scan.Error,
+		Results:       scan.Results,
 	})
 }
 
