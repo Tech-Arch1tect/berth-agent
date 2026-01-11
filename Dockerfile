@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -o berth-agent \
     .
 
-FROM alpine:3.20
+FROM alpine:3
 
 RUN apk add --no-cache \
     ca-certificates \
