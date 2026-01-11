@@ -26,7 +26,11 @@ RUN apk add --no-cache \
     tzdata \
     docker-cli \
     docker-compose \
+    curl \
     && rm -rf /var/cache/apk/*
+
+# Install grype
+RUN curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin
 
 WORKDIR /app
 
