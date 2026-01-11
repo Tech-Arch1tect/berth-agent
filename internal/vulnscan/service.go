@@ -189,12 +189,20 @@ func (s *Service) getStackImages(stackName string) ([]string, error) {
 		return nil, fmt.Errorf("failed to parse compose config: %w", err)
 	}
 
+	projectName := stackName
+	if name, ok := config["name"].(string); ok && name != "" {
+		projectName = name
+	}
+
 	imageSet := make(map[string]bool)
 	if servicesSection, ok := config["services"].(map[string]any); ok {
-		for _, serviceConfig := range servicesSection {
+		for serviceName, serviceConfig := range servicesSection {
 			if serviceConfigMap, ok := serviceConfig.(map[string]any); ok {
 				if image, ok := serviceConfigMap["image"].(string); ok && image != "" {
 					imageSet[image] = true
+				} else if _, hasBuild := serviceConfigMap["build"]; hasBuild {
+					builtImageName := projectName + "-" + serviceName
+					imageSet[builtImageName] = true
 				}
 			}
 		}
