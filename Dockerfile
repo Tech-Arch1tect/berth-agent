@@ -1,43 +1,32 @@
-FROM golang:1.25-alpine AS builder
-
-RUN apk add --no-cache git ca-certificates tzdata
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
 COPY go.mod go.sum ./
-
 RUN go mod download
 
 COPY . .
 
-ARG TARGETOS
 ARG TARGETARCH
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags='-w -s -extldflags "-static"' \
-    -a -installsuffix cgo \
     -o berth-agent \
     .
 
-FROM alpine:3
+FROM --platform=$BUILDPLATFORM alpine:3 AS grype-downloader
 
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    docker-cli \
-    docker-compose \
-    curl \
-    && rm -rf /var/cache/apk/*
+RUN apk add --no-cache curl jq
 
-# Install grype
-RUN curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin
+ARG TARGETARCH
 
-WORKDIR /app
+RUN GRYPE_VERSION=$(curl -s https://api.github.com/repos/anchore/grype/releases/latest | jq -r '.tag_name' | sed 's/^v//') && \
+    curl -sSfL "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin grype
 
-COPY --from=builder /app/berth-agent .
+FROM docker.io/techarchitect/berth-agent-base:latest
 
-RUN mkdir -p /opt/compose
+COPY --from=builder /app/berth-agent ./berth-agent
+COPY --from=grype-downloader /usr/local/bin/grype /usr/local/bin/grype
 
 EXPOSE 8080
-
-CMD ["./berth-agent"]
