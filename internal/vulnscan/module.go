@@ -11,10 +11,12 @@ import (
 
 func NewServiceFromConfig(cfg *config.Config, logger *logging.Logger) (*Service, error) {
 	svcConfig := ServiceConfig{
-		StackLocation:   cfg.StackLocation,
-		PersistenceDir:  cfg.VulnscanPersistenceDir,
-		PerImageTimeout: 10 * time.Minute,
-		TotalTimeout:    30 * time.Minute,
+		StackLocation:     cfg.StackLocation,
+		PersistenceDir:    cfg.VulnscanPersistenceDir,
+		PerImageTimeout:   10 * time.Minute,
+		TotalTimeout:      30 * time.Minute,
+		GrypeScannerURL:   cfg.GrypeScannerURL,
+		GrypeScannerToken: cfg.GrypeScannerToken,
 	}
 
 	return NewService(svcConfig, logger.With(zap.String("service", "vulnscan")))

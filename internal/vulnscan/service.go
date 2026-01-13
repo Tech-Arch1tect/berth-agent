@@ -21,7 +21,7 @@ type Service struct {
 	perImageTimeout time.Duration
 	totalTimeout    time.Duration
 
-	scanner     *GrypeScanner
+	client      *GrypeScannerClient
 	persistence *ScanPersistence
 	logger      *logging.Logger
 
@@ -31,10 +31,12 @@ type Service struct {
 }
 
 type ServiceConfig struct {
-	StackLocation   string
-	PersistenceDir  string
-	PerImageTimeout time.Duration
-	TotalTimeout    time.Duration
+	StackLocation     string
+	PersistenceDir    string
+	PerImageTimeout   time.Duration
+	TotalTimeout      time.Duration
+	GrypeScannerURL   string
+	GrypeScannerToken string
 }
 
 func NewService(cfg ServiceConfig, logger *logging.Logger) (*Service, error) {
@@ -43,19 +45,25 @@ func NewService(cfg ServiceConfig, logger *logging.Logger) (*Service, error) {
 		return nil, fmt.Errorf("failed to initialise persistence: %w", err)
 	}
 
-	scanner := NewGrypeScanner(logger)
+	if cfg.GrypeScannerURL == "" {
+		return nil, fmt.Errorf("GRYPE_SCANNER_URL is required")
+	}
 
 	svc := &Service{
 		stackLocation:   cfg.StackLocation,
 		persistenceDir:  cfg.PersistenceDir,
 		perImageTimeout: cfg.PerImageTimeout,
 		totalTimeout:    cfg.TotalTimeout,
-		scanner:         scanner,
+		client:          NewGrypeScannerClient(cfg.GrypeScannerURL, cfg.GrypeScannerToken, logger),
 		persistence:     persistence,
 		logger:          logger,
 		scans:           make(map[string]*Scan),
 		activeScans:     make(map[string]string),
 	}
+
+	logger.Info("vulnscan using grype-scanner API",
+		zap.String("url", cfg.GrypeScannerURL),
+	)
 
 	if err := svc.recoverScans(); err != nil {
 		logger.Warn("failed to recover scans on startup", zap.Error(err))
@@ -100,12 +108,12 @@ func (s *Service) recoverScans() error {
 }
 
 func (s *Service) IsAvailable() bool {
-	return s.scanner.IsAvailable()
+	return s.client.IsAvailable(context.Background())
 }
 
 func (s *Service) StartScan(ctx context.Context, stackName string, serviceFilter []string) (*Scan, error) {
-	if !s.scanner.IsAvailable() {
-		return nil, fmt.Errorf("vulnerability scanning is not available: grype not installed")
+	if !s.IsAvailable() {
+		return nil, fmt.Errorf("vulnerability scanning is not available: grype not installed or grype-scanner unreachable")
 	}
 
 	stackPath := filepath.Join(s.stackLocation, stackName)
@@ -297,7 +305,7 @@ func (s *Service) scanSingleImage(ctx context.Context, imageName string) ImageRe
 
 	s.logger.Debug("scanning image", zap.String("image", imageName))
 
-	vulnerabilities, err := s.scanner.ScanImage(imageCtx, imageName)
+	vulnerabilities, err := s.client.ScanImage(imageCtx, imageName)
 	if err != nil {
 		s.logger.Warn("failed to scan image",
 			zap.String("image", imageName),

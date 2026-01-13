@@ -15,6 +15,8 @@ type Config struct {
 	AuditLogFilePath       string
 	LogLevel               string
 	VulnscanPersistenceDir string
+	GrypeScannerURL        string
+	GrypeScannerToken      string
 }
 
 func NewConfig() *Config {
@@ -26,6 +28,8 @@ func NewConfig() *Config {
 		AuditLogFilePath:       getEnv("AUDIT_LOG_FILE_PATH", "/var/log/berth-agent/audit.jsonl"),
 		LogLevel:               getEnv("LOG_LEVEL", "info"),
 		VulnscanPersistenceDir: getEnv("VULNSCAN_PERSISTENCE_DIR", "/var/lib/berth-agent/scans"),
+		GrypeScannerURL:        getEnv("GRYPE_SCANNER_URL", ""),
+		GrypeScannerToken:      getEnv("GRYPE_SCANNER_TOKEN", ""),
 	}
 }
 
