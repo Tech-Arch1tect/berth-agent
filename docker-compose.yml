@@ -24,7 +24,7 @@ services:
     container_name: berth-updater
     environment:
       - ACCESS_TOKEN=${ACCESS_TOKEN}
-    command: ["./berth-agent", "sidecar"]
+    command: ["sidecar"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
