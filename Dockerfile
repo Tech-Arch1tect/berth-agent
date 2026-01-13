@@ -26,6 +26,8 @@ RUN GRYPE_VERSION=$(curl -s https://api.github.com/repos/anchore/grype/releases/
 
 FROM docker.io/techarchitect/berth-agent-base:latest
 
+RUN chmod +x /usr/bin/docker-compose
+
 COPY --from=builder /app/berth-agent ./berth-agent
 COPY --from=grype-downloader /usr/local/bin/grype /usr/local/bin/grype
 
