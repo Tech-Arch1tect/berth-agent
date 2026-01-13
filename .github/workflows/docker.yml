@@ -13,6 +13,7 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: techarchitect/berth-agent
+  IMAGE_NAME_GRYPE: techarchitect/berth-agent-grype
 
 jobs:
   build:
@@ -114,5 +115,62 @@ jobs:
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (grype)
+        id: meta_grype
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_GRYPE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push grype image (with tag)
+        if: env.IS_TAG == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.grype
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_GRYPE }}:${{ env.TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_GRYPE }}:v${{ env.SEMVER_MAJOR }}.${{ env.SEMVER_MINOR }}.${{ env.SEMVER_PATCH }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_GRYPE }}:v${{ env.SEMVER_MAJOR }}.${{ env.SEMVER_MINOR }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_GRYPE }}:v${{ env.SEMVER_MAJOR }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_GRYPE }}:latest
+          labels: ${{ steps.meta_grype.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push grype image (without tag)
+        if: env.IS_TAG != 'true' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.grype
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta_grype.outputs.tags }}
+          labels: ${{ steps.meta_grype.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build grype image (PR)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.grype
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ steps.meta_grype.outputs.tags }}
+          labels: ${{ steps.meta_grype.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

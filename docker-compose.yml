@@ -7,6 +7,8 @@ services:
       - ACCESS_TOKEN=${ACCESS_TOKEN}
       - PORT=${PORT:-8080}
       - STACK_LOCATION=${STACK_LOCATION:-/opt/compose}
+      - GRYPE_SCANNER_URL=https://berth-grype-scanner:8082
+      - GRYPE_SCANNER_TOKEN=${ACCESS_TOKEN}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     volumes:
@@ -17,6 +19,8 @@ services:
       - ./ssl:/app/ssl
       - ./logs/agent/:/var/log/berth-agent/
       - ./data/scans/:/var/lib/berth-agent/scans/
+    depends_on:
+      - berth-grype-scanner
 
   berth-updater:
     image: techarchitect/berth-agent:latest
@@ -30,4 +34,36 @@ services:
       - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
       - ./ssl:/app/ssl
       - ./logs/sidecar/:/var/log/berth-agent/
+    restart: unless-stopped
+
+  berth-socket-proxy:
+    image: techarchitect/berth-agent:latest
+    build: .
+    container_name: berth-socket-proxy
+    command: ["socket-proxy"]
+    environment:
+      - PROXY_SOCKET_PATH=/var/run/proxy/docker-proxy.sock
+      - DOCKER_SOCKET=/var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./proxy-socket:/var/run/proxy
+      - ./logs/socket-proxy/:/var/log/berth-agent/
+    restart: unless-stopped
+
+  berth-grype-scanner:
+    image: techarchitect/berth-agent-grype:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.grype
+    container_name: berth-grype-scanner
+    command: ["grype-scanner"]
+    environment:
+      - ACCESS_TOKEN=${ACCESS_TOKEN}
+      - DOCKER_HOST=unix:///var/run/proxy/docker-proxy.sock
+    volumes:
+      - ./proxy-socket:/var/run/proxy:ro
+      - ./ssl:/app/ssl
+      - ./logs/grype-scanner/:/var/log/berth-agent/
+    depends_on:
+      - berth-socket-proxy
     restart: unless-stopped

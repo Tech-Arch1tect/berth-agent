@@ -1,0 +1,34 @@
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG TARGETARCH
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -o berth-agent \
+    .
+
+FROM --platform=$BUILDPLATFORM alpine:3 AS grype-downloader
+
+RUN apk add --no-cache curl jq
+
+ARG TARGETARCH
+
+RUN GRYPE_VERSION=$(curl -s https://api.github.com/repos/anchore/grype/releases/latest | jq -r '.tag_name' | sed 's/^v//') && \
+    curl -sSfL "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin grype
+
+FROM docker.io/techarchitect/berth-agent-base:latest
+
+RUN chmod +x /usr/bin/docker-compose
+
+COPY --from=builder /app/berth-agent ./berth-agent
+COPY --from=grype-downloader /usr/local/bin/grype /usr/local/bin/grype
+
+EXPOSE 8080
