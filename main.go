@@ -6,6 +6,7 @@ import (
 	"berth-agent/internal/composeeditor"
 	"berth-agent/internal/docker"
 	"berth-agent/internal/files"
+	"berth-agent/internal/grypescanner"
 	"berth-agent/internal/health"
 	"berth-agent/internal/images"
 	"berth-agent/internal/logging"
@@ -13,6 +14,7 @@ import (
 	"berth-agent/internal/maintenance"
 	"berth-agent/internal/operations"
 	"berth-agent/internal/sidecar"
+	"berth-agent/internal/socketproxy"
 	"berth-agent/internal/ssl"
 	"berth-agent/internal/stack"
 	"berth-agent/internal/stats"
@@ -21,6 +23,7 @@ import (
 	"berth-agent/internal/websocket"
 	"context"
 	"os"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	echomiddleware "github.com/labstack/echo/v4/middleware"
@@ -29,9 +32,18 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "sidecar" {
-		runSidecar()
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "sidecar":
+			runSidecar()
+			return
+		case "socket-proxy":
+			runSocketProxy()
+			return
+		case "grype-scanner":
+			runGrypeScanner()
+			return
+		}
 	}
 
 	runAgent()
@@ -278,4 +290,96 @@ func StartSidecarServer(lc fx.Lifecycle, e *echo.Echo, certManager *ssl.Certific
 			return e.Shutdown(ctx)
 		},
 	})
+}
+
+func runSocketProxy() {
+	app := fx.New(
+		config.Module,
+		logging.Module,
+		socketproxy.Module,
+		fx.Invoke(StartSocketProxy),
+		fx.Invoke(LogSocketProxyStartup),
+	)
+	app.Run()
+}
+
+func StartSocketProxy(lc fx.Lifecycle, proxy *socketproxy.Proxy, logger *logging.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			return proxy.Start(ctx)
+		},
+		OnStop: func(ctx context.Context) error {
+			return proxy.Stop(ctx)
+		},
+	})
+}
+
+func LogSocketProxyStartup(logger *logging.Logger) {
+	logger.Info("berth-agent starting in socket-proxy mode")
+}
+
+func runGrypeScanner() {
+	app := fx.New(
+		config.Module,
+		logging.Module,
+		ssl.Module,
+		grypescanner.Module,
+		fx.Provide(NewGrypeScannerEcho),
+		fx.Invoke(RegisterGrypeScannerRoutes),
+		fx.Invoke(StartGrypeScannerServer),
+		fx.Invoke(LogGrypeScannerStartup),
+	)
+	app.Run()
+}
+
+func NewGrypeScannerEcho(loggingService *logging.Service) *echo.Echo {
+	e := echo.New()
+	e.Use(echomiddleware.Recover())
+	e.Use(logging.RequestLoggingMiddleware(loggingService))
+	return e
+}
+
+func RegisterGrypeScannerRoutes(e *echo.Echo, handler *grypescanner.Handler, cfg *config.Config, logger *logging.Logger) {
+	api := e.Group("")
+	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
+
+	api.POST("/scan", handler.Scan)
+	api.GET("/health", handler.Health)
+}
+
+func StartGrypeScannerServer(lc fx.Lifecycle, e *echo.Echo, certManager *ssl.CertificateManager, logger *logging.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			certFile, keyFile, err := certManager.EnsureCertificates()
+			if err != nil {
+				logger.Error("failed to setup SSL certificates for grype-scanner", zap.Error(err))
+				e.Logger.Fatal("Failed to setup SSL certificates:", err)
+				return err
+			}
+
+			logger.Info("starting grype-scanner HTTPS server",
+				zap.String("port", "8082"),
+				zap.String("cert_file", certFile),
+			)
+
+			e.Server.ReadTimeout = 30 * time.Second
+			e.Server.WriteTimeout = 15 * time.Minute
+
+			go func() {
+				if err := e.StartTLS(":8082", certFile, keyFile); err != nil {
+					logger.Error("grype-scanner HTTPS server failed to start", zap.Error(err))
+					e.Logger.Fatal("Grype-scanner HTTPS server failed to start:", err)
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			logger.Info("shutting down grype-scanner HTTPS server")
+			return e.Shutdown(ctx)
+		},
+	})
+}
+
+func LogGrypeScannerStartup(logger *logging.Logger) {
+	logger.Info("berth-agent starting in grype-scanner mode")
 }
