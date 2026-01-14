@@ -1,0 +1,107 @@
+services:
+  berth-agent-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: berth-agent-dev
+    env_file: .env
+    environment:
+      - ACCESS_TOKEN=${ACCESS_TOKEN:-dev-token}
+      - PORT=${PORT:-8080}
+      - STACK_LOCATION=${STACK_LOCATION:-/opt/compose}
+      - GRYPE_SCANNER_URL=https://berth-grype-scanner-dev:8082
+      - GRYPE_SCANNER_TOKEN=${ACCESS_TOKEN:-dev-token}
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /proc:/proc:ro
+      - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
+      - ./ssl:/app/ssl
+      - ./logs/agent/:/var/log/berth-agent/
+      - ./data/scans/:/var/lib/berth-agent/scans/
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - agent-tmp:/app/tmp
+    entrypoint: []
+    command: ["air", "-c", ".air.toml"]
+    depends_on:
+      - berth-grype-scanner-dev
+
+  berth-updater-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: berth-updater-dev
+    env_file: .env
+    environment:
+      - ACCESS_TOKEN=${ACCESS_TOKEN:-dev-token}
+    ports:
+      - "8081:8081"
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${STACK_LOCATION:-/opt/compose}:${STACK_LOCATION:-/opt/compose}
+      - ./ssl:/app/ssl
+      - ./logs/sidecar/:/var/log/berth-agent/
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - updater-tmp:/app/tmp
+    entrypoint: []
+    command: ["air", "-c", ".air.toml", "--", "sidecar"]
+
+  berth-socket-proxy-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: berth-socket-proxy-dev
+    env_file: .env
+    environment:
+      - PROXY_SOCKET_PATH=/var/run/proxy/docker-proxy.sock
+      - DOCKER_SOCKET=/var/run/docker.sock
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./proxy-socket:/var/run/proxy
+      - ./logs/socket-proxy/:/var/log/berth-agent/
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - socket-proxy-tmp:/app/tmp
+    entrypoint: []
+    command: ["air", "-c", ".air.toml", "--", "socket-proxy"]
+
+  berth-grype-scanner-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: berth-grype-scanner-dev
+    env_file: .env
+    environment:
+      - ACCESS_TOKEN=${ACCESS_TOKEN:-dev-token}
+      - DOCKER_HOST=unix:///var/run/proxy/docker-proxy.sock
+    ports:
+      - "8082:8082"
+    volumes:
+      - .:/app
+      - ./proxy-socket:/var/run/proxy:ro
+      - ./ssl:/app/ssl
+      - ./logs/grype-scanner/:/var/log/berth-agent/
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - grype-db-cache:/root/.cache/grype
+      - grype-scanner-tmp:/app/tmp
+    entrypoint: []
+    command: ["/bin/sh", "-c", "/app/scripts/install-grype.sh && air -c .air.toml -- grype-scanner"]
+    depends_on:
+      - berth-socket-proxy-dev
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  grype-db-cache:
+  agent-tmp:
+  updater-tmp:
+  socket-proxy-tmp:
+  grype-scanner-tmp:

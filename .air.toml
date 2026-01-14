@@ -1,0 +1,13 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/berth-agent"
+  cmd = "go build -buildvcs=false -o ./tmp/berth-agent ."
+  delay = 1000
+  exclude_dir = ["tmp", "vendor", ".git", "ssl", "logs", "data"]
+  include_ext = ["go"]
+  exclude_regex = ["_test.go"]
+
+[misc]
+  clean_on_exit = true
