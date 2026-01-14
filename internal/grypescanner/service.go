@@ -149,6 +149,11 @@ func (s *Service) convertMatch(match GrypeMatch) Vulnerability {
 		vuln.FixedVersion = match.Vulnerability.Fix.Versions[0]
 	}
 
+	if len(match.Artifact.Locations) > 0 {
+		vuln.Location = match.Artifact.Locations[0].Path
+		vuln.LayerID = match.Artifact.Locations[0].LayerID
+	}
+
 	vuln.CVSS = extractCVSSScore(match.Vulnerability.CVSS)
 
 	return vuln

@@ -23,6 +23,8 @@ type Vulnerability struct {
 	Description      string  `json:"description,omitempty"`
 	DataSource       string  `json:"data_source,omitempty"`
 	CVSS             float64 `json:"cvss,omitempty"`
+	Location         string  `json:"location,omitempty"`
+	LayerID          string  `json:"layer_id,omitempty"`
 }
 
 type HealthResponse struct {
@@ -77,6 +79,12 @@ type GrypeFix struct {
 }
 
 type GrypeArtifact struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name      string          `json:"name"`
+	Version   string          `json:"version"`
+	Locations []GrypeLocation `json:"locations,omitempty"`
+}
+
+type GrypeLocation struct {
+	Path    string `json:"path,omitempty"`
+	LayerID string `json:"layerId,omitempty"`
 }

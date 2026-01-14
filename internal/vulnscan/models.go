@@ -56,6 +56,8 @@ type Vulnerability struct {
 	Description      string  `json:"description,omitempty"`
 	DataSource       string  `json:"data_source,omitempty"`
 	CVSS             float64 `json:"cvss,omitempty"`
+	Location         string  `json:"location,omitempty"`
+	LayerID          string  `json:"layer_id,omitempty"`
 }
 
 type GetScanResponse struct {
