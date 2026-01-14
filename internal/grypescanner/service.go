@@ -156,6 +156,10 @@ func (s *Service) convertMatch(match GrypeMatch) Vulnerability {
 
 	vuln.CVSS = extractCVSSScore(match.Vulnerability.CVSS)
 
+	if rawMatch, err := json.Marshal(match); err == nil {
+		vuln.RawMatch = rawMatch
+	}
+
 	return vuln
 }
 

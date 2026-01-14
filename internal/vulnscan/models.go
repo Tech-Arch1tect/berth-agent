@@ -1,6 +1,9 @@
 package vulnscan
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	ScanStatusPending   = "pending"
@@ -48,16 +51,17 @@ type ImageResult struct {
 }
 
 type Vulnerability struct {
-	ID               string  `json:"id"`
-	Severity         string  `json:"severity"`
-	Package          string  `json:"package"`
-	InstalledVersion string  `json:"installed_version"`
-	FixedVersion     string  `json:"fixed_version,omitempty"`
-	Description      string  `json:"description,omitempty"`
-	DataSource       string  `json:"data_source,omitempty"`
-	CVSS             float64 `json:"cvss,omitempty"`
-	Location         string  `json:"location,omitempty"`
-	LayerID          string  `json:"layer_id,omitempty"`
+	ID               string          `json:"id"`
+	Severity         string          `json:"severity"`
+	Package          string          `json:"package"`
+	InstalledVersion string          `json:"installed_version"`
+	FixedVersion     string          `json:"fixed_version,omitempty"`
+	Description      string          `json:"description,omitempty"`
+	DataSource       string          `json:"data_source,omitempty"`
+	CVSS             float64         `json:"cvss,omitempty"`
+	Location         string          `json:"location,omitempty"`
+	LayerID          string          `json:"layer_id,omitempty"`
+	RawMatch         json.RawMessage `json:"raw_match,omitempty"`
 }
 
 type GetScanResponse struct {
