@@ -13,6 +13,7 @@ type Config struct {
 	StackLocation          string
 	AuditLogEnabled        bool
 	AuditLogFilePath       string
+	AuditLogSizeLimitMB    int
 	LogLevel               string
 	VulnscanPersistenceDir string
 	GrypeScannerURL        string
@@ -26,6 +27,7 @@ func NewConfig() *Config {
 		StackLocation:          getEnv("STACK_LOCATION", "/opt/compose"),
 		AuditLogEnabled:        getEnvBool("AUDIT_LOG_ENABLED", false),
 		AuditLogFilePath:       getEnv("AUDIT_LOG_FILE_PATH", "/var/log/berth-agent/audit.jsonl"),
+		AuditLogSizeLimitMB:    getEnvInt("AUDIT_LOG_SIZE_LIMIT_MB", 100),
 		LogLevel:               getEnv("LOG_LEVEL", "info"),
 		VulnscanPersistenceDir: getEnv("VULNSCAN_PERSISTENCE_DIR", "/var/lib/berth-agent/scans"),
 		GrypeScannerURL:        getEnv("GRYPE_SCANNER_URL", ""),
@@ -52,6 +54,15 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if b, err := strconv.ParseBool(value); err == nil {
 			return b
+		}
+	}
+	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if i, err := strconv.Atoi(value); err == nil {
+			return i
 		}
 	}
 	return defaultValue

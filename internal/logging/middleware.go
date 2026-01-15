@@ -81,7 +81,6 @@ func RequestLoggingMiddleware(service *Service) echo.MiddlewareFunc {
 
 			if shouldLogRequest(path, entry) {
 				go service.LogRequest(entry)
-				go service.RotateIfNeeded()
 			}
 
 			return err
