@@ -2,6 +2,7 @@ package main
 
 import (
 	"berth-agent/config"
+	"berth-agent/internal/audit"
 	"berth-agent/internal/auth"
 	"berth-agent/internal/composeeditor"
 	"berth-agent/internal/docker"
@@ -53,6 +54,7 @@ func runAgent() {
 	app := fx.New(
 		config.Module,
 		logging.Module,
+		audit.Module,
 		ssl.Module,
 		stack.Module,
 		stats.Module,
@@ -179,6 +181,7 @@ func LogAgentStartup(logger *logging.Logger, cfg *config.Config) {
 		zap.String("port", cfg.Port),
 		zap.String("stack_location", cfg.StackLocation),
 		zap.String("log_level", cfg.LogLevel),
+		zap.Bool("api_log_enabled", cfg.APILogEnabled),
 		zap.Bool("audit_log_enabled", cfg.AuditLogEnabled),
 	)
 }

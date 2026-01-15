@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -96,18 +98,10 @@ func HashToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 8 {
-		return "***"
-	}
-	return token[:4] + "..." + token[len(token)-4:]
+	hash := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(hash[:])[:16]
 }
 
 func getTokenHash(token string) string {
-	if token == "" {
-		return ""
-	}
-	if len(token) <= 8 {
-		return token
-	}
-	return token[:8]
+	return HashToken(token)
 }

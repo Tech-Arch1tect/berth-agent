@@ -15,10 +15,10 @@ var Module = fx.Options(
 )
 
 func NewServiceFromConfig(cfg *config.Config) (*Service, error) {
-	maxSizeBytes := int64(cfg.AuditLogSizeLimitMB) * 1024 * 1024
+	maxSizeBytes := int64(cfg.APILogSizeLimitMB) * 1024 * 1024
 	return NewService(
-		cfg.AuditLogEnabled,
-		cfg.AuditLogFilePath,
+		cfg.APILogEnabled,
+		cfg.APILogFilePath,
 		maxSizeBytes,
 	)
 }

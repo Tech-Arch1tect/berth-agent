@@ -11,6 +11,9 @@ type Config struct {
 	AccessToken            string
 	Port                   string
 	StackLocation          string
+	APILogEnabled          bool
+	APILogFilePath         string
+	APILogSizeLimitMB      int
 	AuditLogEnabled        bool
 	AuditLogFilePath       string
 	AuditLogSizeLimitMB    int
@@ -25,6 +28,9 @@ func NewConfig() *Config {
 		AccessToken:            getEnv("ACCESS_TOKEN", ""),
 		Port:                   getEnv("PORT", "8080"),
 		StackLocation:          getEnv("STACK_LOCATION", "/opt/compose"),
+		APILogEnabled:          getEnvBool("API_LOG_ENABLED", false),
+		APILogFilePath:         getEnv("API_LOG_FILE_PATH", "/var/log/berth-agent/api.jsonl"),
+		APILogSizeLimitMB:      getEnvInt("API_LOG_SIZE_LIMIT_MB", 100),
 		AuditLogEnabled:        getEnvBool("AUDIT_LOG_ENABLED", false),
 		AuditLogFilePath:       getEnv("AUDIT_LOG_FILE_PATH", "/var/log/berth-agent/audit.jsonl"),
 		AuditLogSizeLimitMB:    getEnvInt("AUDIT_LOG_SIZE_LIMIT_MB", 100),
@@ -35,12 +41,16 @@ func NewConfig() *Config {
 	}
 }
 
-func (c *Config) GetRequestLogEnabled() bool {
-	return c.AuditLogEnabled
+func (c *Config) GetAPILogEnabled() bool {
+	return c.APILogEnabled
 }
 
-func (c *Config) GetRequestLogFilePath() string {
-	return c.AuditLogFilePath
+func (c *Config) GetAPILogFilePath() string {
+	return c.APILogFilePath
+}
+
+func (c *Config) GetAPILogSizeLimitMB() int {
+	return c.APILogSizeLimitMB
 }
 
 func getEnv(key, defaultValue string) string {

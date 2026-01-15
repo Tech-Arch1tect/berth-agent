@@ -1,6 +1,7 @@
 package files
 
 import (
+	"berth-agent/internal/audit"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -11,12 +12,14 @@ import (
 )
 
 type Handler struct {
-	service *Service
+	service      *Service
+	auditService *audit.Service
 }
 
-func NewHandler(service *Service) *Handler {
+func NewHandler(service *Service, auditService *audit.Service) *Handler {
 	return &Handler{
-		service: service,
+		service:      service,
+		auditService: auditService,
 	}
 }
 
@@ -26,11 +29,16 @@ func (h *Handler) ListDirectory(c echo.Context) error {
 
 	result, err := h.service.ListDirectory(stackName, path)
 	if err != nil {
+		h.auditService.LogFileEvent(audit.EventFileListDir, c.RealIP(), stackName, path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "LIST_DIRECTORY_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileListDir, c.RealIP(), stackName, path, true, "", map[string]any{
+		"entry_count": len(result.Entries),
+	})
 
 	return c.JSON(http.StatusOK, result)
 }
@@ -48,11 +56,16 @@ func (h *Handler) ReadFile(c echo.Context) error {
 
 	result, err := h.service.ReadFile(stackName, path)
 	if err != nil {
+		h.auditService.LogFileEvent(audit.EventFileRead, c.RealIP(), stackName, path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "READ_FILE_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileRead, c.RealIP(), stackName, path, true, "", map[string]any{
+		"size": result.Size,
+	})
 
 	return c.JSON(http.StatusOK, result)
 }
@@ -78,11 +91,16 @@ func (h *Handler) WriteFile(c echo.Context) error {
 	}
 
 	if err := h.service.WriteFile(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileWrite, c.RealIP(), stackName, req.Path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "WRITE_FILE_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileWrite, c.RealIP(), stackName, req.Path, true, "", map[string]any{
+		"content_size": len(req.Content),
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -106,11 +124,14 @@ func (h *Handler) CreateDirectory(c echo.Context) error {
 	}
 
 	if err := h.service.CreateDirectory(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileMkdir, c.RealIP(), stackName, req.Path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "CREATE_DIRECTORY_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileMkdir, c.RealIP(), stackName, req.Path, true, "", nil)
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -134,11 +155,14 @@ func (h *Handler) Delete(c echo.Context) error {
 	}
 
 	if err := h.service.Delete(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileDelete, c.RealIP(), stackName, req.Path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "DELETE_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileDelete, c.RealIP(), stackName, req.Path, true, "", nil)
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -162,11 +186,18 @@ func (h *Handler) Rename(c echo.Context) error {
 	}
 
 	if err := h.service.Rename(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileRename, c.RealIP(), stackName, req.OldPath, false, err.Error(), map[string]any{
+			"new_path": req.NewPath,
+		})
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "RENAME_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileRename, c.RealIP(), stackName, req.OldPath, true, "", map[string]any{
+		"new_path": req.NewPath,
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -190,11 +221,18 @@ func (h *Handler) Copy(c echo.Context) error {
 	}
 
 	if err := h.service.Copy(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileCopy, c.RealIP(), stackName, req.SourcePath, false, err.Error(), map[string]any{
+			"target_path": req.TargetPath,
+		})
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "COPY_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileCopy, c.RealIP(), stackName, req.SourcePath, true, "", map[string]any{
+		"target_path": req.TargetPath,
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -250,11 +288,20 @@ func (h *Handler) UploadFile(c echo.Context) error {
 	defer src.Close()
 
 	if err := h.service.WriteUploadedFile(stackName, path, src, file.Size, mode, ownerID, groupID); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileUpload, c.RealIP(), stackName, path, false, err.Error(), map[string]any{
+			"filename": file.Filename,
+			"size":     file.Size,
+		})
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "UPLOAD_FILE_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileUpload, c.RealIP(), stackName, path, true, "", map[string]any{
+		"filename": file.Filename,
+		"size":     file.Size,
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -272,11 +319,16 @@ func (h *Handler) DownloadFile(c echo.Context) error {
 
 	fileContent, err := h.service.ReadFile(stackName, path)
 	if err != nil {
+		h.auditService.LogFileEvent(audit.EventFileDownload, c.RealIP(), stackName, path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "READ_FILE_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileDownload, c.RealIP(), stackName, path, true, "", map[string]any{
+		"size": fileContent.Size,
+	})
 
 	filename := c.QueryParam("filename")
 	if filename == "" {
@@ -316,11 +368,14 @@ func (h *Handler) GetDirectoryStats(c echo.Context) error {
 	req := DirectoryStatsRequest{Path: path}
 	stats, err := h.service.GetDirectoryStats(stackName, req)
 	if err != nil {
+		h.auditService.LogFileEvent(audit.EventFileDirStats, c.RealIP(), stackName, path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "DIRECTORY_STATS_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileDirStats, c.RealIP(), stackName, path, true, "", nil)
 
 	return c.JSON(http.StatusOK, stats)
 }
@@ -351,11 +406,20 @@ func (h *Handler) Chmod(c echo.Context) error {
 	}
 
 	if err := h.service.Chmod(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileChmod, c.RealIP(), stackName, req.Path, false, err.Error(), map[string]any{
+			"mode":      req.Mode,
+			"recursive": req.Recursive,
+		})
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "CHMOD_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileChmod, c.RealIP(), stackName, req.Path, true, "", map[string]any{
+		"mode":      req.Mode,
+		"recursive": req.Recursive,
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }
@@ -386,11 +450,22 @@ func (h *Handler) Chown(c echo.Context) error {
 	}
 
 	if err := h.service.Chown(stackName, req); err != nil {
+		h.auditService.LogFileEvent(audit.EventFileChown, c.RealIP(), stackName, req.Path, false, err.Error(), map[string]any{
+			"owner_id":  req.OwnerID,
+			"group_id":  req.GroupID,
+			"recursive": req.Recursive,
+		})
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: err.Error(),
 			Code:  "CHOWN_ERROR",
 		})
 	}
+
+	h.auditService.LogFileEvent(audit.EventFileChown, c.RealIP(), stackName, req.Path, true, "", map[string]any{
+		"owner_id":  req.OwnerID,
+		"group_id":  req.GroupID,
+		"recursive": req.Recursive,
+	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "success"})
 }

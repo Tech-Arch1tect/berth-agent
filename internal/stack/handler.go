@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"berth-agent/internal/audit"
 	"berth-agent/internal/common"
 	"berth-agent/internal/validation"
 	"strings"
@@ -9,20 +10,28 @@ import (
 )
 
 type Handler struct {
-	service *Service
+	service      *Service
+	auditService *audit.Service
 }
 
-func NewHandler(service *Service) *Handler {
+func NewHandler(service *Service, auditService *audit.Service) *Handler {
 	return &Handler{
-		service: service,
+		service:      service,
+		auditService: auditService,
 	}
 }
 
 func (h *Handler) ListStacks(c echo.Context) error {
 	stacks, err := h.service.ListStacks()
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackList, c.RealIP(), "", false, err.Error(), nil)
 		return common.SendInternalError(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackList, c.RealIP(), "", true, "", map[string]any{
+		"count": len(stacks),
+	})
+
 	return common.SendSuccess(c, stacks)
 }
 
@@ -38,11 +47,14 @@ func (h *Handler) CreateStack(c echo.Context) error {
 
 	stack, err := h.service.CreateStack(req.Name)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackCreate, c.RealIP(), req.Name, false, err.Error(), nil)
 		if strings.Contains(err.Error(), "already exists") {
 			return common.SendConflict(c, err.Error())
 		}
 		return common.SendBadRequest(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackCreate, c.RealIP(), req.Name, true, "", nil)
 
 	return common.SendCreated(c, CreateStackResponse{
 		Success: true,
@@ -63,8 +75,11 @@ func (h *Handler) GetStackDetails(c echo.Context) error {
 
 	stackDetails, err := h.service.GetStackDetails(stackName)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackGetDetails, c.RealIP(), stackName, false, err.Error(), nil)
 		return common.SendNotFound(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackGetDetails, c.RealIP(), stackName, true, "", nil)
 
 	return common.SendSuccess(c, stackDetails)
 }
@@ -81,8 +96,11 @@ func (h *Handler) GetStackNetworks(c echo.Context) error {
 
 	networks, err := h.service.GetStackNetworks(stackName)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackGetNetworks, c.RealIP(), stackName, false, err.Error(), nil)
 		return common.SendNotFound(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackGetNetworks, c.RealIP(), stackName, true, "", nil)
 
 	return common.SendSuccess(c, networks)
 }
@@ -99,8 +117,11 @@ func (h *Handler) GetStackVolumes(c echo.Context) error {
 
 	volumes, err := h.service.GetStackVolumes(stackName)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackGetVolumes, c.RealIP(), stackName, false, err.Error(), nil)
 		return common.SendNotFound(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackGetVolumes, c.RealIP(), stackName, true, "", nil)
 
 	return common.SendSuccess(c, volumes)
 }
@@ -119,8 +140,15 @@ func (h *Handler) GetStackEnvironmentVariables(c echo.Context) error {
 
 	envVars, err := h.service.GetStackEnvironmentVariables(stackName, unmask)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackGetEnvVars, c.RealIP(), stackName, false, err.Error(), map[string]any{
+			"unmask": unmask,
+		})
 		return common.SendNotFound(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackGetEnvVars, c.RealIP(), stackName, true, "", map[string]any{
+		"unmask": unmask,
+	})
 
 	return common.SendSuccess(c, envVars)
 }
@@ -142,8 +170,15 @@ func (h *Handler) GetStacksSummary(c echo.Context) error {
 
 	summary, err := h.service.GetStacksSummary(patterns)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackGetSummary, c.RealIP(), "", false, err.Error(), map[string]any{
+			"patterns": patterns,
+		})
 		return common.SendInternalError(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackGetSummary, c.RealIP(), "", true, "", map[string]any{
+		"patterns": patterns,
+	})
 
 	return common.SendSuccess(c, summary)
 }
@@ -160,8 +195,11 @@ func (h *Handler) GetContainerImageDetails(c echo.Context) error {
 
 	imageDetails, err := h.service.GetContainerImageDetails(stackName)
 	if err != nil {
+		h.auditService.LogStackEvent(audit.EventStackGetImages, c.RealIP(), stackName, false, err.Error(), nil)
 		return common.SendNotFound(c, err.Error())
 	}
+
+	h.auditService.LogStackEvent(audit.EventStackGetImages, c.RealIP(), stackName, true, "", nil)
 
 	return common.SendSuccess(c, imageDetails)
 }

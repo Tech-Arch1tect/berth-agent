@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"berth-agent/internal/audit"
 	"berth-agent/internal/common"
 	"berth-agent/internal/validation"
 	"net/http"
@@ -10,12 +11,14 @@ import (
 )
 
 type Handler struct {
-	service *Service
+	service      *Service
+	auditService *audit.Service
 }
 
-func NewHandler(service *Service) *Handler {
+func NewHandler(service *Service, auditService *audit.Service) *Handler {
 	return &Handler{
-		service: service,
+		service:      service,
+		auditService: auditService,
 	}
 }
 
@@ -48,8 +51,17 @@ func (h *Handler) StartOperation(c echo.Context) error {
 
 	operationID, err := h.service.StartOperation(c.Request().Context(), stackName, req)
 	if err != nil {
+		h.auditService.LogOperationEvent(audit.EventOperationStarted, c.RealIP(), stackName, "", req.Command, false, err.Error(), 0, map[string]any{
+			"services": req.Services,
+			"options":  req.Options,
+		})
 		return common.SendInternalError(c, err.Error())
 	}
+
+	h.auditService.LogOperationEvent(audit.EventOperationStarted, c.RealIP(), stackName, operationID, req.Command, true, "", 0, map[string]any{
+		"services": req.Services,
+		"options":  req.Options,
+	})
 
 	return common.SendSuccess(c, OperationResponse{
 		OperationID: operationID,

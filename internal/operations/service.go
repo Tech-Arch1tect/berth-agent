@@ -2,6 +2,7 @@ package operations
 
 import (
 	"berth-agent/internal/archive"
+	"berth-agent/internal/audit"
 	"berth-agent/internal/logging"
 	"berth-agent/internal/validation"
 	"bufio"
@@ -30,9 +31,10 @@ type Service struct {
 	mutex            sync.RWMutex
 	archiveService   *archive.Service
 	logger           *logging.Logger
+	auditService     *audit.Service
 }
 
-func NewService(stackLocation, accessToken string, logger *logging.Logger) *Service {
+func NewService(stackLocation, accessToken string, logger *logging.Logger, auditService *audit.Service) *Service {
 	logger.Debug("operations service initialized",
 		zap.String("stack_location", stackLocation),
 	)
@@ -43,6 +45,7 @@ func NewService(stackLocation, accessToken string, logger *logging.Logger) *Serv
 		activeOperations: make(map[string]string),
 		archiveService:   archive.NewService(),
 		logger:           logger,
+		auditService:     auditService,
 	}
 }
 
@@ -253,6 +256,7 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 
 	wg.Wait()
 
+	duration := time.Since(operation.StartTime)
 	if err := cmd.Wait(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode := exitError.ExitCode()
@@ -260,19 +264,28 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 				zap.String("operation_id", operationID),
 				zap.String("stack_name", operation.StackName),
 				zap.Int("exit_code", exitCode),
-				zap.Duration("duration", time.Since(operation.StartTime)),
+				zap.Duration("duration", duration),
 			)
 			s.updateOperationStatus(operationID, "completed", &exitCode)
 			operation.Broadcaster.BroadcastComplete(false, exitCode)
+
+			s.auditService.LogOperationEvent(audit.EventOperationCompleted, "", operation.StackName, operationID, operation.Request.Command, false, fmt.Sprintf("exit code: %d", exitCode), duration.Milliseconds(), map[string]any{
+				"exit_code": exitCode,
+				"services":  operation.Request.Services,
+			})
 		} else {
 			s.logger.Error("operation failed",
 				zap.String("operation_id", operationID),
 				zap.String("stack_name", operation.StackName),
 				zap.Error(err),
-				zap.Duration("duration", time.Since(operation.StartTime)),
+				zap.Duration("duration", duration),
 			)
 			s.updateOperationStatus(operationID, "failed", nil)
 			operation.Broadcaster.BroadcastError(fmt.Sprintf("Command execution error: %v", err))
+
+			s.auditService.LogOperationEvent(audit.EventOperationFailed, "", operation.StackName, operationID, operation.Request.Command, false, err.Error(), duration.Milliseconds(), map[string]any{
+				"services": operation.Request.Services,
+			})
 		}
 	} else {
 		exitCode := 0
@@ -280,10 +293,15 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 			zap.String("operation_id", operationID),
 			zap.String("stack_name", operation.StackName),
 			zap.String("command", operation.Request.Command),
-			zap.Duration("duration", time.Since(operation.StartTime)),
+			zap.Duration("duration", duration),
 		)
 		s.updateOperationStatus(operationID, "completed", &exitCode)
 		operation.Broadcaster.BroadcastComplete(true, exitCode)
+
+		s.auditService.LogOperationEvent(audit.EventOperationCompleted, "", operation.StackName, operationID, operation.Request.Command, true, "", duration.Milliseconds(), map[string]any{
+			"exit_code": 0,
+			"services":  operation.Request.Services,
+		})
 	}
 
 	s.unlockStack(operation.StackName, operationID)
