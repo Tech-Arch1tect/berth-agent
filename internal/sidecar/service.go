@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"berth-agent/internal/logging"
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -26,6 +27,7 @@ func (s *Service) ExecuteOperation(ctx context.Context, req OperationRequest) er
 		zap.String("command", req.Command),
 		zap.String("stack_path", req.StackPath),
 		zap.Strings("options", req.Options),
+		zap.Strings("services", req.Services),
 	)
 
 	if req.StackPath == "" {
@@ -53,27 +55,66 @@ func (s *Service) ExecuteOperation(ctx context.Context, req OperationRequest) er
 	}
 
 	fullCommand := "docker " + strings.Join(args, " ")
-	s.logger.Info("executing sidecar command",
-		zap.String("command", fullCommand),
+	s.logger.Info("sidecar executing docker compose command",
+		zap.String("full_command", fullCommand),
 		zap.String("working_dir", req.StackPath),
+		zap.Strings("args", args),
 	)
 
-	cmd := exec.Command("docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = req.StackPath
 
-	output, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	s.logger.Info("sidecar starting command execution")
+
+	err := cmd.Run()
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+
+	stdoutStr := strings.TrimSpace(stdout.String())
+	stderrStr := strings.TrimSpace(stderr.String())
+
+	if stdoutStr != "" {
+		for _, line := range strings.Split(stdoutStr, "\n") {
+			if line != "" {
+				s.logger.Info("sidecar docker stdout",
+					zap.String("line", line),
+				)
+			}
+		}
+	}
+
+	if stderrStr != "" {
+		for _, line := range strings.Split(stderrStr, "\n") {
+			if line != "" {
+				s.logger.Warn("sidecar docker stderr",
+					zap.String("line", line),
+				)
+			}
+		}
+	}
+
 	if err != nil {
 		s.logger.Error("sidecar command execution failed",
 			zap.String("command", fullCommand),
-			zap.String("output", string(output)),
+			zap.Int("exit_code", exitCode),
+			zap.String("stdout", stdoutStr),
+			zap.String("stderr", stderrStr),
 			zap.Error(err),
 		)
-		return fmt.Errorf("docker-compose command failed: %w, output: %s", err, output)
+		return fmt.Errorf("docker compose command failed with exit code %d: %w, stderr: %s", exitCode, err, stderrStr)
 	}
 
 	s.logger.Info("sidecar command execution successful",
 		zap.String("command", fullCommand),
-		zap.String("output", string(output)),
+		zap.Int("exit_code", exitCode),
+		zap.String("stdout", stdoutStr),
+		zap.String("stderr", stderrStr),
 	)
 	return nil
 }

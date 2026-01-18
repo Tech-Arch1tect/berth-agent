@@ -339,8 +339,19 @@ func (s *Service) streamOutputToBroadcaster(ctx context.Context, reader io.Reade
 }
 
 func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operation *Operation) error {
+	s.logger.Info("self-operation detected, preparing sidecar handoff",
+		zap.String("operation_id", operation.ID),
+		zap.String("stack_name", operation.StackName),
+		zap.String("command", operation.Request.Command),
+		zap.Strings("services", operation.Request.Services),
+	)
+
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
 	if err != nil {
+		s.logger.Error("self-operation failed: invalid stack path",
+			zap.String("operation_id", operation.ID),
+			zap.Error(err),
+		)
 		s.updateOperationStatus(operation.ID, "failed", nil)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Invalid stack path: %v", err))
 		return fmt.Errorf("invalid stack path: %w", err)
@@ -355,6 +366,11 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 	operation.Broadcaster.BroadcastComplete(true, exitCode)
 
 	s.unlockStack(operation.StackName, operation.ID)
+
+	s.logger.Info("self-operation: client notified, preparing sidecar request",
+		zap.String("operation_id", operation.ID),
+		zap.String("stack_path", stackPath),
+	)
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -374,11 +390,29 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
+		s.logger.Error("self-operation failed: could not marshal sidecar request",
+			zap.String("operation_id", operation.ID),
+			zap.Error(err),
+		)
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://berth-updater:8081/operation", bytes.NewBuffer(jsonData))
+	sidecarURL := "https://berth-updater:8081/operation"
+	s.logger.Info("self-operation: sending request to sidecar",
+		zap.String("operation_id", operation.ID),
+		zap.String("sidecar_url", sidecarURL),
+		zap.String("command", operation.Request.Command),
+		zap.Strings("options", operation.Request.Options),
+		zap.Strings("services", operation.Request.Services),
+		zap.String("stack_path", stackPath),
+	)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", sidecarURL, bytes.NewBuffer(jsonData))
 	if err != nil {
+		s.logger.Error("self-operation failed: could not create sidecar request",
+			zap.String("operation_id", operation.ID),
+			zap.Error(err),
+		)
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -387,13 +421,31 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 
 	resp, err := client.Do(req)
 	if err != nil {
+		s.logger.Error("self-operation failed: could not connect to sidecar",
+			zap.String("operation_id", operation.ID),
+			zap.String("sidecar_url", sidecarURL),
+			zap.Error(err),
+		)
 		return fmt.Errorf("failed to connect to sidecar: %w", err)
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("sidecar returned status: %d", resp.StatusCode)
+		s.logger.Error("self-operation failed: sidecar returned non-OK status",
+			zap.String("operation_id", operation.ID),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response_body", string(respBody)),
+		)
+		return fmt.Errorf("sidecar returned status: %d, body: %s", resp.StatusCode, string(respBody))
 	}
+
+	s.logger.Info("self-operation: sidecar request successful",
+		zap.String("operation_id", operation.ID),
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("response_body", string(respBody)),
+	)
 
 	return nil
 }

@@ -1,45 +1,64 @@
 package sidecar
 
 import (
+	"berth-agent/internal/logging"
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 )
 
 type Handler struct {
 	service *Service
+	logger  *logging.Logger
 }
 
-func NewHandler(service *Service) *Handler {
+func NewHandler(service *Service, logger *logging.Logger) *Handler {
 	return &Handler{
 		service: service,
+		logger:  logger,
 	}
 }
 
 func (h *Handler) HandleOperation(c echo.Context) error {
-	log.Printf("Sidecar received operation request from %s", c.RealIP())
+	h.logger.Info("sidecar received operation request",
+		zap.String("remote_ip", c.RealIP()),
+	)
 
 	var req OperationRequest
 	if err := c.Bind(&req); err != nil {
-		log.Printf("Failed to bind sidecar request: %v", err)
+		h.logger.Error("sidecar failed to bind request",
+			zap.String("remote_ip", c.RealIP()),
+			zap.Error(err),
+		)
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": "Invalid request format",
 		})
 	}
 
-	log.Printf("Sidecar executing operation - Command: %s, StackPath: %s, Options: %v",
-		req.Command, req.StackPath, req.Options)
+	h.logger.Info("sidecar executing operation",
+		zap.String("command", req.Command),
+		zap.String("stack_path", req.StackPath),
+		zap.Strings("options", req.Options),
+		zap.Strings("services", req.Services),
+	)
 
 	if err := h.service.ExecuteOperation(c.Request().Context(), req); err != nil {
-		log.Printf("Sidecar operation failed - Command: %s, Error: %v", req.Command, err)
+		h.logger.Error("sidecar operation failed",
+			zap.String("command", req.Command),
+			zap.String("stack_path", req.StackPath),
+			zap.Error(err),
+		)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("Sidecar operation failed: %v", err),
 		})
 	}
 
-	log.Printf("Sidecar operation completed successfully - Command: %s", req.Command)
+	h.logger.Info("sidecar operation completed successfully",
+		zap.String("command", req.Command),
+		zap.String("stack_path", req.StackPath),
+	)
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Sidecar operation completed successfully",
 		"command": req.Command,
