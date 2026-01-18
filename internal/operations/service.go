@@ -374,8 +374,11 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 
 	time.Sleep(500 * time.Millisecond)
 
+	sidecarCtx, sidecarCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer sidecarCancel()
+
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 60 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -407,7 +410,7 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 		zap.String("stack_path", stackPath),
 	)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", sidecarURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(sidecarCtx, "POST", sidecarURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		s.logger.Error("self-operation failed: could not create sidecar request",
 			zap.String("operation_id", operation.ID),
