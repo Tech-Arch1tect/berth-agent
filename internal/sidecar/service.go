@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -22,7 +23,7 @@ func NewService(logger *logging.Logger) *Service {
 	}
 }
 
-func (s *Service) ExecuteOperation(ctx context.Context, req OperationRequest) error {
+func (s *Service) ExecuteOperation(_ context.Context, req OperationRequest) error {
 	s.logger.Info("sidecar operation starting",
 		zap.String("command", req.Command),
 		zap.String("stack_path", req.StackPath),
@@ -61,7 +62,10 @@ func (s *Service) ExecuteOperation(ctx context.Context, req OperationRequest) er
 		zap.Strings("args", args),
 	)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	execCtx, execCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer execCancel()
+
+	cmd := exec.CommandContext(execCtx, "docker", args...)
 	cmd.Dir = req.StackPath
 
 	var stdout, stderr bytes.Buffer
