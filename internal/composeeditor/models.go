@@ -1,14 +1,12 @@
 package composeeditor
 
-import "github.com/compose-spec/compose-go/v2/types"
-
-type ComposeConfig struct {
+type RawComposeConfig struct {
 	ComposeFile string         `json:"compose_file"`
-	Services    types.Services `json:"services"`
-	Networks    types.Networks `json:"networks,omitempty"`
-	Volumes     types.Volumes  `json:"volumes,omitempty"`
-	Secrets     types.Secrets  `json:"secrets,omitempty"`
-	Configs     types.Configs  `json:"configs,omitempty"`
+	Services    map[string]any `json:"services"`
+	Networks    map[string]any `json:"networks,omitempty"`
+	Volumes     map[string]any `json:"volumes,omitempty"`
+	Secrets     map[string]any `json:"secrets,omitempty"`
+	Configs     map[string]any `json:"configs,omitempty"`
 }
 
 type ComposeChanges struct {
@@ -54,7 +52,7 @@ type ServiceNetworkConfig struct {
 }
 
 type PortMapping struct {
-	Target    uint32 `json:"target"`
+	Target    string `json:"target"`
 	Published string `json:"published,omitempty"`
 	HostIP    string `json:"host_ip,omitempty"`
 	Protocol  string `json:"protocol,omitempty"`

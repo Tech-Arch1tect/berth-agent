@@ -8,13 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
+	"regexp"
 	"strings"
-	"time"
 
-	"github.com/compose-spec/compose-go/v2/cli"
-	"github.com/compose-spec/compose-go/v2/types"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -31,7 +27,7 @@ func NewService(cfg *config.Config, logger *logging.Logger) *Service {
 	}
 }
 
-func (s *Service) GetComposeConfig(ctx context.Context, stackName string) (*ComposeConfig, error) {
+func (s *Service) GetComposeConfig(ctx context.Context, stackName string) (*RawComposeConfig, error) {
 	stackPath := filepath.Join(s.stackLocation, stackName)
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
@@ -43,24 +39,42 @@ func (s *Service) GetComposeConfig(ctx context.Context, stackName string) (*Comp
 		return nil, fmt.Errorf("failed to find compose file: %w", err)
 	}
 
-	s.logger.Debug("parsing compose file",
+	s.logger.Debug("reading compose file",
 		zap.String("stack", stackName),
 		zap.String("file", composeFile),
 	)
 
-	project, err := s.loadProject(stackPath, composeFile)
+	content, err := os.ReadFile(composeFile)
 	if err != nil {
+		return nil, fmt.Errorf("failed to read compose file: %w", err)
+	}
+
+	var rawConfig map[string]any
+	if err := yaml.Unmarshal(content, &rawConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse compose file: %w", err)
 	}
 
-	return &ComposeConfig{
+	result := &RawComposeConfig{
 		ComposeFile: filepath.Base(composeFile),
-		Services:    project.Services,
-		Networks:    project.Networks,
-		Volumes:     project.Volumes,
-		Secrets:     project.Secrets,
-		Configs:     project.Configs,
-	}, nil
+	}
+
+	if services, ok := rawConfig["services"].(map[string]any); ok {
+		result.Services = services
+	}
+	if networks, ok := rawConfig["networks"].(map[string]any); ok {
+		result.Networks = networks
+	}
+	if volumes, ok := rawConfig["volumes"].(map[string]any); ok {
+		result.Volumes = volumes
+	}
+	if secrets, ok := rawConfig["secrets"].(map[string]any); ok {
+		result.Secrets = secrets
+	}
+	if configs, ok := rawConfig["configs"].(map[string]any); ok {
+		result.Configs = configs
+	}
+
+	return result, nil
 }
 
 func (s *Service) findComposeFile(stackPath string) (string, error) {
@@ -81,57 +95,6 @@ func (s *Service) findComposeFile(stackPath string) (string, error) {
 	return "", fmt.Errorf("no compose file found in %s", stackPath)
 }
 
-func (s *Service) loadProject(stackPath, composeFile string) (*types.Project, error) {
-	options, err := cli.NewProjectOptions(
-		[]string{composeFile},
-		cli.WithWorkingDirectory(stackPath),
-		cli.WithResolvedPaths(false),
-		cli.WithDiscardEnvFile,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create project options: %w", err)
-	}
-
-	project, err := cli.ProjectFromOptions(context.Background(), options)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load project: %w", err)
-	}
-
-	return project, nil
-}
-
-func (s *Service) validateComposeYaml(stackPath, yamlContent string) error {
-	tempFile, err := os.CreateTemp(stackPath, "compose-validate-*.yml")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tempPath := tempFile.Name()
-	defer os.Remove(tempPath)
-
-	if _, err := tempFile.WriteString(yamlContent); err != nil {
-		tempFile.Close()
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-	tempFile.Close()
-
-	options, err := cli.NewProjectOptions(
-		[]string{tempPath},
-		cli.WithWorkingDirectory(stackPath),
-		cli.WithResolvedPaths(false),
-		cli.WithDiscardEnvFile,
-	)
-	if err != nil {
-		return fmt.Errorf("invalid compose configuration: %w", err)
-	}
-
-	_, err = cli.ProjectFromOptions(context.Background(), options)
-	if err != nil {
-		return fmt.Errorf("invalid compose file: %w", err)
-	}
-
-	return nil
-}
-
 func (s *Service) UpdateCompose(ctx context.Context, stackName string, changes ComposeChanges) error {
 	stackPath := filepath.Join(s.stackLocation, stackName)
 
@@ -149,19 +112,29 @@ func (s *Service) UpdateCompose(ctx context.Context, stackName string, changes C
 		zap.String("file", composeFile),
 	)
 
-	project, err := s.loadProject(stackPath, composeFile)
+	content, err := os.ReadFile(composeFile)
 	if err != nil {
+		return fmt.Errorf("failed to read compose file: %w", err)
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return fmt.Errorf("failed to parse compose file: %w", err)
 	}
 
-	if err := s.applyChanges(project, changes); err != nil {
+	if err := s.applyChangesToYaml(&doc, changes); err != nil {
 		return fmt.Errorf("failed to apply changes: %w", err)
 	}
 
-	yamlContent, err := s.projectToYaml(project)
-	if err != nil {
-		return fmt.Errorf("failed to generate compose yaml: %w", err)
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&doc); err != nil {
+		return fmt.Errorf("failed to encode yaml: %w", err)
 	}
+	encoder.Close()
+
+	yamlContent := addBlankLinesBetweenSections(buf.String())
 
 	if err := s.validateComposeYaml(stackPath, yamlContent); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
@@ -186,946 +159,216 @@ func (s *Service) PreviewCompose(ctx context.Context, stackName string, changes 
 		return "", "", fmt.Errorf("failed to find compose file: %w", err)
 	}
 
-	project, err := s.loadProject(stackPath, composeFile)
+	content, err := os.ReadFile(composeFile)
 	if err != nil {
+		return "", "", fmt.Errorf("failed to read compose file: %w", err)
+	}
+
+	originalYaml = string(content)
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return "", "", fmt.Errorf("failed to parse compose file: %w", err)
 	}
 
-	originalYaml, err = s.projectToYaml(project)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to generate original yaml: %w", err)
-	}
-
-	if err := s.applyChanges(project, changes); err != nil {
+	if err := s.applyChangesToYaml(&doc, changes); err != nil {
 		return "", "", fmt.Errorf("failed to apply changes: %w", err)
-	}
-
-	modifiedYaml, err = s.projectToYaml(project)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to generate modified yaml: %w", err)
-	}
-
-	return originalYaml, modifiedYaml, nil
-}
-
-func (s *Service) applyChanges(project *types.Project, changes ComposeChanges) error {
-
-	if changes.NetworkChanges != nil {
-		s.applyNetworkChanges(project, changes.NetworkChanges)
-	}
-
-	if changes.VolumeChanges != nil {
-		s.applyVolumeChanges(project, changes.VolumeChanges)
-	}
-
-	if changes.SecretChanges != nil {
-		s.applySecretChanges(project, changes.SecretChanges)
-	}
-
-	if changes.ConfigChanges != nil {
-		s.applyConfigChanges(project, changes.ConfigChanges)
-	}
-
-	for oldName, newName := range changes.RenameServices {
-		if err := s.renameService(project, oldName, newName); err != nil {
-			return err
-		}
-	}
-
-	for _, serviceName := range changes.DeleteServices {
-		delete(project.Services, serviceName)
-	}
-
-	for serviceName, newSvc := range changes.AddServices {
-		if _, exists := project.Services[serviceName]; exists {
-			return fmt.Errorf("service already exists: %s", serviceName)
-		}
-		project.Services[serviceName] = s.convertNewService(serviceName, newSvc)
-	}
-
-	for serviceName, serviceChanges := range changes.ServiceChanges {
-		svc, exists := project.Services[serviceName]
-		if !exists {
-			return fmt.Errorf("service not found: %s", serviceName)
-		}
-
-		if serviceChanges.Image != nil {
-			svc.Image = *serviceChanges.Image
-		}
-
-		if serviceChanges.Ports != nil {
-			svc.Ports = s.convertPorts(serviceChanges.Ports)
-		}
-
-		if serviceChanges.Environment != nil {
-			if svc.Environment == nil {
-				svc.Environment = make(types.MappingWithEquals)
-			}
-			for key, val := range serviceChanges.Environment {
-				if val == nil {
-					delete(svc.Environment, key)
-				} else {
-					svc.Environment[key] = val
-				}
-			}
-		}
-
-		if serviceChanges.Volumes != nil {
-			svc.Volumes = s.convertVolumes(serviceChanges.Volumes)
-		}
-
-		if serviceChanges.Command != nil {
-			svc.Command = serviceChanges.Command.Values
-		}
-
-		if serviceChanges.Entrypoint != nil {
-			svc.Entrypoint = serviceChanges.Entrypoint.Values
-		}
-
-		if serviceChanges.Restart != nil {
-			svc.Restart = *serviceChanges.Restart
-		}
-
-		if serviceChanges.Labels != nil {
-			if svc.Labels == nil {
-				svc.Labels = make(types.Labels)
-			}
-			for key, val := range serviceChanges.Labels {
-				if val == nil {
-					delete(svc.Labels, key)
-				} else {
-					svc.Labels[key] = *val
-				}
-			}
-		}
-
-		if serviceChanges.DependsOn != nil {
-			svc.DependsOn = s.convertDependsOn(serviceChanges.DependsOn)
-		}
-
-		if serviceChanges.Healthcheck != nil {
-			svc.HealthCheck = s.convertHealthcheck(serviceChanges.Healthcheck)
-		}
-
-		if serviceChanges.Deploy != nil {
-			svc.Deploy = s.convertDeploy(serviceChanges.Deploy)
-		}
-
-		if serviceChanges.Build != nil {
-			svc.Build = s.convertBuild(serviceChanges.Build)
-		}
-
-		if serviceChanges.Networks != nil {
-			svc.Networks = s.convertServiceNetworks(serviceChanges.Networks)
-		}
-
-		project.Services[serviceName] = svc
-	}
-
-	return nil
-}
-
-func (s *Service) applyNetworkChanges(project *types.Project, changes map[string]*NetworkConfig) {
-	if project.Networks == nil {
-		project.Networks = make(types.Networks)
-	}
-
-	for name, config := range changes {
-		if config == nil {
-			delete(project.Networks, name)
-		} else {
-			net := types.NetworkConfig{
-				Driver:     config.Driver,
-				DriverOpts: config.DriverOpts,
-				External:   types.External(config.External),
-				Name:       config.Name,
-				Labels:     config.Labels,
-			}
-			if config.Ipam != nil {
-				net.Ipam = types.IPAMConfig{
-					Driver: config.Ipam.Driver,
-				}
-				for _, pool := range config.Ipam.Config {
-					net.Ipam.Config = append(net.Ipam.Config, &types.IPAMPool{
-						Subnet:  pool.Subnet,
-						Gateway: pool.Gateway,
-						IPRange: pool.IpRange,
-					})
-				}
-			}
-			project.Networks[name] = net
-		}
-	}
-}
-
-func (s *Service) applyVolumeChanges(project *types.Project, changes map[string]*VolumeConfig) {
-	if project.Volumes == nil {
-		project.Volumes = make(types.Volumes)
-	}
-	for name, config := range changes {
-		if config == nil {
-			delete(project.Volumes, name)
-		} else {
-			vol := types.VolumeConfig{
-				Driver:     config.Driver,
-				DriverOpts: config.DriverOpts,
-				External:   types.External(config.External),
-				Name:       config.Name,
-				Labels:     config.Labels,
-			}
-			project.Volumes[name] = vol
-		}
-	}
-}
-
-func (s *Service) applySecretChanges(project *types.Project, changes map[string]*SecretConfig) {
-	if project.Secrets == nil {
-		project.Secrets = make(types.Secrets)
-	}
-
-	for name, config := range changes {
-		if config == nil {
-			delete(project.Secrets, name)
-		} else {
-			sec := types.SecretConfig{
-				File:        config.File,
-				Environment: config.Environment,
-				External:    types.External(config.External),
-				Name:        config.Name,
-			}
-			project.Secrets[name] = sec
-		}
-	}
-}
-
-func (s *Service) applyConfigChanges(project *types.Project, changes map[string]*ConfigConfig) {
-	if project.Configs == nil {
-		project.Configs = make(types.Configs)
-	}
-
-	for name, config := range changes {
-		if config == nil {
-			delete(project.Configs, name)
-		} else {
-			cfg := types.ConfigObjConfig{
-				File:        config.File,
-				Environment: config.Environment,
-				External:    types.External(config.External),
-				Name:        config.Name,
-			}
-			project.Configs[name] = cfg
-		}
-	}
-}
-
-func (s *Service) renameService(project *types.Project, oldName, newName string) error {
-	svc, exists := project.Services[oldName]
-	if !exists {
-		return fmt.Errorf("service not found: %s", oldName)
-	}
-	if _, exists := project.Services[newName]; exists {
-		return fmt.Errorf("service already exists: %s", newName)
-	}
-
-	svc.Name = newName
-	project.Services[newName] = svc
-	delete(project.Services, oldName)
-
-	for name, otherSvc := range project.Services {
-		if otherSvc.DependsOn != nil {
-			if dep, hasDep := otherSvc.DependsOn[oldName]; hasDep {
-				otherSvc.DependsOn[newName] = dep
-				delete(otherSvc.DependsOn, oldName)
-				project.Services[name] = otherSvc
-			}
-		}
-	}
-
-	return nil
-}
-
-func (s *Service) convertNewService(name string, cfg NewServiceConfig) types.ServiceConfig {
-	svc := types.ServiceConfig{
-		Name:    name,
-		Image:   cfg.Image,
-		Restart: cfg.Restart,
-	}
-
-	if len(cfg.Ports) > 0 {
-		svc.Ports = s.convertPorts(cfg.Ports)
-	}
-
-	if len(cfg.Environment) > 0 {
-		svc.Environment = make(types.MappingWithEquals)
-		for k, v := range cfg.Environment {
-			val := v
-			svc.Environment[k] = &val
-		}
-	}
-
-	if len(cfg.Volumes) > 0 {
-		svc.Volumes = s.convertVolumes(cfg.Volumes)
-	}
-
-	return svc
-}
-
-func (s *Service) convertPorts(ports []PortMapping) []types.ServicePortConfig {
-	result := make([]types.ServicePortConfig, len(ports))
-	for i, p := range ports {
-		result[i] = types.ServicePortConfig{
-			Target:    p.Target,
-			Published: p.Published,
-			HostIP:    p.HostIP,
-			Protocol:  p.Protocol,
-		}
-	}
-	return result
-}
-
-func (s *Service) convertVolumes(volumes []VolumeMount) []types.ServiceVolumeConfig {
-	result := make([]types.ServiceVolumeConfig, len(volumes))
-	for i, v := range volumes {
-		result[i] = types.ServiceVolumeConfig{
-			Type:     v.Type,
-			Source:   v.Source,
-			Target:   v.Target,
-			ReadOnly: v.ReadOnly,
-		}
-	}
-	return result
-}
-
-func (s *Service) convertDependsOn(deps map[string]DependsOnConfig) types.DependsOnConfig {
-	result := make(types.DependsOnConfig)
-	for name, cfg := range deps {
-		condition := types.ServiceConditionStarted
-		if cfg.Condition != "" {
-			condition = cfg.Condition
-		}
-		result[name] = types.ServiceDependency{
-			Condition: condition,
-			Restart:   cfg.Restart,
-			Required:  cfg.Required,
-		}
-	}
-	return result
-}
-
-func (s *Service) convertHealthcheck(hc *HealthcheckConfig) *types.HealthCheckConfig {
-	if hc.Disable {
-		return &types.HealthCheckConfig{
-			Disable: true,
-		}
-	}
-
-	result := &types.HealthCheckConfig{
-		Test: hc.Test,
-	}
-
-	if hc.Interval != "" {
-		if d, err := time.ParseDuration(hc.Interval); err == nil {
-			dur := types.Duration(d)
-			result.Interval = &dur
-		}
-	}
-	if hc.Timeout != "" {
-		if d, err := time.ParseDuration(hc.Timeout); err == nil {
-			dur := types.Duration(d)
-			result.Timeout = &dur
-		}
-	}
-	if hc.StartPeriod != "" {
-		if d, err := time.ParseDuration(hc.StartPeriod); err == nil {
-			dur := types.Duration(d)
-			result.StartPeriod = &dur
-		}
-	}
-	if hc.StartInterval != "" {
-		if d, err := time.ParseDuration(hc.StartInterval); err == nil {
-			dur := types.Duration(d)
-			result.StartInterval = &dur
-		}
-	}
-	if hc.Retries != nil {
-		result.Retries = hc.Retries
-	}
-
-	return result
-}
-
-func (s *Service) convertDeploy(deploy *DeployConfig) *types.DeployConfig {
-	result := &types.DeployConfig{}
-
-	if deploy.Mode != nil {
-		result.Mode = *deploy.Mode
-	}
-	if deploy.Replicas != nil {
-		result.Replicas = deploy.Replicas
-	}
-
-	if deploy.Resources != nil {
-		result.Resources = types.Resources{}
-		if deploy.Resources.Limits != nil {
-			result.Resources.Limits = &types.Resource{
-				NanoCPUs:    s.parseCPUs(deploy.Resources.Limits.CPUs),
-				MemoryBytes: s.parseMemorySize(deploy.Resources.Limits.Memory),
-			}
-		}
-		if deploy.Resources.Reservations != nil {
-			result.Resources.Reservations = &types.Resource{
-				NanoCPUs:    s.parseCPUs(deploy.Resources.Reservations.CPUs),
-				MemoryBytes: s.parseMemorySize(deploy.Resources.Reservations.Memory),
-			}
-		}
-	}
-
-	if deploy.RestartPolicy != nil {
-		result.RestartPolicy = &types.RestartPolicy{
-			Condition: deploy.RestartPolicy.Condition,
-		}
-		if deploy.RestartPolicy.Delay != "" {
-			if d, err := time.ParseDuration(deploy.RestartPolicy.Delay); err == nil {
-				dur := types.Duration(d)
-				result.RestartPolicy.Delay = &dur
-			}
-		}
-		if deploy.RestartPolicy.MaxAttempts != nil {
-			attempts := uint64(*deploy.RestartPolicy.MaxAttempts)
-			result.RestartPolicy.MaxAttempts = &attempts
-		}
-		if deploy.RestartPolicy.Window != "" {
-			if d, err := time.ParseDuration(deploy.RestartPolicy.Window); err == nil {
-				dur := types.Duration(d)
-				result.RestartPolicy.Window = &dur
-			}
-		}
-	}
-
-	if deploy.Placement != nil {
-		result.Placement = types.Placement{
-			Constraints: deploy.Placement.Constraints,
-		}
-		if len(deploy.Placement.Preferences) > 0 {
-			for _, pref := range deploy.Placement.Preferences {
-				result.Placement.Preferences = append(result.Placement.Preferences, types.PlacementPreferences{
-					Spread: pref.Spread,
-				})
-			}
-		}
-	}
-
-	if deploy.UpdateConfig != nil {
-		result.UpdateConfig = s.convertUpdateRollbackConfig(deploy.UpdateConfig)
-	}
-
-	if deploy.RollbackConfig != nil {
-		result.RollbackConfig = s.convertUpdateRollbackConfig(deploy.RollbackConfig)
-	}
-
-	return result
-}
-
-func (s *Service) convertUpdateRollbackConfig(config *UpdateRollbackConfig) *types.UpdateConfig {
-	result := &types.UpdateConfig{}
-
-	if config.Parallelism != nil {
-		p := uint64(*config.Parallelism)
-		result.Parallelism = &p
-	}
-	if config.Delay != "" {
-		if d, err := time.ParseDuration(config.Delay); err == nil {
-			result.Delay = types.Duration(d)
-		}
-	}
-	if config.FailureAction != "" {
-		result.FailureAction = config.FailureAction
-	}
-	if config.Monitor != "" {
-		if d, err := time.ParseDuration(config.Monitor); err == nil {
-			result.Monitor = types.Duration(d)
-		}
-	}
-	if config.MaxFailureRatio != 0 {
-		result.MaxFailureRatio = float32(config.MaxFailureRatio)
-	}
-	if config.Order != "" {
-		result.Order = config.Order
-	}
-
-	return result
-}
-
-func (s *Service) parseCPUs(cpus string) types.NanoCPUs {
-	if cpus == "" {
-		return 0
-	}
-	val, err := strconv.ParseFloat(cpus, 32)
-	if err != nil {
-		return 0
-	}
-	return types.NanoCPUs(val)
-}
-
-func (s *Service) parseMemorySize(size string) types.UnitBytes {
-	if size == "" {
-		return 0
-	}
-
-	size = strings.ToLower(size)
-	var multiplier int64 = 1
-	var numStr string
-
-	if strings.HasSuffix(size, "g") || strings.HasSuffix(size, "gb") {
-		multiplier = 1024 * 1024 * 1024
-		numStr = strings.TrimSuffix(strings.TrimSuffix(size, "gb"), "g")
-	} else if strings.HasSuffix(size, "m") || strings.HasSuffix(size, "mb") {
-		multiplier = 1024 * 1024
-		numStr = strings.TrimSuffix(strings.TrimSuffix(size, "mb"), "m")
-	} else if strings.HasSuffix(size, "k") || strings.HasSuffix(size, "kb") {
-		multiplier = 1024
-		numStr = strings.TrimSuffix(strings.TrimSuffix(size, "kb"), "k")
-	} else if strings.HasSuffix(size, "b") {
-		numStr = strings.TrimSuffix(size, "b")
-	} else {
-		numStr = size
-	}
-
-	num, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return 0
-	}
-	return types.UnitBytes(int64(num) * multiplier)
-}
-
-func (s *Service) convertBuild(build *BuildConfig) *types.BuildConfig {
-	result := &types.BuildConfig{
-		Context:    build.Context,
-		Dockerfile: build.Dockerfile,
-		Target:     build.Target,
-	}
-
-	if len(build.Args) > 0 {
-		result.Args = make(types.MappingWithEquals)
-		for k, v := range build.Args {
-			val := v
-			result.Args[k] = &val
-		}
-	}
-
-	if len(build.CacheFrom) > 0 {
-		result.CacheFrom = build.CacheFrom
-	}
-
-	if len(build.CacheTo) > 0 {
-		result.CacheTo = build.CacheTo
-	}
-
-	if len(build.Platforms) > 0 {
-		result.Platforms = build.Platforms
-	}
-
-	return result
-}
-
-func (s *Service) convertServiceNetworks(networks map[string]*ServiceNetworkConfig) map[string]*types.ServiceNetworkConfig {
-	if networks == nil {
-		return nil
-	}
-
-	result := make(map[string]*types.ServiceNetworkConfig)
-	for name, config := range networks {
-		if config == nil {
-			continue
-		}
-		netConfig := &types.ServiceNetworkConfig{
-			Aliases:     config.Aliases,
-			Ipv4Address: config.Ipv4Address,
-			Ipv6Address: config.Ipv6Address,
-			Priority:    config.Priority,
-		}
-		result[name] = netConfig
-	}
-
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-func (s *Service) projectToYaml(project *types.Project) (string, error) {
-	doc := &yaml.Node{Kind: yaml.MappingNode}
-
-	addSection := func(key string, node *yaml.Node) {
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-		doc.Content = append(doc.Content, keyNode, node)
-	}
-
-	if len(project.Services) > 0 {
-		servicesNode := &yaml.Node{Kind: yaml.MappingNode}
-		serviceNames := make([]string, 0, len(project.Services))
-		for name := range project.Services {
-			serviceNames = append(serviceNames, name)
-		}
-		sort.Strings(serviceNames)
-
-		for _, name := range serviceNames {
-			svc := project.Services[name]
-			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: name}
-			servicesNode.Content = append(servicesNode.Content, keyNode, s.serviceToNode(svc))
-		}
-		addSection("services", servicesNode)
-	}
-
-	if len(project.Networks) > 0 {
-		networks := s.cleanNetworks(project.Networks, project.Name)
-		if len(networks) > 0 {
-			var netNode yaml.Node
-			netNode.Encode(networks)
-			addSection("networks", &netNode)
-		}
-	}
-
-	if len(project.Volumes) > 0 {
-		volumes := s.cleanVolumes(project.Volumes)
-		if len(volumes) > 0 {
-			var volNode yaml.Node
-			volNode.Encode(volumes)
-			addSection("volumes", &volNode)
-		}
-	}
-
-	if len(project.Secrets) > 0 {
-		var secNode yaml.Node
-		secNode.Encode(project.Secrets)
-		addSection("secrets", &secNode)
-	}
-
-	if len(project.Configs) > 0 {
-		var cfgNode yaml.Node
-		cfgNode.Encode(project.Configs)
-		addSection("configs", &cfgNode)
 	}
 
 	var buf bytes.Buffer
 	encoder := yaml.NewEncoder(&buf)
 	encoder.SetIndent(2)
-	if err := encoder.Encode(doc); err != nil {
-		return "", fmt.Errorf("failed to marshal compose: %w", err)
+	if err := encoder.Encode(&doc); err != nil {
+		return "", "", fmt.Errorf("failed to encode yaml: %w", err)
 	}
 	encoder.Close()
 
-	return buf.String(), nil
+	modifiedYaml = addBlankLinesBetweenSections(buf.String())
+
+	return originalYaml, modifiedYaml, nil
 }
 
-func (s *Service) writeComposeFile(filePath string, project *types.Project) error {
-	yamlContent, err := s.projectToYaml(project)
-	if err != nil {
-		return err
+var serviceDefRegex = regexp.MustCompile(`(?m)^  [a-zA-Z][a-zA-Z0-9_-]*:\s*$`)
+
+func addBlankLinesBetweenSections(yaml string) string {
+	lines := strings.Split(yaml, "\n")
+	var result []string
+	inServices := false
+
+	for i, line := range lines {
+		if strings.HasPrefix(line, "services:") {
+			inServices = true
+		} else if len(line) > 0 && line[0] != ' ' && line[0] != '#' {
+			inServices = false
+		}
+
+		if inServices && i > 0 && serviceDefRegex.MatchString(line) {
+			prev := lines[i-1]
+			if len(prev) > 0 && prev != "" {
+				result = append(result, "")
+			}
+		}
+
+		result = append(result, line)
 	}
 
-	if err := os.WriteFile(filePath, []byte(yamlContent), 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+	return strings.Join(result, "\n")
+}
+
+func (s *Service) applyChangesToYaml(doc *yaml.Node, changes ComposeChanges) error {
+	root := doc
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		root = doc.Content[0]
+	}
+
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("invalid compose document structure")
+	}
+
+	if changes.ServiceChanges != nil {
+		if err := s.applyServiceChangesToYaml(root, changes.ServiceChanges); err != nil {
+			return err
+		}
+	}
+	if changes.NetworkChanges != nil {
+		if err := s.applyNetworkChangesToYaml(root, changes.NetworkChanges); err != nil {
+			return err
+		}
+	}
+	if changes.VolumeChanges != nil {
+		if err := s.applyVolumeChangesToYaml(root, changes.VolumeChanges); err != nil {
+			return err
+		}
+	}
+	if changes.SecretChanges != nil {
+		if err := s.applySecretChangesToYaml(root, changes.SecretChanges); err != nil {
+			return err
+		}
+	}
+	if changes.ConfigChanges != nil {
+		if err := s.applyConfigChangesToYaml(root, changes.ConfigChanges); err != nil {
+			return err
+		}
+	}
+	if changes.RenameServices != nil {
+		if err := s.applyRenameServicesToYaml(root, changes.RenameServices); err != nil {
+			return err
+		}
+	}
+	if changes.DeleteServices != nil {
+		if err := s.applyDeleteServicesToYaml(root, changes.DeleteServices); err != nil {
+			return err
+		}
+	}
+	if changes.AddServices != nil {
+		if err := s.applyAddServicesToYaml(root, changes.AddServices); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (s *Service) cleanNetworks(networks types.Networks, projectName string) map[string]any {
-	result := map[string]any{}
-	defaultNetworkName := projectName + "_default"
+func (s *Service) applyServiceChangesToYaml(root *yaml.Node, serviceChanges map[string]ServiceChanges) error {
+	servicesNode := s.findYamlKey(root, "services")
+	if servicesNode == nil {
+		return fmt.Errorf("no services section found")
+	}
 
-	for name, network := range networks {
-		if name == "default" && network.Name == defaultNetworkName {
-			continue
+	for serviceName, svcChanges := range serviceChanges {
+		serviceNode := s.findYamlKey(servicesNode, serviceName)
+		if serviceNode == nil {
+			return fmt.Errorf("service not found: %s", serviceName)
 		}
-		netConfig := map[string]any{}
-		if network.Driver != "" && network.Driver != "bridge" {
-			netConfig["driver"] = network.Driver
+
+		if svcChanges.Image != nil {
+			s.setYamlValue(serviceNode, "image", *svcChanges.Image)
 		}
-		if len(network.DriverOpts) > 0 {
-			netConfig["driver_opts"] = network.DriverOpts
+		if svcChanges.Restart != nil {
+			s.setYamlValue(serviceNode, "restart", *svcChanges.Restart)
 		}
-		if network.External {
-			netConfig["external"] = true
+		if svcChanges.Ports != nil {
+			s.setYamlNode(serviceNode, "ports", s.buildPortsNode(svcChanges.Ports))
 		}
-		if network.Ipam.Driver != "" || len(network.Ipam.Config) > 0 {
-			netConfig["ipam"] = network.Ipam
+		if svcChanges.Environment != nil {
+			if err := s.applyEnvironmentChanges(serviceNode, svcChanges.Environment); err != nil {
+				return fmt.Errorf("failed to apply environment changes: %w", err)
+			}
 		}
-		if len(network.Labels) > 0 {
-			netConfig["labels"] = network.Labels
+		if svcChanges.Volumes != nil {
+			s.setYamlNode(serviceNode, "volumes", s.buildVolumesNode(svcChanges.Volumes))
 		}
-		if len(netConfig) == 0 {
-			result[name] = nil
+		if svcChanges.Command != nil {
+			s.setYamlNode(serviceNode, "command", s.buildCommandNode(svcChanges.Command.Values))
+		}
+		if svcChanges.Entrypoint != nil {
+			s.setYamlNode(serviceNode, "entrypoint", s.buildCommandNode(svcChanges.Entrypoint.Values))
+		}
+		if svcChanges.Labels != nil {
+			if err := s.applyLabelsChanges(serviceNode, svcChanges.Labels); err != nil {
+				return fmt.Errorf("failed to apply labels changes: %w", err)
+			}
+		}
+		if svcChanges.DependsOn != nil {
+			s.setYamlNode(serviceNode, "depends_on", s.buildDependsOnNode(svcChanges.DependsOn))
+		}
+		if svcChanges.Healthcheck != nil {
+			s.setYamlNode(serviceNode, "healthcheck", s.buildHealthcheckNode(svcChanges.Healthcheck))
+		}
+		if svcChanges.Deploy != nil {
+			s.setYamlNode(serviceNode, "deploy", s.buildDeployNode(svcChanges.Deploy))
+		}
+		if svcChanges.Build != nil {
+			s.setYamlNode(serviceNode, "build", s.buildBuildNode(svcChanges.Build))
+		}
+		if svcChanges.Networks != nil {
+			s.setYamlNode(serviceNode, "networks", s.buildServiceNetworksNode(svcChanges.Networks))
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) applyEnvironmentChanges(serviceNode *yaml.Node, envChanges map[string]*string) error {
+	envNode := s.findYamlKey(serviceNode, "environment")
+	if envNode == nil {
+		envNode = createMappingNode()
+		s.setYamlNode(serviceNode, "environment", envNode)
+	}
+	if envNode.Kind == yaml.SequenceNode {
+		envNode.Content = convertSequenceContent(envNode.Content, "=")
+		envNode.Kind = yaml.MappingNode
+		envNode.Tag = ""
+		envNode.Style = 0
+	}
+	for key, val := range envChanges {
+		if val == nil {
+			s.deleteYamlKey(envNode, key)
 		} else {
-			result[name] = netConfig
+			s.setYamlValue(envNode, key, *val)
 		}
 	}
-	return result
+	return nil
 }
 
-func (s *Service) cleanVolumes(volumes types.Volumes) map[string]any {
-	result := map[string]any{}
-
-	for name, volume := range volumes {
-		volConfig := map[string]any{}
-		if volume.Driver != "" && volume.Driver != "local" {
-			volConfig["driver"] = volume.Driver
-		}
-		if len(volume.DriverOpts) > 0 {
-			volConfig["driver_opts"] = volume.DriverOpts
-		}
-		if volume.External {
-			volConfig["external"] = true
-		}
-		if len(volume.Labels) > 0 {
-			volConfig["labels"] = volume.Labels
-		}
-		if len(volConfig) == 0 {
-			result[name] = nil
+func (s *Service) applyLabelsChanges(serviceNode *yaml.Node, labelChanges map[string]*string) error {
+	labelsNode := s.findYamlKey(serviceNode, "labels")
+	if labelsNode == nil {
+		labelsNode = createMappingNode()
+		s.setYamlNode(serviceNode, "labels", labelsNode)
+	}
+	if labelsNode.Kind == yaml.SequenceNode {
+		labelsNode.Content = convertSequenceContent(labelsNode.Content, "=")
+		labelsNode.Kind = yaml.MappingNode
+		labelsNode.Tag = ""
+		labelsNode.Style = 0
+	}
+	for key, val := range labelChanges {
+		if val == nil {
+			s.deleteYamlKey(labelsNode, key)
 		} else {
-			result[name] = volConfig
+			s.setYamlValue(labelsNode, key, *val)
 		}
 	}
-	return result
-}
-
-func (s *Service) shellJoin(args []string) string {
-	if len(args) == 0 {
-		return ""
-	}
-	if len(args) == 1 {
-		return args[0]
-	}
-	var result []string
-	for _, arg := range args {
-		if strings.ContainsAny(arg, " \t\n\"'\\") {
-			result = append(result, fmt.Sprintf("%q", arg))
-		} else {
-			result = append(result, arg)
-		}
-	}
-	return strings.Join(result, " ")
-}
-
-func (s *Service) toFlowStyleArray(items []string) *yaml.Node {
-	node := &yaml.Node{
-		Kind:  yaml.SequenceNode,
-		Style: yaml.FlowStyle,
-	}
-	for _, item := range items {
-		node.Content = append(node.Content, &yaml.Node{
-			Kind:  yaml.ScalarNode,
-			Value: item,
-		})
-	}
-	return node
-}
-
-func (s *Service) serviceToNode(svc types.ServiceConfig) *yaml.Node {
-	node := &yaml.Node{Kind: yaml.MappingNode}
-
-	addKeyValue := func(key string, value any) {
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-		var valNode yaml.Node
-		if err := valNode.Encode(value); err == nil {
-			node.Content = append(node.Content, keyNode, &valNode)
-		}
-	}
-
-	addKeyNode := func(key string, valNode *yaml.Node) {
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-		node.Content = append(node.Content, keyNode, valNode)
-	}
-
-	if svc.Image != "" {
-		addKeyValue("image", svc.Image)
-	}
-
-	if svc.Build != nil {
-		addKeyValue("build", svc.Build)
-	}
-
-	if len(svc.Entrypoint) > 0 {
-		addKeyValue("entrypoint", s.shellJoin(svc.Entrypoint))
-	}
-
-	if len(svc.Command) > 0 {
-		addKeyValue("command", s.shellJoin(svc.Command))
-	}
-
-	if len(svc.Ports) > 0 {
-		ports := make([]string, 0, len(svc.Ports))
-		for _, p := range svc.Ports {
-			port := ""
-			if p.HostIP != "" {
-				port += p.HostIP + ":"
-			}
-			if p.Published != "" {
-				port += p.Published + ":"
-			}
-			port += fmt.Sprintf("%d", p.Target)
-			if p.Protocol != "" && p.Protocol != "tcp" {
-				port += "/" + p.Protocol
-			}
-			ports = append(ports, port)
-		}
-		addKeyNode("ports", s.toFlowStyleArray(ports))
-	}
-
-	if len(svc.Volumes) > 0 {
-		volumes := make([]string, 0, len(svc.Volumes))
-		for _, v := range svc.Volumes {
-			vol := v.Source + ":" + v.Target
-			if v.ReadOnly {
-				vol += ":ro"
-			}
-			volumes = append(volumes, vol)
-		}
-		addKeyNode("volumes", s.toFlowStyleArray(volumes))
-	}
-
-	if len(svc.Environment) > 0 {
-		envNode := s.orderedMapNode(svc.Environment)
-		addKeyNode("environment", envNode)
-	}
-
-	if len(svc.DependsOn) > 0 {
-		depsNode := &yaml.Node{Kind: yaml.MappingNode}
-		depNames := make([]string, 0, len(svc.DependsOn))
-		for name := range svc.DependsOn {
-			depNames = append(depNames, name)
-		}
-		sort.Strings(depNames)
-		for _, name := range depNames {
-			dep := svc.DependsOn[name]
-			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: name}
-			valNode := &yaml.Node{Kind: yaml.MappingNode}
-			condKey := &yaml.Node{Kind: yaml.ScalarNode, Value: "condition"}
-			condVal := &yaml.Node{Kind: yaml.ScalarNode, Value: dep.Condition}
-			valNode.Content = append(valNode.Content, condKey, condVal)
-			depsNode.Content = append(depsNode.Content, keyNode, valNode)
-		}
-		addKeyNode("depends_on", depsNode)
-	}
-
-	if len(svc.Networks) > 0 {
-		hasNonDefault := false
-		for name, config := range svc.Networks {
-			if name != "default" || config != nil {
-				hasNonDefault = true
-				break
-			}
-		}
-		if hasNonDefault {
-			netNode := &yaml.Node{Kind: yaml.MappingNode}
-			netNames := make([]string, 0, len(svc.Networks))
-			for name := range svc.Networks {
-				netNames = append(netNames, name)
-			}
-			sort.Strings(netNames)
-			for _, name := range netNames {
-				config := svc.Networks[name]
-				if name == "default" && config == nil {
-					continue
-				}
-				keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: name}
-				var valNode yaml.Node
-				valNode.Encode(config)
-				netNode.Content = append(netNode.Content, keyNode, &valNode)
-			}
-			if len(netNode.Content) > 0 {
-				addKeyNode("networks", netNode)
-			}
-		}
-	}
-
-	if svc.Restart != "" {
-		addKeyValue("restart", svc.Restart)
-	}
-
-	if svc.HealthCheck != nil {
-		hcNode := &yaml.Node{Kind: yaml.MappingNode}
-		addHcKey := func(key string, value any) {
-			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-			var valNode yaml.Node
-			valNode.Encode(value)
-			hcNode.Content = append(hcNode.Content, keyNode, &valNode)
-		}
-		addHcNode := func(key string, valNode *yaml.Node) {
-			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-			hcNode.Content = append(hcNode.Content, keyNode, valNode)
-		}
-
-		if svc.HealthCheck.Disable {
-			addHcKey("disable", true)
-		} else {
-			if len(svc.HealthCheck.Test) > 0 {
-				addHcNode("test", s.toFlowStyleArray(svc.HealthCheck.Test))
-			}
-			if svc.HealthCheck.Interval != nil && *svc.HealthCheck.Interval != 0 {
-				addHcKey("interval", time.Duration(*svc.HealthCheck.Interval).String())
-			}
-			if svc.HealthCheck.Timeout != nil && *svc.HealthCheck.Timeout != 0 {
-				addHcKey("timeout", time.Duration(*svc.HealthCheck.Timeout).String())
-			}
-			if svc.HealthCheck.Retries != nil {
-				addHcKey("retries", *svc.HealthCheck.Retries)
-			}
-			if svc.HealthCheck.StartPeriod != nil && *svc.HealthCheck.StartPeriod != 0 {
-				addHcKey("start_period", time.Duration(*svc.HealthCheck.StartPeriod).String())
-			}
-		}
-		if len(hcNode.Content) > 0 {
-			addKeyNode("healthcheck", hcNode)
-		}
-	}
-
-	if len(svc.Labels) > 0 {
-		labelsNode := s.orderedStringMapNode(svc.Labels)
-		addKeyNode("labels", labelsNode)
-	}
-
-	if svc.Deploy != nil {
-		addKeyValue("deploy", svc.Deploy)
-	}
-
-	return node
-}
-
-func (s *Service) orderedMapNode(m map[string]*string) *yaml.Node {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	node := &yaml.Node{Kind: yaml.MappingNode}
-	for _, k := range keys {
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: k}
-		var valNode *yaml.Node
-		if m[k] != nil {
-			valNode = &yaml.Node{Kind: yaml.ScalarNode, Value: *m[k]}
-		} else {
-			valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}
-		}
-		node.Content = append(node.Content, keyNode, valNode)
-	}
-	return node
-}
-
-func (s *Service) orderedStringMapNode(m map[string]string) *yaml.Node {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	node := &yaml.Node{Kind: yaml.MappingNode}
-	for _, k := range keys {
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: k}
-		valNode := &yaml.Node{Kind: yaml.ScalarNode, Value: m[k]}
-		node.Content = append(node.Content, keyNode, valNode)
-	}
-	return node
+	return nil
 }
