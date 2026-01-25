@@ -1,10 +1,10 @@
 package maintenance
 
 import (
-	"berth-agent/internal/docker"
-	"berth-agent/internal/logging"
 	"context"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"strings"
 	"time"
 

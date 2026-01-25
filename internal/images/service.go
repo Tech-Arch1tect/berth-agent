@@ -1,14 +1,14 @@
 package images
 
 import (
-	"berth-agent/config"
-	"berth-agent/internal/docker"
-	"berth-agent/internal/logging"
-	"berth-agent/internal/stack"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/stack"
 	"os"
 	"os/exec"
 	"path/filepath"

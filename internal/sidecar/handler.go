@@ -1,8 +1,8 @@
 package sidecar
 
 import (
-	"berth-agent/internal/logging"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"net/http"
 
 	"github.com/labstack/echo/v4"

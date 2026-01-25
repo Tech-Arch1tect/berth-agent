@@ -1,8 +1,8 @@
 package audit
 
 import (
-	"berth-agent/config"
 	"context"
+	"github.com/tech-arch1tect/berth-agent/config"
 
 	"go.uber.org/fx"
 )

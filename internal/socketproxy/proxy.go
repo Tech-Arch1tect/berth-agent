@@ -1,8 +1,8 @@
 package socketproxy
 
 import (
-	"berth-agent/internal/logging"
 	"context"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"net"
 	"net/http"
 	"net/http/httputil"

@@ -1,4 +1,4 @@
-module berth-agent
+module github.com/tech-arch1tect/berth-agent
 
 go 1.25.0
 

@@ -1,8 +1,8 @@
 package vulnscan
 
 import (
-	"berth-agent/internal/common"
-	"berth-agent/internal/validation"
+	"github.com/tech-arch1tect/berth-agent/internal/common"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"regexp"
 	"strings"
 

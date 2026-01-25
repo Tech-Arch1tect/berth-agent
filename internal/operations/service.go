@@ -1,16 +1,16 @@
 package operations
 
 import (
-	"berth-agent/internal/archive"
-	"berth-agent/internal/audit"
-	"berth-agent/internal/logging"
-	"berth-agent/internal/validation"
 	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/archive"
+	"github.com/tech-arch1tect/berth-agent/internal/audit"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"io"
 	"net/http"
 	"os"

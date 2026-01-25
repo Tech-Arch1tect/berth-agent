@@ -1,9 +1,9 @@
 package terminal
 
 import (
-	"berth-agent/internal/logging"
 	"context"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"io"
 	"sync"
 	"time"

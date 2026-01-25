@@ -1,12 +1,12 @@
 package files
 
 import (
-	"berth-agent/config"
-	"berth-agent/internal/logging"
-	"berth-agent/internal/validation"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"io"
 	"os"
 	"os/user"

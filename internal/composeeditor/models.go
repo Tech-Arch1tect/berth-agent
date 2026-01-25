@@ -1,6 +1,6 @@
 package composeeditor
 
-import "berth-agent/types"
+import "github.com/tech-arch1tect/berth-agent/types"
 
 type (
 	RawComposeConfig      = types.RawComposeConfig

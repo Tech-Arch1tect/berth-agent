@@ -1,10 +1,10 @@
 package docker
 
 import (
-	"berth-agent/internal/logging"
-	"berth-agent/internal/websocket"
 	"context"
 	"encoding/json"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/websocket"
 	"io"
 	"os/exec"
 	"strings"

@@ -1,8 +1,8 @@
 package operations
 
 import (
-	"berth-agent/internal/archive"
 	"errors"
+	"github.com/tech-arch1tect/berth-agent/internal/archive"
 	"regexp"
 	"slices"
 	"strings"

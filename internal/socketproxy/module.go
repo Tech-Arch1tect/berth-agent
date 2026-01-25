@@ -1,8 +1,8 @@
 package socketproxy
 
 import (
-	"berth-agent/config"
-	"berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"os"
 
 	"go.uber.org/fx"

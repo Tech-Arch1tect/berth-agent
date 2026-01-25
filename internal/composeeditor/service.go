@@ -1,11 +1,11 @@
 package composeeditor
 
 import (
-	"berth-agent/config"
-	"berth-agent/internal/logging"
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"os"
 	"path/filepath"
 	"regexp"

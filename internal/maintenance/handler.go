@@ -1,7 +1,7 @@
 package maintenance
 
 import (
-	"berth-agent/internal/audit"
+	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"net/http"
 
 	"github.com/labstack/echo/v4"

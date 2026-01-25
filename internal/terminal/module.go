@@ -1,8 +1,8 @@
 package terminal
 
 import (
-	"berth-agent/internal/logging"
 	"context"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 
 	"github.com/docker/docker/client"
 	"go.uber.org/fx"

@@ -1,11 +1,11 @@
 package logs
 
 import (
-	"berth-agent/internal/logging"
 	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"os/exec"
 	"strconv"
 	"strings"

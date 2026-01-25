@@ -1,9 +1,9 @@
 package operations
 
 import (
-	"berth-agent/internal/audit"
-	"berth-agent/internal/common"
-	"berth-agent/internal/validation"
+	"github.com/tech-arch1tect/berth-agent/internal/audit"
+	"github.com/tech-arch1tect/berth-agent/internal/common"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"net/http"
 	"regexp"
 

@@ -1,13 +1,13 @@
 package stack
 
 import (
-	"berth-agent/config"
-	"berth-agent/internal/docker"
-	"berth-agent/internal/logging"
-	"berth-agent/internal/validation"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"maps"
 	"os"
 	"path/filepath"

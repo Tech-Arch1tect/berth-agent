@@ -1,8 +1,8 @@
 package docker
 
 import (
-	"berth-agent/internal/validation"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"os/exec"
 )
 

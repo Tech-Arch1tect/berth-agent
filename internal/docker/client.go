@@ -1,9 +1,9 @@
 package docker
 
 import (
-	"berth-agent/internal/logging"
 	"context"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/build"

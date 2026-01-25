@@ -1,9 +1,9 @@
 package files
 
 import (
-	"berth-agent/internal/audit"
 	"encoding/base64"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"net/http"
 	"strconv"
 	"strings"

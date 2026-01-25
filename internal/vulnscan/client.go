@@ -1,12 +1,12 @@
 package vulnscan
 
 import (
-	"berth-agent/internal/logging"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"io"
 	"net/http"
 	"time"

@@ -1,8 +1,8 @@
 package websocket
 
 import (
-	"berth-agent/internal/auth"
-	"berth-agent/internal/common"
+	"github.com/tech-arch1tect/berth-agent/internal/auth"
+	"github.com/tech-arch1tect/berth-agent/internal/common"
 	"strings"
 
 	"github.com/labstack/echo/v4"

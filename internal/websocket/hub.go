@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sync"
 
-	"berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"

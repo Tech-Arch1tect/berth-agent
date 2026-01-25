@@ -1,7 +1,7 @@
 package stats
 
 import (
-	"berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 
 	"go.uber.org/fx"
 )

@@ -1,10 +1,10 @@
 package terminal
 
 import (
-	"berth-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	ws "berth-agent/internal/websocket"
+	ws "github.com/tech-arch1tect/berth-agent/internal/websocket"
 )
 
 type Handler struct {
