@@ -30,9 +30,9 @@ type NewServiceConfig struct {
 
 type ServiceChanges struct {
 	Image       *string                          `json:"image,omitempty"`
-	Ports       []PortMapping                    `json:"ports,omitempty"`
+	Ports       *[]PortMapping                   `json:"ports,omitempty"`
 	Environment map[string]*string               `json:"environment,omitempty"`
-	Volumes     []VolumeMount                    `json:"volumes,omitempty"`
+	Volumes     *[]VolumeMount                   `json:"volumes,omitempty"`
 	Command     *CommandConfig                   `json:"command,omitempty"`
 	Entrypoint  *CommandConfig                   `json:"entrypoint,omitempty"`
 	DependsOn   map[string]DependsOnConfig       `json:"depends_on,omitempty"`

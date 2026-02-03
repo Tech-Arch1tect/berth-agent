@@ -288,7 +288,7 @@ func (s *Service) applyServiceChangesToYaml(root *yaml.Node, serviceChanges map[
 			s.setYamlValue(serviceNode, "restart", *svcChanges.Restart)
 		}
 		if svcChanges.Ports != nil {
-			s.setYamlNode(serviceNode, "ports", s.buildPortsNode(svcChanges.Ports))
+			s.setYamlNode(serviceNode, "ports", s.buildPortsNode(*svcChanges.Ports))
 		}
 		if svcChanges.Environment != nil {
 			if err := s.applyEnvironmentChanges(serviceNode, svcChanges.Environment); err != nil {
@@ -296,7 +296,7 @@ func (s *Service) applyServiceChangesToYaml(root *yaml.Node, serviceChanges map[
 			}
 		}
 		if svcChanges.Volumes != nil {
-			s.setYamlNode(serviceNode, "volumes", s.buildVolumesNode(svcChanges.Volumes))
+			s.setYamlNode(serviceNode, "volumes", s.buildVolumesNode(*svcChanges.Volumes))
 		}
 		if svcChanges.Command != nil {
 			s.setYamlNode(serviceNode, "command", s.buildCommandNode(svcChanges.Command.Values))
