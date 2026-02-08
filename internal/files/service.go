@@ -366,7 +366,7 @@ func (s *Service) WriteFile(stackName string, req WriteFileRequest) error {
 
 	fileMode := os.FileMode(0644)
 	if req.Mode != nil {
-		parsedMode, err := strconv.ParseUint(*req.Mode, 8, 32)
+		parsed, err := parseFileMode(*req.Mode)
 		if err != nil {
 			s.logger.Error("invalid file mode",
 				zap.String("operation", "write_file"),
@@ -377,7 +377,7 @@ func (s *Service) WriteFile(stackName string, req WriteFileRequest) error {
 			)
 			return fmt.Errorf("invalid file mode: %w", err)
 		}
-		fileMode = os.FileMode(parsedMode)
+		fileMode = parsed
 	}
 
 	tempPath := fullPath + ".tmp"
@@ -450,7 +450,7 @@ func (s *Service) CreateDirectory(stackName string, req CreateDirectoryRequest) 
 
 	dirMode := os.FileMode(0755)
 	if req.Mode != nil {
-		parsedMode, err := strconv.ParseUint(*req.Mode, 8, 32)
+		parsed, err := parseFileMode(*req.Mode)
 		if err != nil {
 			s.logger.Error("invalid directory mode",
 				zap.String("operation", "create_directory"),
@@ -461,7 +461,7 @@ func (s *Service) CreateDirectory(stackName string, req CreateDirectoryRequest) 
 			)
 			return fmt.Errorf("invalid directory mode: %w", err)
 		}
-		dirMode = os.FileMode(parsedMode)
+		dirMode = parsed
 	}
 
 	if err := os.MkdirAll(fullPath, dirMode); err != nil {
@@ -954,7 +954,7 @@ func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size 
 	}
 
 	if mode != nil {
-		parsedMode, err := strconv.ParseUint(*mode, 8, 32)
+		parsed, err := parseFileMode(*mode)
 		if err != nil {
 			s.logger.Error("invalid file mode for upload",
 				zap.String("operation", "upload_file"),
@@ -965,7 +965,7 @@ func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size 
 			)
 			return fmt.Errorf("invalid file mode: %w", err)
 		}
-		if err := os.Chmod(fullPath, os.FileMode(parsedMode)); err != nil {
+		if err := os.Chmod(fullPath, parsed); err != nil {
 			s.logger.Error("cannot set permissions on uploaded file",
 				zap.String("operation", "upload_file"),
 				zap.String("stack", stackName),
@@ -1223,15 +1223,21 @@ func (s *Service) chownRecursive(path string, uid, gid int) error {
 }
 
 func parseFileMode(modeStr string) (os.FileMode, error) {
-	if len(modeStr) == 3 || len(modeStr) == 4 {
-		mode, err := strconv.ParseUint(modeStr, 8, 32)
-		if err != nil {
-			return 0, fmt.Errorf("invalid octal mode: %w", err)
-		}
-		return os.FileMode(mode), nil
+	if len(modeStr) != 3 && len(modeStr) != 4 {
+		return 0, fmt.Errorf("mode must be 3 or 4 digit octal number (e.g., 755, 0644)")
 	}
 
-	return 0, fmt.Errorf("mode must be 3 or 4 digit octal number (e.g., 755, 0644)")
+	mode, err := strconv.ParseUint(modeStr, 8, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid octal mode: %w", err)
+	}
+
+	parsed := os.FileMode(mode)
+	if parsed&^os.ModePerm != 0 {
+		return 0, fmt.Errorf("special permission bits (setuid, setgid, sticky) are not allowed")
+	}
+
+	return parsed, nil
 }
 
 func getUserName(uid uint32) (string, error) {
