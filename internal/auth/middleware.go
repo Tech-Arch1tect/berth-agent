@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strings"
@@ -61,7 +62,7 @@ func TokenMiddleware(accessToken string, logger *logging.Logger) echo.Middleware
 				zap.String("source_ip", sourceIP),
 				zap.String("token_hash", getTokenHash(token)))
 
-			if token != accessToken {
+			if subtle.ConstantTimeCompare([]byte(token), []byte(accessToken)) != 1 {
 				SetAuthFailure(c, "Invalid token")
 				logger.Warn("Authentication failed - invalid token",
 					zap.String("auth_status", "failed"),
