@@ -4,22 +4,29 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	logger *logging.Logger
+	logger        *logging.Logger
+	stackLocation string
 }
 
-func NewService(logger *logging.Logger) *Service {
-	logger.Info("sidecar service initialized")
+func NewService(cfg *config.Config, logger *logging.Logger) *Service {
+	logger.Info("sidecar service initialized",
+		zap.String("stack_location", cfg.StackLocation),
+	)
 	return &Service{
-		logger: logger,
+		logger:        logger,
+		stackLocation: cfg.StackLocation,
 	}
 }
 
@@ -34,6 +41,34 @@ func (s *Service) ExecuteOperation(_ context.Context, req OperationRequest) erro
 	if req.StackPath == "" {
 		s.logger.Error("stack path is empty")
 		return fmt.Errorf("stack path cannot be empty")
+	}
+
+	absStackPath, err := filepath.Abs(req.StackPath)
+	if err != nil {
+		s.logger.Error("invalid stack path",
+			zap.String("stack_path", req.StackPath),
+			zap.Error(err),
+		)
+		return fmt.Errorf("invalid stack path: %w", err)
+	}
+
+	absBase, err := filepath.Abs(s.stackLocation)
+	if err != nil {
+		s.logger.Error("invalid stack location config",
+			zap.String("stack_location", s.stackLocation),
+			zap.Error(err),
+		)
+		return fmt.Errorf("invalid stack location: %w", err)
+	}
+
+	rel, err := filepath.Rel(absBase, absStackPath)
+	if err != nil || strings.HasPrefix(rel, "..") || strings.Contains(rel, string(filepath.Separator)) {
+		s.logger.Error("stack path outside allowed directory",
+			zap.String("stack_path", req.StackPath),
+			zap.String("stack_location", s.stackLocation),
+			zap.String("resolved_rel", rel),
+		)
+		return fmt.Errorf("stack path is outside the allowed directory")
 	}
 
 	args := []string{"compose", req.Command}
@@ -66,7 +101,7 @@ func (s *Service) ExecuteOperation(_ context.Context, req OperationRequest) erro
 	defer execCancel()
 
 	cmd := exec.CommandContext(execCtx, "docker", args...)
-	cmd.Dir = req.StackPath
+	cmd.Dir = absStackPath
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -74,7 +109,7 @@ func (s *Service) ExecuteOperation(_ context.Context, req OperationRequest) erro
 
 	s.logger.Info("sidecar starting command execution")
 
-	err := cmd.Run()
+	err = cmd.Run()
 	exitCode := 0
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()

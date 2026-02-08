@@ -1,7 +1,7 @@
 services:
   berth-agent:
     image: techarchitect/berth-agent:latest
-    build: .
+    env_file: .env
     container_name: berth-agent
     environment:
       - ACCESS_TOKEN=${ACCESS_TOKEN}
@@ -24,7 +24,7 @@ services:
 
   berth-updater:
     image: techarchitect/berth-agent:latest
-    build: .
+    env_file: .env
     container_name: berth-updater
     environment:
       - ACCESS_TOKEN=${ACCESS_TOKEN}
@@ -38,7 +38,7 @@ services:
 
   berth-socket-proxy:
     image: techarchitect/berth-agent:latest
-    build: .
+    env_file: .env
     container_name: berth-socket-proxy
     command: ["socket-proxy"]
     environment:
@@ -52,9 +52,7 @@ services:
 
   berth-grype-scanner:
     image: techarchitect/berth-agent-grype:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.grype
+    env_file: .env
     container_name: berth-grype-scanner
     command: ["grype-scanner"]
     environment:
