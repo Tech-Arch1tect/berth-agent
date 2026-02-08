@@ -164,12 +164,14 @@ func RegisterRoutes(
 	api.POST("/maintenance/prune", maintenanceHandler.PruneDocker)
 	api.DELETE("/maintenance/resource", maintenanceHandler.DeleteResource)
 
-	e.GET("/ws/agent/status", wsHandler.HandleAgentWebSocket)
-	e.GET("/ws/terminal", terminalHandler.HandleTerminalWebSocket)
+	ws := e.Group("/ws")
+	ws.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
+	ws.GET("/agent/status", wsHandler.HandleAgentWebSocket)
+	ws.GET("/terminal", terminalHandler.HandleTerminalWebSocket)
 }
 
-func NewWebSocketHandler(hub *websocket.Hub, cfg *config.Config) *websocket.Handler {
-	return websocket.NewHandler(hub, cfg.AccessToken)
+func NewWebSocketHandler(hub *websocket.Hub) *websocket.Handler {
+	return websocket.NewHandler(hub)
 }
 
 func NewEventMonitorWithConfig(hub *websocket.Hub, cfg *config.Config, logger *logging.Logger) *docker.EventMonitor {

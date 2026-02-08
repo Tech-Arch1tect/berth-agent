@@ -145,13 +145,7 @@ func (h *Hub) BroadcastOperationProgress(event OperationProgressEvent) {
 	h.broadcast <- data
 }
 
-func (h *Hub) ServeWebSocket(c echo.Context, authToken string) error {
-	if authToken == "" {
-		return c.JSON(http.StatusUnauthorized, map[string]string{
-			"error": "Authorization token required",
-		})
-	}
-
+func (h *Hub) ServeWebSocket(c echo.Context) error {
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",

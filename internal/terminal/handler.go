@@ -61,18 +61,6 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		zap.String("user_agent", c.Request().UserAgent()),
 	)
 
-	authHeader := c.Request().Header.Get("Authorization")
-	if authHeader == "" {
-		h.logger.Warn("WebSocket connection rejected - missing authorization header",
-			zap.String("source_ip", c.RealIP()),
-		)
-		return c.JSON(http.StatusUnauthorized, map[string]string{
-			"error": "Authorization header required",
-		})
-	}
-
-	c.Set("auth_status", "pending")
-
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
