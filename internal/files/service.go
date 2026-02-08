@@ -4,9 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/config"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
-	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"io"
 	"os"
 	"os/user"
@@ -16,6 +13,10 @@ import (
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
 
 	"go.uber.org/zap"
 )
@@ -42,8 +43,13 @@ func (s *Service) validateStackPath(stackName, relativePath string) (string, err
 		return "", fmt.Errorf("stack '%s' not found", stackName)
 	}
 
+	realStackPath, err := filepath.EvalSymlinks(stackPath)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve stack path: %w", err)
+	}
+
 	if relativePath == "" || relativePath == "/" {
-		return stackPath, nil
+		return realStackPath, nil
 	}
 
 	relativePath = strings.TrimPrefix(relativePath, "/")
@@ -58,9 +64,9 @@ func (s *Service) validateStackPath(stackName, relativePath string) (string, err
 		return "", errors.New("path traversal not allowed")
 	}
 
-	fullPath := filepath.Join(stackPath, cleanPath)
+	fullPath := filepath.Join(realStackPath, cleanPath)
 
-	relativeCheck, err := filepath.Rel(stackPath, fullPath)
+	relativeCheck, err := filepath.Rel(realStackPath, fullPath)
 	if err != nil || strings.HasPrefix(relativeCheck, "..") {
 		s.logger.Warn("path outside stack directory attempted",
 			zap.String("stack", stackName),
@@ -70,7 +76,57 @@ func (s *Service) validateStackPath(stackName, relativePath string) (string, err
 		return "", errors.New("path outside stack directory")
 	}
 
-	return fullPath, nil
+	resolvedPath, err := s.resolveAndValidatePath(fullPath, realStackPath)
+	if err != nil {
+		s.logger.Warn("symlink escape attempt detected",
+			zap.String("stack", stackName),
+			zap.String("requested_path", relativePath),
+			zap.String("full_path", fullPath),
+			zap.Error(err),
+		)
+		return "", errors.New("path resolves outside stack directory")
+	}
+
+	return resolvedPath, nil
+}
+
+func (s *Service) resolveAndValidatePath(targetPath, boundary string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(targetPath)
+	if err == nil {
+		if !isWithinDirectory(resolved, boundary) {
+			return "", fmt.Errorf("resolved path %s is outside boundary %s", resolved, boundary)
+		}
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("cannot resolve path: %w", err)
+	}
+
+	current := targetPath
+	var trailing []string
+	for {
+		trailing = append([]string{filepath.Base(current)}, trailing...)
+		current = filepath.Dir(current)
+
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			if !isWithinDirectory(resolved, boundary) {
+				return "", fmt.Errorf("resolved ancestor %s is outside boundary %s", resolved, boundary)
+			}
+			return filepath.Join(append([]string{resolved}, trailing...)...), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("cannot resolve path: %w", err)
+		}
+
+		if current == "/" || current == "." {
+			return "", fmt.Errorf("no existing ancestor found for path")
+		}
+	}
+}
+
+func isWithinDirectory(path, directory string) bool {
+	return path == directory || strings.HasPrefix(path, directory+string(os.PathSeparator))
 }
 
 func (s *Service) ListDirectory(stackName, path string) (*DirectoryListing, error) {
@@ -794,6 +850,13 @@ func (s *Service) copyDirectory(src, dst string) error {
 	}
 
 	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			s.logger.Debug("skipping symlink during directory copy",
+				zap.String("path", filepath.Join(src, entry.Name())),
+			)
+			continue
+		}
+
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
 
@@ -1034,6 +1097,13 @@ func (s *Service) chmodRecursive(path string, mode os.FileMode) error {
 			return err
 		}
 
+		if info.Mode()&os.ModeSymlink != 0 {
+			s.logger.Debug("skipping symlink during recursive chmod",
+				zap.String("path", walkPath),
+			)
+			return nil
+		}
+
 		if chmodErr := os.Chmod(walkPath, mode); chmodErr != nil {
 			return fmt.Errorf("cannot change permissions for %s: %w", walkPath, chmodErr)
 		}
@@ -1135,6 +1205,13 @@ func (s *Service) chownRecursive(path string, uid, gid int) error {
 	return filepath.Walk(path, func(walkPath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			s.logger.Debug("skipping symlink during recursive chown",
+				zap.String("path", walkPath),
+			)
+			return nil
 		}
 
 		if chownErr := os.Chown(walkPath, uid, gid); chownErr != nil {
