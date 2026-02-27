@@ -3,12 +3,13 @@ package docker
 import (
 	"context"
 	"encoding/json"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
-	"github.com/tech-arch1tect/berth-agent/internal/websocket"
 	"io"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/websocket"
 
 	"go.uber.org/zap"
 )
@@ -226,6 +227,7 @@ func (em *EventMonitor) checkAndBroadcastStackStatus(stackName string) {
 		serviceCount := make(map[string]bool)
 		runningCount := 0
 		stoppedCount := 0
+		hasUnhealthy := false
 
 		for _, line := range lines {
 			if line == "" {
@@ -239,17 +241,27 @@ func (em *EventMonitor) checkAndBroadcastStackStatus(stackName string) {
 
 			service, _ := containerInfo["Service"].(string)
 			state, _ := containerInfo["State"].(string)
+			health, _ := containerInfo["Health"].(string)
 
 			if service != "" {
 				serviceCount[service] = true
 
 				if state == "running" {
 					runningCount++
+					if health == "unhealthy" {
+						hasUnhealthy = true
+					}
 				} else {
 					stoppedCount++
 				}
 			}
 		}
+
+		status := em.determineStackStatus(
+			runningCount,
+			stoppedCount,
+			hasUnhealthy,
+		)
 
 		stackEvent := websocket.StackStatusEvent{
 			BaseMessage: websocket.BaseMessage{
@@ -257,7 +269,7 @@ func (em *EventMonitor) checkAndBroadcastStackStatus(stackName string) {
 				Timestamp: time.Now().Format(time.RFC3339),
 			},
 			StackName: stackName,
-			Status:    em.determineStackStatus(runningCount, stoppedCount),
+			Status:    status,
 			Services:  len(serviceCount),
 			Running:   runningCount,
 			Stopped:   stoppedCount,
@@ -267,16 +279,23 @@ func (em *EventMonitor) checkAndBroadcastStackStatus(stackName string) {
 	}()
 }
 
-func (em *EventMonitor) determineStackStatus(running, stopped int) string {
-	total := running + stopped
-	if total == 0 {
+func (em *EventMonitor) determineStackStatus(running, stopped int, hasUnhealthy bool) string {
+	totalContainers := running + stopped
+	if totalContainers == 0 {
 		return "down"
 	}
-	if running == total {
+
+	if hasUnhealthy {
+		return "unhealthy"
+	}
+
+	if running == totalContainers && running > 0 {
 		return "running"
 	}
-	if stopped == total {
+
+	if stopped == totalContainers {
 		return "stopped"
 	}
+
 	return "partial"
 }

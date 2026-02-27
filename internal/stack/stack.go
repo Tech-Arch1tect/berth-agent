@@ -4,11 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/config"
-	"github.com/tech-arch1tect/berth-agent/internal/docker"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
-	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,18 +13,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
+
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"go.uber.org/zap"
 )
 
 type Stack struct {
-	Name              string `json:"name"`
-	Path              string `json:"path"`
-	ComposeFile       string `json:"compose_file"`
-	IsHealthy         bool   `json:"is_healthy"`
-	TotalContainers   int    `json:"total_containers"`
-	RunningContainers int    `json:"running_containers"`
+	Name              string              `json:"name"`
+	Path              string              `json:"path"`
+	ComposeFile       string              `json:"compose_file"`
+	IsHealthy         bool                `json:"is_healthy"`
+	TotalContainers   int                 `json:"total_containers"`
+	RunningContainers int                 `json:"running_containers"`
+	HealthDetails     *StackHealthDetails `json:"health_details,omitempty"`
+}
+
+type StackHealthDetails struct {
+	Percentage     int      `json:"percentage"`
+	HealthyCount   int      `json:"healthy_count"`
+	UnhealthyCount int      `json:"unhealthy_count"`
+	StoppedCount   int      `json:"stopped_count"`
+	Reasons        []string `json:"reasons"`
 }
 
 type StackDetails struct {
@@ -297,6 +308,7 @@ func (s *Service) ListStacks() ([]Stack, error) {
 				isHealthy := s.isStackHealthy(stackName)
 
 				totalContainers, runningContainers := s.getStackContainerCounts(stackName)
+				healthDetails := s.getStackHealthDetails(stackName)
 
 				s.logger.Debug("Discovered stack",
 					zap.String("stack", stackName),
@@ -312,6 +324,7 @@ func (s *Service) ListStacks() ([]Stack, error) {
 					IsHealthy:         isHealthy,
 					TotalContainers:   totalContainers,
 					RunningContainers: runningContainers,
+					HealthDetails:     healthDetails,
 				}
 				stacks = append(stacks, stack)
 				break
@@ -1893,26 +1906,71 @@ func (s *Service) isStackHealthy(stackName string) bool {
 		return false
 	}
 
+	servicesWithHealthChecks := 0
+	healthyServices := 0
 	runningServices := 0
+
 	for _, containerList := range containers {
 		hasRunningContainer := false
+		hasHealthCheck := false
+		serviceHealthy := false
+
 		for _, container := range containerList {
 			if container.State == "running" {
 				hasRunningContainer = true
-				break
+
+				if container.Health != nil {
+					hasHealthCheck = true
+
+					if container.Health.Status == "unhealthy" {
+						serviceHealthy = false
+						s.logger.Debug("Container is unhealthy",
+							zap.String("container", container.Name),
+							zap.String("health_status", container.Health.Status))
+						break
+					}
+
+					if container.Health.Status == "starting" {
+						serviceHealthy = false
+						s.logger.Debug("Container health check starting",
+							zap.String("container", container.Name))
+					}
+
+					if container.Health.Status == "healthy" {
+						serviceHealthy = true
+					}
+				} else {
+					serviceHealthy = true
+				}
 			}
 		}
+
 		if hasRunningContainer {
 			runningServices++
+			if hasHealthCheck {
+				servicesWithHealthChecks++
+				if serviceHealthy {
+					healthyServices++
+				}
+			}
 		}
 	}
 
-	isHealthy := runningServices == expectedCount
-	s.logger.Debug("Stack health check completed",
-		zap.String("stack", stackName),
-		zap.Bool("is_healthy", isHealthy),
-		zap.Int("running_services", runningServices),
-		zap.Int("expected_services", expectedCount))
+	if servicesWithHealthChecks == 0 {
+		isHealthy := runningServices == expectedCount
+		s.logger.Debug("Stack health check (no health checks)",
+			zap.String("stack", stackName), zap.Bool("is_healthy", isHealthy),
+			zap.Int("running_services", runningServices), zap.Int("expected_services", expectedCount))
+		return isHealthy
+	}
+
+	isHealthy := healthyServices == servicesWithHealthChecks && runningServices == expectedCount
+
+	s.logger.Debug("Stack health check (with health checks)",
+		zap.String("stack", stackName), zap.Bool("is_healthy", isHealthy),
+		zap.Int("running_services", runningServices), zap.Int("expected_services", expectedCount),
+		zap.Int("services_with_health_checks", servicesWithHealthChecks),
+		zap.Int("healthy_services", healthyServices))
 
 	return isHealthy
 }
@@ -1952,6 +2010,76 @@ func (s *Service) getStackContainerCounts(stackName string) (total int, running 
 		zap.Int("running", runningCount))
 
 	return expectedCount, runningCount
+}
+
+func (s *Service) getStackHealthDetails(stackName string) *StackHealthDetails {
+	containers, err := s.getContainerInfoViaAPI(stackName)
+	if err != nil {
+		s.logger.Debug("Failed to get container info for health details",
+			zap.String("stack", stackName), zap.Error(err))
+		return nil
+	}
+
+	total := 0
+	running := 0
+	stopped := 0
+	healthy := 0
+	unhealthy := 0
+
+	for _, containerList := range containers {
+		for _, container := range containerList {
+			total++
+
+			if container.State == "running" {
+				running++
+
+				if container.Health == nil {
+					healthy++
+				} else {
+					switch container.Health.Status {
+					case "healthy":
+						healthy++
+					case "unhealthy":
+						unhealthy++
+					default:
+					}
+				}
+			} else {
+				stopped++
+			}
+		}
+	}
+
+	var percentage int
+	if total > 0 {
+		percentage = int(math.Round(float64(healthy) / float64(total) * 100))
+	}
+
+	reasons := []string{}
+	if stopped > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d container(s) stopped", stopped))
+	}
+	if unhealthy > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d container(s) failing health check", unhealthy))
+	}
+
+	healthDetails := &StackHealthDetails{
+		Percentage:     percentage,
+		HealthyCount:   healthy,
+		UnhealthyCount: unhealthy,
+		StoppedCount:   stopped,
+		Reasons:        reasons,
+	}
+
+	s.logger.Debug("Stack health details calculated",
+		zap.String("stack", stackName),
+		zap.Int("percentage", percentage),
+		zap.Int("healthy", healthy),
+		zap.Int("unhealthy", unhealthy),
+		zap.Int("stopped", stopped),
+		zap.Any("reasons", reasons))
+
+	return healthDetails
 }
 
 func (s *Service) GetContainerImageDetails(stackName string) ([]ContainerImageDetails, error) {
