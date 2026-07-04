@@ -229,7 +229,7 @@ func (s *Service) getAllRunningContainers(ctx context.Context) ([]containerInfo,
 			if idx := strings.Index(repoDigest, "@"); idx > 0 {
 				currentDigest = repoDigest[idx+1:]
 
-				if strings.HasPrefix(c.Image, "sha256:") {
+				if isImageID(c.Image) {
 					imageName = repoDigest[:idx]
 					s.logger.Debug("Extracted image name from RepoDigest",
 						zap.String("container", containerName),
@@ -533,6 +533,19 @@ func (s *Service) getLatestImageDigest(ctx context.Context, imageName string, te
 		zap.String("image", imageName),
 	)
 	return "", fmt.Errorf("no digest found in manifest for image %s", imageName)
+}
+
+func isImageID(s string) bool {
+	s = strings.TrimPrefix(s, "sha256:")
+	if len(s) < 12 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func extractRegistry(imageName string) string {
