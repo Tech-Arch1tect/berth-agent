@@ -1,6 +1,7 @@
 package vulnscan
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,10 +132,20 @@ func (s *Service) StartScan(ctx context.Context, stackName string, serviceFilter
 	}
 	s.mutex.Unlock()
 
-	images, err := s.getStackImages(stackName, serviceFilter)
+	serviceImages, err := s.getStackServiceImages(stackName, serviceFilter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get images for stack: %w", err)
 	}
+
+	imageSet := make(map[string]bool)
+	images := make([]string, 0, len(serviceImages))
+	for _, si := range serviceImages {
+		if !imageSet[si.Image] {
+			imageSet[si.Image] = true
+			images = append(images, si.Image)
+		}
+	}
+	sort.Strings(images)
 
 	if len(images) == 0 {
 		return nil, fmt.Errorf("no images found in stack '%s'", stackName)
@@ -146,6 +159,7 @@ func (s *Service) StartScan(ctx context.Context, stackName string, serviceFilter
 		StackName:     stackName,
 		Status:        ScanStatusPending,
 		Images:        images,
+		ServiceImages: serviceImages,
 		TotalImages:   len(images),
 		ScannedImages: 0,
 		StartedAt:     now,
@@ -180,63 +194,133 @@ func (s *Service) GetScan(scanID string) (*Scan, bool) {
 	return scan, exists
 }
 
-func (s *Service) getStackImages(stackName string, serviceFilter []string) ([]string, error) {
+func (s *Service) getStackServiceImages(stackName string, serviceFilter []string) ([]ServiceImage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	args := []string{"compose", "images"}
-	args = append(args, serviceFilter...)
-	args = append(args, "--format", "json")
+	stackDir := filepath.Join(s.stackLocation, stackName)
 
+	args := []string{"compose", "ps", "-a", "--no-trunc", "--format", "json"}
+	args = append(args, serviceFilter...)
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = filepath.Join(s.stackLocation, stackName)
+	cmd.Dir = stackDir
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get compose images: %w", err)
+		return nil, fmt.Errorf("failed to list compose services: %w", err)
 	}
 
-	var composeImages []struct {
-		Repository string `json:"Repository"`
-		Tag        string `json:"Tag"`
-	}
-	if err := json.Unmarshal(output, &composeImages); err != nil {
-		return nil, fmt.Errorf("failed to parse compose images: %w", err)
+	type psRow struct {
+		Service string `json:"Service"`
+		Image   string `json:"Image"`
 	}
 
-	imageSet := make(map[string]bool)
-	for _, img := range composeImages {
-		if img.Repository == "" {
+	var rows []psRow
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return nil, fmt.Errorf("failed to parse compose ps output: %w", err)
+		}
+	} else {
+		for _, line := range bytes.Split(trimmed, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var row psRow
+			if err := json.Unmarshal(line, &row); err != nil {
+				return nil, fmt.Errorf("failed to parse compose ps line: %w", err)
+			}
+			rows = append(rows, row)
+		}
+	}
+
+	seen := make(map[string]bool)
+	serviceImages := make([]ServiceImage, 0, len(rows))
+	digests := make(map[string]imageIdentity)
+	for _, row := range rows {
+		if row.Image == "" {
 			continue
 		}
-		imageName := img.Repository
-		if img.Tag != "" {
-			imageName = img.Repository + ":" + img.Tag
+		key := row.Service + "|" + row.Image
+		if seen[key] {
+			continue
 		}
-		imageSet[imageName] = true
+		seen[key] = true
+
+		identity, ok := digests[row.Image]
+		if !ok {
+			identity = s.resolveImageIdentity(ctx, row.Image)
+			digests[row.Image] = identity
+		}
+
+		serviceImages = append(serviceImages, ServiceImage{
+			Service: row.Service,
+			Image:   identity.name,
+			Digest:  identity.digest,
+		})
 	}
 
-	images := make([]string, 0, len(imageSet))
-	for image := range imageSet {
-		images = append(images, image)
-	}
+	sort.Slice(serviceImages, func(i, j int) bool {
+		if serviceImages[i].Service != serviceImages[j].Service {
+			return serviceImages[i].Service < serviceImages[j].Service
+		}
+		return serviceImages[i].Image < serviceImages[j].Image
+	})
 
-	return images, nil
+	return serviceImages, nil
 }
 
-func (s *Service) filterImages(available []string, filter []string) []string {
-	filterSet := make(map[string]bool)
-	for _, img := range filter {
-		filterSet[img] = true
+type imageIdentity struct {
+	name   string
+	digest string
+}
+
+func (s *Service) resolveImageIdentity(ctx context.Context, imageRef string) imageIdentity {
+	identity := imageIdentity{name: imageRef}
+
+	cmd := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", imageRef)
+	output, err := cmd.Output()
+	if err != nil {
+		s.logger.Debug("failed to resolve image digest", zap.String("image", imageRef), zap.Error(err))
+		return identity
+	}
+	var repoDigests []string
+	if err := json.Unmarshal(bytes.TrimSpace(output), &repoDigests); err != nil || len(repoDigests) == 0 {
+		return identity
 	}
 
-	var result []string
-	for _, img := range available {
-		if filterSet[img] {
-			result = append(result, img)
+	repo := imageRef
+	if idx := strings.LastIndex(repo, ":"); idx > strings.LastIndex(repo, "/") {
+		repo = repo[:idx]
+	}
+	chosen := repoDigests[0]
+	for _, rd := range repoDigests {
+		if at := strings.Index(rd, "@"); at > 0 && rd[:at] == repo {
+			chosen = rd
+			break
 		}
 	}
-	return result
+	if at := strings.Index(chosen, "@"); at > 0 {
+		identity.digest = chosen[at+1:]
+		if isImageIDRef(imageRef) {
+			identity.name = chosen[:at]
+		}
+	}
+	return identity
+}
+
+func isImageIDRef(ref string) bool {
+	ref = strings.TrimPrefix(ref, "sha256:")
+	if len(ref) < 12 || len(ref) > 64 {
+		return false
+	}
+	for _, r := range ref {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) executeScan(scan *Scan) {
@@ -246,6 +330,13 @@ func (s *Service) executeScan(scan *Scan) {
 	scan.Status = ScanStatusRunning
 	if err := s.persistence.PersistScan(scan); err != nil {
 		s.logger.Warn("failed to persist scan status update", zap.String("scan_id", scan.ID), zap.Error(err))
+	}
+
+	digestByImage := make(map[string]string, len(scan.ServiceImages))
+	for _, si := range scan.ServiceImages {
+		if si.Digest != "" {
+			digestByImage[si.Image] = si.Digest
+		}
 	}
 
 	var allVulnerabilities []ImageResult
@@ -259,12 +350,17 @@ func (s *Service) executeScan(scan *Scan) {
 			break
 		}
 
-		result := s.scanSingleImage(ctx, imageName)
+		result, scannerInfo := s.scanSingleImage(ctx, imageName)
+		result.Digest = digestByImage[imageName]
 		allVulnerabilities = append(allVulnerabilities, result)
 
 		s.mutex.Lock()
 		scan.ScannedImages++
 		scan.Results = allVulnerabilities
+		if scannerInfo != nil && scan.ScannerVersion == "" {
+			scan.ScannerVersion = scannerInfo.Version
+			scan.ScannerDBBuilt = scannerInfo.DBBuilt
+		}
 		s.mutex.Unlock()
 
 		if err := s.persistence.PersistScan(scan); err != nil {
@@ -299,13 +395,13 @@ func (s *Service) executeScan(scan *Scan) {
 	)
 }
 
-func (s *Service) scanSingleImage(ctx context.Context, imageName string) ImageResult {
+func (s *Service) scanSingleImage(ctx context.Context, imageName string) (ImageResult, *ScannerInfo) {
 	imageCtx, cancel := context.WithTimeout(ctx, s.perImageTimeout)
 	defer cancel()
 
 	s.logger.Debug("scanning image", zap.String("image", imageName))
 
-	vulnerabilities, err := s.client.ScanImage(imageCtx, imageName)
+	vulnerabilities, scannerInfo, err := s.client.ScanImage(imageCtx, imageName)
 	if err != nil {
 		s.logger.Warn("failed to scan image",
 			zap.String("image", imageName),
@@ -322,7 +418,7 @@ func (s *Service) scanSingleImage(ctx context.Context, imageName string) ImageRe
 			Status:    status,
 			Error:     err.Error(),
 			ScannedAt: time.Now(),
-		}
+		}, nil
 	}
 
 	return ImageResult{
@@ -330,5 +426,5 @@ func (s *Service) scanSingleImage(ctx context.Context, imageName string) ImageRe
 		Status:          ImageStatusCompleted,
 		Vulnerabilities: vulnerabilities,
 		ScannedAt:       time.Now(),
-	}
+	}, scannerInfo
 }

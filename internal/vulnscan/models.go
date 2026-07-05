@@ -30,20 +30,30 @@ const (
 )
 
 type Scan struct {
-	ID            string        `json:"id"`
-	StackName     string        `json:"stack_name"`
-	Status        string        `json:"status"`
-	Images        []string      `json:"images"`
-	TotalImages   int           `json:"total_images"`
-	ScannedImages int           `json:"scanned_images"`
-	StartedAt     time.Time     `json:"started_at"`
-	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	Results       []ImageResult `json:"results,omitempty"`
+	ID             string         `json:"id"`
+	StackName      string         `json:"stack_name"`
+	Status         string         `json:"status"`
+	Images         []string       `json:"images"`
+	ServiceImages  []ServiceImage `json:"service_images,omitempty"`
+	TotalImages    int            `json:"total_images"`
+	ScannedImages  int            `json:"scanned_images"`
+	StartedAt      time.Time      `json:"started_at"`
+	CompletedAt    *time.Time     `json:"completed_at,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Results        []ImageResult  `json:"results,omitempty"`
+	ScannerVersion string         `json:"scanner_version,omitempty"`
+	ScannerDBBuilt *time.Time     `json:"scanner_db_built,omitempty"`
+}
+
+type ServiceImage struct {
+	Service string `json:"service"`
+	Image   string `json:"image"`
+	Digest  string `json:"digest,omitempty"`
 }
 
 type ImageResult struct {
 	ImageName       string          `json:"image_name"`
+	Digest          string          `json:"digest,omitempty"`
 	Status          string          `json:"status"`
 	Error           string          `json:"error,omitempty"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities,omitempty"`
@@ -65,15 +75,18 @@ type Vulnerability struct {
 }
 
 type GetScanResponse struct {
-	ID            string        `json:"id"`
-	StackName     string        `json:"stack_name"`
-	Status        string        `json:"status"`
-	TotalImages   int           `json:"total_images"`
-	ScannedImages int           `json:"scanned_images"`
-	StartedAt     time.Time     `json:"started_at"`
-	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	Results       []ImageResult `json:"results,omitempty"`
+	ID             string         `json:"id"`
+	StackName      string         `json:"stack_name"`
+	Status         string         `json:"status"`
+	TotalImages    int            `json:"total_images"`
+	ScannedImages  int            `json:"scanned_images"`
+	ServiceImages  []ServiceImage `json:"service_images,omitempty"`
+	StartedAt      time.Time      `json:"started_at"`
+	CompletedAt    *time.Time     `json:"completed_at,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Results        []ImageResult  `json:"results,omitempty"`
+	ScannerVersion string         `json:"scanner_version,omitempty"`
+	ScannerDBBuilt *time.Time     `json:"scanner_db_built,omitempty"`
 }
 
 type GrypeOutput struct {

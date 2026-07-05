@@ -31,6 +31,13 @@ type scanResponse struct {
 	Error           string          `json:"error,omitempty"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities,omitempty"`
 	ScannedAt       time.Time       `json:"scanned_at"`
+	ScannerVersion  string          `json:"scanner_version,omitempty"`
+	ScannerDBBuilt  *time.Time      `json:"scanner_db_built,omitempty"`
+}
+
+type ScannerInfo struct {
+	Version string
+	DBBuilt *time.Time
 }
 
 type healthResponse struct {
@@ -84,16 +91,16 @@ func (c *GrypeScannerClient) IsAvailable(ctx context.Context) bool {
 	return health.Available
 }
 
-func (c *GrypeScannerClient) ScanImage(ctx context.Context, imageName string) ([]Vulnerability, error) {
+func (c *GrypeScannerClient) ScanImage(ctx context.Context, imageName string) ([]Vulnerability, *ScannerInfo, error) {
 	reqBody := scanRequest{Image: imageName}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/scan", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
@@ -105,27 +112,27 @@ func (c *GrypeScannerClient) ScanImage(ctx context.Context, imageName string) ([
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call grype-scanner: %w", err)
+		return nil, nil, fmt.Errorf("failed to call grype-scanner: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("grype-scanner returned status %d: %s", resp.StatusCode, string(body))
+		return nil, nil, fmt.Errorf("grype-scanner returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var scanResp scanResponse
 	if err := json.Unmarshal(body, &scanResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	if scanResp.Status == "failed" || scanResp.Status == "timeout" {
-		return nil, fmt.Errorf("scan %s: %s", scanResp.Status, scanResp.Error)
+		return nil, nil, fmt.Errorf("scan %s: %s", scanResp.Status, scanResp.Error)
 	}
 
-	return scanResp.Vulnerabilities, nil
+	return scanResp.Vulnerabilities, &ScannerInfo{Version: scanResp.ScannerVersion, DBBuilt: scanResp.ScannerDBBuilt}, nil
 }

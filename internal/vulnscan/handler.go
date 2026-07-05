@@ -43,15 +43,18 @@ func (h *Handler) StartScan(c echo.Context) error {
 	}
 
 	return common.SendSuccess(c, GetScanResponse{
-		ID:            scan.ID,
-		StackName:     scan.StackName,
-		Status:        scan.Status,
-		TotalImages:   scan.TotalImages,
-		ScannedImages: scan.ScannedImages,
-		StartedAt:     scan.StartedAt,
-		CompletedAt:   scan.CompletedAt,
-		Error:         scan.Error,
-		Results:       scan.Results,
+		ID:             scan.ID,
+		StackName:      scan.StackName,
+		Status:         scan.Status,
+		TotalImages:    scan.TotalImages,
+		ScannedImages:  scan.ScannedImages,
+		ServiceImages:  scan.ServiceImages,
+		StartedAt:      scan.StartedAt,
+		CompletedAt:    scan.CompletedAt,
+		Error:          scan.Error,
+		Results:        scan.Results,
+		ScannerVersion: scan.ScannerVersion,
+		ScannerDBBuilt: scan.ScannerDBBuilt,
 	})
 }
 
@@ -71,15 +74,18 @@ func (h *Handler) GetScan(c echo.Context) error {
 	}
 
 	return common.SendSuccess(c, GetScanResponse{
-		ID:            scan.ID,
-		StackName:     scan.StackName,
-		Status:        scan.Status,
-		TotalImages:   scan.TotalImages,
-		ScannedImages: scan.ScannedImages,
-		StartedAt:     scan.StartedAt,
-		CompletedAt:   scan.CompletedAt,
-		Error:         scan.Error,
-		Results:       scan.Results,
+		ID:             scan.ID,
+		StackName:      scan.StackName,
+		Status:         scan.Status,
+		TotalImages:    scan.TotalImages,
+		ScannedImages:  scan.ScannedImages,
+		ServiceImages:  scan.ServiceImages,
+		StartedAt:      scan.StartedAt,
+		CompletedAt:    scan.CompletedAt,
+		Error:          scan.Error,
+		Results:        scan.Results,
+		ScannerVersion: scan.ScannerVersion,
+		ScannerDBBuilt: scan.ScannerDBBuilt,
 	})
 }
 

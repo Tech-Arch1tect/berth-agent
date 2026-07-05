@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"go.uber.org/zap"
 )
 
@@ -98,7 +99,7 @@ func (s *Service) ScanImage(ctx context.Context, imageName string) (*ScanRespons
 		return response, nil
 	}
 
-	vulnerabilities, err := s.parseGrypeOutput(stdout.Bytes())
+	vulnerabilities, descriptor, err := s.parseGrypeOutput(stdout.Bytes())
 	if err != nil {
 		response.Status = StatusFailed
 		response.Error = fmt.Sprintf("failed to parse output: %v", err)
@@ -107,6 +108,8 @@ func (s *Service) ScanImage(ctx context.Context, imageName string) (*ScanRespons
 
 	response.Status = StatusCompleted
 	response.Vulnerabilities = vulnerabilities
+	response.ScannerVersion = descriptor.Version
+	response.ScannerDBBuilt = parseDBBuiltDate(descriptor.DB)
 
 	s.logger.Info("grype scan completed",
 		zap.String("image", imageName),
@@ -116,23 +119,78 @@ func (s *Service) ScanImage(ctx context.Context, imageName string) (*ScanRespons
 	return response, nil
 }
 
-func (s *Service) parseGrypeOutput(data []byte) ([]Vulnerability, error) {
+func (s *Service) parseGrypeOutput(data []byte) ([]Vulnerability, GrypeDescriptor, error) {
 	if len(data) == 0 {
-		return []Vulnerability{}, nil
+		return []Vulnerability{}, GrypeDescriptor{}, nil
 	}
 
 	var output GrypeOutput
 	if err := json.Unmarshal(data, &output); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal grype JSON: %w", err)
+		return nil, GrypeDescriptor{}, fmt.Errorf("failed to unmarshal grype JSON: %w", err)
 	}
 
 	vulnerabilities := make([]Vulnerability, 0, len(output.Matches))
+	seen := make(map[string]bool, len(output.Matches))
 	for _, match := range output.Matches {
 		vuln := s.convertMatch(match)
+		key := vuln.ID + "|" + vuln.Package + "|" + vuln.InstalledVersion + "|" + vuln.Location
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		vulnerabilities = append(vulnerabilities, vuln)
 	}
 
-	return vulnerabilities, nil
+	sort.SliceStable(vulnerabilities, func(i, j int) bool {
+		ri, rj := severityRank(vulnerabilities[i].Severity), severityRank(vulnerabilities[j].Severity)
+		if ri != rj {
+			return ri < rj
+		}
+		if vulnerabilities[i].ID != vulnerabilities[j].ID {
+			return vulnerabilities[i].ID < vulnerabilities[j].ID
+		}
+		return vulnerabilities[i].Package < vulnerabilities[j].Package
+	})
+
+	return vulnerabilities, output.Descriptor, nil
+}
+
+func severityRank(severity string) int {
+	switch severity {
+	case SeverityCritical:
+		return 0
+	case SeverityHigh:
+		return 1
+	case SeverityMedium:
+		return 2
+	case SeverityLow:
+		return 3
+	case SeverityNegligible:
+		return 4
+	default:
+		return 5
+	}
+}
+
+func parseDBBuiltDate(raw json.RawMessage) *time.Time {
+	if len(raw) == 0 {
+		return nil
+	}
+	var direct struct {
+		Built time.Time `json:"built"`
+	}
+	if err := json.Unmarshal(raw, &direct); err == nil && !direct.Built.IsZero() {
+		return &direct.Built
+	}
+	var nested struct {
+		Status struct {
+			Built time.Time `json:"built"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &nested); err == nil && !nested.Status.Built.IsZero() {
+		return &nested.Status.Built
+	}
+	return nil
 }
 
 func (s *Service) convertMatch(match GrypeMatch) Vulnerability {
@@ -181,15 +239,11 @@ func normaliseSeverity(severity string) string {
 }
 
 func extractCVSSScore(cvssEntries []GrypeCVSS) float64 {
-	var bestScore float64
-	var bestVersion string
-
+	var maxScore float64
 	for _, entry := range cvssEntries {
-		if bestVersion == "" || entry.Version > bestVersion {
-			bestVersion = entry.Version
-			bestScore = entry.Metrics.BaseScore
+		if entry.Metrics.BaseScore > maxScore {
+			maxScore = entry.Metrics.BaseScore
 		}
 	}
-
-	return bestScore
+	return maxScore
 }

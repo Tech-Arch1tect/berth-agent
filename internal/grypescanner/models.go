@@ -15,6 +15,8 @@ type ScanResponse struct {
 	Error           string          `json:"error,omitempty"`
 	Vulnerabilities []Vulnerability `json:"vulnerabilities,omitempty"`
 	ScannedAt       time.Time       `json:"scanned_at"`
+	ScannerVersion  string          `json:"scanner_version,omitempty"`
+	ScannerDBBuilt  *time.Time      `json:"scanner_db_built,omitempty"`
 }
 
 type Vulnerability struct {
@@ -52,7 +54,14 @@ const (
 )
 
 type GrypeOutput struct {
-	Matches []GrypeMatch `json:"matches"`
+	Matches    []GrypeMatch    `json:"matches"`
+	Descriptor GrypeDescriptor `json:"descriptor"`
+}
+
+type GrypeDescriptor struct {
+	Name    string          `json:"name,omitempty"`
+	Version string          `json:"version,omitempty"`
+	DB      json.RawMessage `json:"db,omitempty"`
 }
 
 type GrypeMatch struct {
