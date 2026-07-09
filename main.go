@@ -155,6 +155,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:stackName/files/stats", filesHandler.GetDirectoryStats)
 
 	api.POST("/images/check-updates", imagesHandler.CheckImageUpdates)
+	api.GET("/images/running", imagesHandler.ListRunningContainerImages)
 
 	api.GET("/vulnscan/status", vulnscanHandler.GetScannerStatus)
 	api.POST("/stacks/:stackName/scan", vulnscanHandler.StartScan)

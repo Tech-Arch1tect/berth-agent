@@ -14,6 +14,14 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
+func (h *Handler) ListRunningContainerImages(c echo.Context) error {
+	images, err := h.service.RunningContainerImages(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+	}
+	return c.JSON(http.StatusOK, images)
+}
+
 func (h *Handler) CheckImageUpdates(c echo.Context) error {
 	var req CheckImageUpdatesRequest
 	if err := c.Bind(&req); err != nil {

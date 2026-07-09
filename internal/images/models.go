@@ -26,6 +26,13 @@ type CheckImageUpdatesResponse struct {
 	Results []ContainerImageCheckResult `json:"results"`
 }
 
+type RunningContainerImage struct {
+	StackName     string   `json:"stack_name"`
+	ContainerName string   `json:"container_name"`
+	ImageName     string   `json:"image_name"`
+	RepoDigests   []string `json:"repo_digests"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
