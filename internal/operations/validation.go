@@ -2,6 +2,7 @@ package operations
 
 import (
 	"errors"
+	"fmt"
 	"github.com/tech-arch1tect/berth-agent/internal/archive"
 	"regexp"
 	"slices"
@@ -24,6 +25,7 @@ var validCommands = map[string]bool{
 	"pull":            true,
 	"create-archive":  true,
 	"extract-archive": true,
+	"create-backup":   true,
 }
 
 var validOptions = map[string]map[string]bool{
@@ -112,6 +114,9 @@ func ValidateOperationRequest(req OperationRequest) error {
 	if req.Command == "extract-archive" {
 		return archive.ValidateExtractOptions(req.Options)
 	}
+	if req.Command == "create-backup" {
+		return validateCreateBackupRequest(req)
+	}
 
 	// Handle Docker commands
 	commandOptions, exists := validOptions[req.Command]
@@ -129,6 +134,28 @@ func ValidateOperationRequest(req OperationRequest) error {
 		}
 	}
 
+	return nil
+}
+
+func validateCreateBackupRequest(req OperationRequest) error {
+	if len(req.Services) > 0 {
+		return fmt.Errorf("%w: create-backup applies to the whole stack and accepts no service arguments", ErrInvalidOption)
+	}
+
+	stop, pause := false, false
+	for _, option := range req.Options {
+		switch option {
+		case "--stop":
+			stop = true
+		case "--pause":
+			pause = true
+		default:
+			return fmt.Errorf("%w: %s", ErrInvalidOption, option)
+		}
+	}
+	if stop && pause {
+		return fmt.Errorf("%w: --stop and --pause are mutually exclusive", ErrInvalidOption)
+	}
 	return nil
 }
 

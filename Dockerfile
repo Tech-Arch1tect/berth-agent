@@ -16,6 +16,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
 
 FROM docker.io/techarchitect/berth-agent-base:latest
 
+COPY --from=docker.io/restic/restic:0.19.1 /usr/bin/restic /usr/bin/restic
+
 RUN chmod +x /usr/bin/docker-compose
 
 COPY --from=builder /app/berth-agent ./berth-agent

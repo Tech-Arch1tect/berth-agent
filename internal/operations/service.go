@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/tech-arch1tect/berth-agent/internal/archive"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
+	"github.com/tech-arch1tect/berth-agent/internal/backup"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"io"
@@ -30,11 +31,12 @@ type Service struct {
 	activeOperations map[string]string
 	mutex            sync.RWMutex
 	archiveService   *archive.Service
+	backupService    *backup.Service
 	logger           *logging.Logger
 	auditService     *audit.Service
 }
 
-func NewService(stackLocation, accessToken string, logger *logging.Logger, auditService *audit.Service) *Service {
+func NewService(stackLocation, accessToken string, logger *logging.Logger, auditService *audit.Service, backupService *backup.Service) *Service {
 	logger.Debug("operations service initialized",
 		zap.String("stack_location", stackLocation),
 	)
@@ -44,6 +46,7 @@ func NewService(stackLocation, accessToken string, logger *logging.Logger, audit
 		operations:       make(map[string]*Operation),
 		activeOperations: make(map[string]string),
 		archiveService:   archive.NewService(),
+		backupService:    backupService,
 		logger:           logger,
 		auditService:     auditService,
 	}
@@ -193,6 +196,10 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 
 	if operation.Request.Command == "create-archive" || operation.Request.Command == "extract-archive" {
 		return s.handleArchiveOperationWithBroadcast(ctx, operation, stackPath)
+	}
+
+	if operation.Request.Command == "create-backup" {
+		return s.handleBackupOperationWithBroadcast(ctx, operation, stackPath)
 	}
 
 	var tempDockerConfig string
@@ -477,6 +484,34 @@ func (s *Service) handleArchiveOperationWithBroadcast(ctx context.Context, opera
 	exitCode := 0
 	s.updateOperationStatus(operation.ID, "completed", &exitCode)
 	operation.Broadcaster.Broadcast(StreamTypeStdout, "Archive operation completed successfully")
+	operation.Broadcaster.BroadcastComplete(true, exitCode)
+
+	s.unlockStack(operation.StackName, operation.ID)
+
+	return nil
+}
+
+func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operation *Operation, stackPath string) error {
+	progressWriter := NewBroadcasterProgressWriter(operation.Broadcaster)
+
+	opts := backup.CreateOptions{}
+	for _, option := range operation.Request.Options {
+		switch option {
+		case "--stop":
+			opts.StopMode = "stop"
+		case "--pause":
+			opts.StopMode = "pause"
+		}
+	}
+
+	if err := s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter); err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Backup failed: %v", err))
+		return err
+	}
+
+	exitCode := 0
+	s.updateOperationStatus(operation.ID, "completed", &exitCode)
 	operation.Broadcaster.BroadcastComplete(true, exitCode)
 
 	s.unlockStack(operation.StackName, operation.ID)

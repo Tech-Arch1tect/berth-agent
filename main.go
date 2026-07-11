@@ -5,6 +5,7 @@ import (
 	"github.com/tech-arch1tect/berth-agent/config"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"github.com/tech-arch1tect/berth-agent/internal/auth"
+	"github.com/tech-arch1tect/berth-agent/internal/backup"
 	"github.com/tech-arch1tect/berth-agent/internal/composeeditor"
 	"github.com/tech-arch1tect/berth-agent/internal/docker"
 	"github.com/tech-arch1tect/berth-agent/internal/files"
@@ -62,6 +63,7 @@ func runAgent() {
 		health.Module,
 		logs.Module,
 		operations.Module,
+		backup.Module,
 		websocket.Module,
 		terminal.Module(),
 		files.Module,
@@ -117,6 +119,7 @@ func RegisterRoutes(
 	imagesHandler *images.Handler,
 	composeEditorHandler *composeeditor.Handler,
 	vulnscanHandler *vulnscan.Handler,
+	backupHandler *backup.Handler,
 	logger *logging.Logger,
 ) {
 	api := e.Group("/api")
@@ -136,6 +139,9 @@ func RegisterRoutes(
 	api.GET("/stacks/:name/stats", statsHandler.GetStackStats)
 	api.GET("/stacks/:stackName/logs", logsHandler.GetStackLogs)
 	api.GET("/stacks/:stackName/containers/:containerName/logs", logsHandler.GetContainerLogs)
+
+	api.GET("/stacks/:stackName/backups", backupHandler.ListStackBackups)
+	api.GET("/stacks/:stackName/backups/:backupId", backupHandler.GetStackBackup)
 
 	api.POST("/stacks/:stackName/operations", operationsHandler.StartOperation)
 	api.GET("/operations/:operationId/stream", operationsHandler.StreamOperation)

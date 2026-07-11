@@ -9,6 +9,8 @@ services:
       - STACK_LOCATION=${STACK_LOCATION:-/opt/compose}
       - GRYPE_SCANNER_URL=https://berth-grype-scanner:8082
       - GRYPE_SCANNER_TOKEN=${ACCESS_TOKEN}
+      - BACKUP_LOCATION=${BACKUP_LOCATION:-}
+      - BACKUP_PASSWORD=${BACKUP_PASSWORD:-}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     volumes:
@@ -19,6 +21,7 @@ services:
       - ./ssl:/app/ssl
       - ./logs/agent/:/var/log/berth-agent/
       - ./data/scans/:/var/lib/berth-agent/scans/
+      - ./data/backups/:/var/lib/berth-agent/backups/
     depends_on:
       - berth-grype-scanner
 

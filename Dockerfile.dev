@@ -1,5 +1,7 @@
 FROM docker.io/techarchitect/berth-agent-base:latest
 
+COPY --from=docker.io/restic/restic:0.19.1 /usr/bin/restic /usr/bin/restic
+
 RUN chmod +x /usr/bin/docker-compose && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
     ln -sf /usr/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
