@@ -198,7 +198,7 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		return s.handleArchiveOperationWithBroadcast(ctx, operation, stackPath)
 	}
 
-	if operation.Request.Command == "create-backup" {
+	if operation.Request.Command == "create-backup" || operation.Request.Command == "restore-backup" {
 		return s.handleBackupOperationWithBroadcast(ctx, operation, stackPath)
 	}
 
@@ -494,19 +494,48 @@ func (s *Service) handleArchiveOperationWithBroadcast(ctx context.Context, opera
 func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operation *Operation, stackPath string) error {
 	progressWriter := NewBroadcasterProgressWriter(operation.Broadcaster)
 
-	opts := backup.CreateOptions{}
-	for _, option := range operation.Request.Options {
-		switch option {
-		case "--stop":
-			opts.StopMode = "stop"
-		case "--pause":
-			opts.StopMode = "pause"
+	var err error
+	switch operation.Request.Command {
+	case "create-backup":
+		opts := backup.CreateOptions{}
+		for _, option := range operation.Request.Options {
+			switch option {
+			case "--stop":
+				opts.StopMode = "stop"
+			case "--pause":
+				opts.StopMode = "pause"
+			}
 		}
+		err = s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
+	case "restore-backup":
+		opts := backup.RestoreOptions{}
+		options := operation.Request.Options
+		for i := 0; i < len(options); i++ {
+			switch options[i] {
+			case "--backup-id":
+				if i+1 < len(options) {
+					i++
+					opts.BackupID = options[i]
+				}
+			case "--component":
+				if i+1 < len(options) {
+					i++
+					opts.ComponentIDs = append(opts.ComponentIDs, options[i])
+				}
+			case "--stop":
+				opts.StopMode = "stop"
+			case "--keep-extra-files":
+				opts.KeepExtraFiles = true
+			}
+		}
+		err = s.backupService.RestoreBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
+	default:
+		err = fmt.Errorf("unknown backup command: %s", operation.Request.Command)
 	}
 
-	if err := s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter); err != nil {
+	if err != nil {
 		s.updateOperationStatus(operation.ID, "failed", nil)
-		operation.Broadcaster.BroadcastError(fmt.Sprintf("Backup failed: %v", err))
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Backup operation failed: %v", err))
 		return err
 	}
 

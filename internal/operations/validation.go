@@ -3,10 +3,12 @@ package operations
 import (
 	"errors"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/internal/archive"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/google/uuid"
+	"github.com/tech-arch1tect/berth-agent/internal/archive"
 )
 
 var (
@@ -26,6 +28,7 @@ var validCommands = map[string]bool{
 	"create-archive":  true,
 	"extract-archive": true,
 	"create-backup":   true,
+	"restore-backup":  true,
 }
 
 var validOptions = map[string]map[string]bool{
@@ -117,6 +120,9 @@ func ValidateOperationRequest(req OperationRequest) error {
 	if req.Command == "create-backup" {
 		return validateCreateBackupRequest(req)
 	}
+	if req.Command == "restore-backup" {
+		return validateRestoreBackupRequest(req)
+	}
 
 	// Handle Docker commands
 	commandOptions, exists := validOptions[req.Command]
@@ -155,6 +161,46 @@ func validateCreateBackupRequest(req OperationRequest) error {
 	}
 	if stop && pause {
 		return fmt.Errorf("%w: --stop and --pause are mutually exclusive", ErrInvalidOption)
+	}
+	return nil
+}
+
+func validateRestoreBackupRequest(req OperationRequest) error {
+	if len(req.Services) > 0 {
+		return fmt.Errorf("%w: restore-backup accepts no service arguments; components are selected with --component", ErrInvalidOption)
+	}
+
+	backupID := ""
+	options := req.Options
+	i := 0
+	for i < len(options) {
+		switch options[i] {
+		case "--backup-id":
+			if i+1 >= len(options) {
+				return fmt.Errorf("%w: --backup-id requires a value", ErrInvalidOption)
+			}
+			i++
+			if _, err := uuid.Parse(options[i]); err != nil {
+				return fmt.Errorf("%w: --backup-id must be a backup run id", ErrInvalidOption)
+			}
+			backupID = options[i]
+		case "--component":
+			if i+1 >= len(options) {
+				return fmt.Errorf("%w: --component requires a value", ErrInvalidOption)
+			}
+			i++
+			if options[i] == "" || containsDangerousChars(options[i]) {
+				return fmt.Errorf("%w: invalid component id", ErrInvalidOption)
+			}
+		case "--stop", "--keep-extra-files":
+		default:
+			return fmt.Errorf("%w: %s", ErrInvalidOption, options[i])
+		}
+		i++
+	}
+
+	if backupID == "" {
+		return fmt.Errorf("%w: restore-backup requires --backup-id", ErrInvalidOption)
 	}
 	return nil
 }

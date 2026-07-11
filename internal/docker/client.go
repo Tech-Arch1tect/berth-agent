@@ -351,6 +351,20 @@ func (c *Client) ImageRemove(ctx context.Context, imageID string, force, noPrune
 	return responses, nil
 }
 
+func (c *Client) ContainerStop(ctx context.Context, containerID string) error {
+	if err := c.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+		return fmt.Errorf("failed to stop container %s: %w", containerID, err)
+	}
+	return nil
+}
+
+func (c *Client) ContainerStart(ctx context.Context, containerID string) error {
+	if err := c.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("failed to start container %s: %w", containerID, err)
+	}
+	return nil
+}
+
 func (c *Client) ContainerRemove(ctx context.Context, containerID string, removeVolumes, removeLinks, force bool) error {
 	err := c.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		RemoveVolumes: removeVolumes,

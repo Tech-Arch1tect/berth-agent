@@ -12,21 +12,21 @@ const (
 )
 
 type Component struct {
-	ID             string        `json:"id"`
-	Kind           ComponentKind `json:"kind"`
-	VolumeName     string        `json:"volume_name,omitempty"`
-	SourcePath     string        `json:"source_path,omitempty"`
-	Service        string        `json:"service,omitempty"`
-	Target         string        `json:"target,omitempty"`
-	Excludes       []string      `json:"excludes,omitempty"`
-	SnapshotID     string        `json:"snapshot_id,omitempty"`
-	FilesNew       uint64        `json:"files_new"`
-	FilesChanged   uint64        `json:"files_changed"`
-	FilesUnmodified uint64       `json:"files_unmodified"`
-	BytesAdded     uint64        `json:"bytes_added"`
-	BytesProcessed uint64        `json:"bytes_processed"`
-	DurationSecs   float64       `json:"duration_secs"`
-	Error          string        `json:"error,omitempty"`
+	ID              string        `json:"id"`
+	Kind            ComponentKind `json:"kind"`
+	VolumeName      string        `json:"volume_name,omitempty"`
+	SourcePath      string        `json:"source_path,omitempty"`
+	Service         string        `json:"service,omitempty"`
+	Target          string        `json:"target,omitempty"`
+	Excludes        []string      `json:"excludes,omitempty"`
+	SnapshotID      string        `json:"snapshot_id,omitempty"`
+	FilesNew        uint64        `json:"files_new"`
+	FilesChanged    uint64        `json:"files_changed"`
+	FilesUnmodified uint64        `json:"files_unmodified"`
+	BytesAdded      uint64        `json:"bytes_added"`
+	BytesProcessed  uint64        `json:"bytes_processed"`
+	DurationSecs    float64       `json:"duration_secs"`
+	Error           string        `json:"error,omitempty"`
 }
 
 type SkippedMount struct {
