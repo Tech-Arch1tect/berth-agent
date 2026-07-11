@@ -142,6 +142,7 @@ func RegisterRoutes(
 
 	api.GET("/stacks/:stackName/backups", backupHandler.ListStackBackups)
 	api.GET("/stacks/:stackName/backups/:backupId", backupHandler.GetStackBackup)
+	api.DELETE("/stacks/:stackName/backups/:backupId", backupHandler.DeleteStackBackup)
 
 	api.POST("/stacks/:stackName/operations", operationsHandler.StartOperation)
 	api.GET("/operations/:operationId/stream", operationsHandler.StreamOperation)

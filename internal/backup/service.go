@@ -170,7 +170,25 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath string, run *
 			return err
 		}
 	}
+
+	writer.WriteProgress("Verifying repository integrity...")
+	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	if err != nil {
+		return fmt.Errorf("failed to verify the backup repository: %w", err)
+	}
+	verified := check.exitCode == 0
+	run.Verified = &verified
+	if !verified {
+		run.VerifyError = check.output
+		return fmt.Errorf("the repository failed its integrity check after this backup (exit code %d): %s", check.exitCode, lastLine(check.output))
+	}
+	writer.WriteStdout("Repository integrity verified")
 	return nil
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
 }
 
 func (s *Service) prepareRepository(ctx context.Context, image string, run *Run, writer ProgressWriter) error {

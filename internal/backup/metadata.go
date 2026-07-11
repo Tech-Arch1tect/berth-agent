@@ -97,6 +97,17 @@ func (p *RunPersistence) LoadStackRuns(stackName string) ([]*Run, error) {
 	return runs, nil
 }
 
+func (p *RunPersistence) DeleteRun(stackName, runID string) error {
+	if err := os.Remove(p.runFilename(stackName, runID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete backup run file: %w", err)
+	}
+	p.logger.Debug("deleted backup run metadata",
+		zap.String("run_id", runID),
+		zap.String("stack_name", stackName),
+	)
+	return nil
+}
+
 func (p *RunPersistence) runFilename(stackName, runID string) string {
 	return filepath.Join(p.persistenceDir, stackName, runID+".json")
 }

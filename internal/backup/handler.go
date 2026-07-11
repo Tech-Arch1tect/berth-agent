@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 
@@ -58,6 +59,29 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 		return common.SendNotFound(c, "backup not found")
 	}
 	return common.SendSuccess(c, run)
+}
+
+func (h *Handler) DeleteStackBackup(c echo.Context) error {
+	stackName := c.Param("stackName")
+	if err := validation.ValidateStackName(stackName); err != nil {
+		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
+	}
+	backupID := c.Param("backupId")
+	if _, err := uuid.Parse(backupID); err != nil {
+		return common.SendBadRequest(c, "Invalid backup id")
+	}
+
+	err := h.service.DeleteBackup(c.Request().Context(), stackName, backupID)
+	switch {
+	case err == nil:
+		return common.SendMessage(c, "backup deleted")
+	case errors.Is(err, ErrRunNotFound):
+		return common.SendNotFound(c, "backup not found")
+	case errors.Is(err, ErrRepositoryBusy):
+		return common.SendConflict(c, err.Error())
+	default:
+		return common.SendInternalError(c, err.Error())
+	}
 }
 
 func (s *Service) ListRuns(stackName string) ([]Run, error) {

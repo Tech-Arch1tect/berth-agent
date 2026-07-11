@@ -53,6 +53,8 @@ type Run struct {
 	Status        RunStatus      `json:"status"`
 	StopMode      string         `json:"stop_mode,omitempty"`
 	ResticVersion string         `json:"restic_version,omitempty"`
+	Verified      *bool          `json:"verified,omitempty"`
+	VerifyError   string         `json:"verify_error,omitempty"`
 	Components    []Component    `json:"components"`
 	Skipped       []SkippedMount `json:"skipped,omitempty"`
 	Error         string         `json:"error,omitempty"`
