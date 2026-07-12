@@ -108,6 +108,9 @@ func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string,
 	}
 
 	runErr := s.executeRun(ctx, image, stackPath, run, writer)
+	if runErr == nil {
+		runErr = s.verifyRepository(ctx, image, run, writer)
+	}
 
 	now := time.Now()
 	run.FinishedAt = &now
@@ -171,6 +174,10 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath string, run *
 		}
 	}
 
+	return nil
+}
+
+func (s *Service) verifyRepository(ctx context.Context, image string, run *Run, writer ProgressWriter) error {
 	writer.WriteProgress("Verifying repository integrity...")
 	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {
