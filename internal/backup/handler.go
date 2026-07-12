@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -20,8 +21,29 @@ func NewHandler(service *Service) *Handler {
 }
 
 type ListBackupsResponse struct {
-	Configured bool  `json:"configured"`
-	Runs       []Run `json:"runs"`
+	Configured bool         `json:"configured"`
+	Total      int          `json:"total"`
+	Runs       []RunSummary `json:"runs"`
+}
+
+const (
+	defaultListLimit = 20
+	maxListLimit     = 100
+)
+
+func parseListPagination(c echo.Context) (limit, offset int) {
+	limit = defaultListLimit
+	if raw := c.QueryParam("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 1 {
+			limit = min(parsed, maxListLimit)
+		}
+	}
+	if raw := c.QueryParam("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	return limit, offset
 }
 
 func (h *Handler) ListStackBackups(c echo.Context) error {
@@ -30,14 +52,16 @@ func (h *Handler) ListStackBackups(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
 	}
 
-	runs, err := h.service.ListRuns(stackName)
+	limit, offset := parseListPagination(c)
+	total, summaries, err := h.service.ListRunSummaries(stackName, limit, offset)
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
 	}
 
 	return common.SendSuccess(c, ListBackupsResponse{
 		Configured: h.service.Configured(),
-		Runs:       runs,
+		Total:      total,
+		Runs:       summaries,
 	})
 }
 
@@ -84,23 +108,29 @@ func (h *Handler) DeleteStackBackup(c echo.Context) error {
 	}
 }
 
-func (s *Service) ListRuns(stackName string) ([]Run, error) {
+func (s *Service) ListRunSummaries(stackName string, limit, offset int) (int, []RunSummary, error) {
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	loaded, err := s.persistence.LoadStackRuns(stackName)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
-	runs := make([]Run, 0, len(loaded))
+	summaries := make([]RunSummary, 0, len(loaded))
 	for _, run := range loaded {
-		runs = append(runs, *run)
+		summaries = append(summaries, SummariseRun(run))
 	}
-	sort.Slice(runs, func(i, j int) bool {
-		return runs[i].StartedAt.After(runs[j].StartedAt)
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].StartedAt.After(summaries[j].StartedAt)
 	})
-	return runs, nil
+
+	total := len(summaries)
+	if offset >= total {
+		return total, []RunSummary{}, nil
+	}
+	end := min(offset+limit, total)
+	return total, summaries[offset:end], nil
 }
 
 func (s *Service) GetRun(stackName, runID string) (*Run, error) {

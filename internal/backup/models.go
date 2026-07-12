@@ -60,6 +60,41 @@ type Run struct {
 	Error         string         `json:"error,omitempty"`
 }
 
+type RunSummary struct {
+	ID                   string     `json:"id"`
+	StackName            string     `json:"stack_name"`
+	StartedAt            time.Time  `json:"started_at"`
+	FinishedAt           *time.Time `json:"finished_at,omitempty"`
+	Status               RunStatus  `json:"status"`
+	StopMode             string     `json:"stop_mode,omitempty"`
+	Verified             *bool      `json:"verified,omitempty"`
+	SizeBytes            uint64     `json:"size_bytes"`
+	AddedBytes           uint64     `json:"added_bytes"`
+	ComponentCount       int        `json:"component_count"`
+	ComponentsWithErrors int        `json:"components_with_errors"`
+}
+
+func SummariseRun(run *Run) RunSummary {
+	summary := RunSummary{
+		ID:             run.ID,
+		StackName:      run.StackName,
+		StartedAt:      run.StartedAt,
+		FinishedAt:     run.FinishedAt,
+		Status:         run.Status,
+		StopMode:       run.StopMode,
+		Verified:       run.Verified,
+		ComponentCount: len(run.Components),
+	}
+	for _, component := range run.Components {
+		summary.SizeBytes += component.BytesProcessed
+		summary.AddedBytes += component.BytesAdded
+		if component.Error != "" {
+			summary.ComponentsWithErrors++
+		}
+	}
+	return summary
+}
+
 type CreateOptions struct {
 	StopMode string
 }
