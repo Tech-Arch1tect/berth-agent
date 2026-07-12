@@ -12,7 +12,6 @@ services:
       - GRYPE_SCANNER_URL=https://berth-grype-scanner-dev:8082
       - GRYPE_SCANNER_TOKEN=${ACCESS_TOKEN:-dev-token}
       - BACKUP_LOCATION=${BACKUP_LOCATION:-}
-      - BACKUP_PASSWORD=${BACKUP_PASSWORD:-}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     volumes:

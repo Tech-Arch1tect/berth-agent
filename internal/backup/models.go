@@ -100,6 +100,7 @@ func SummariseRun(run *Run) RunSummary {
 
 type CreateOptions struct {
 	StopMode string
+	Password string
 }
 
 type ProgressWriter interface {

@@ -13,6 +13,7 @@ type OperationRequest struct {
 	Options             []string             `json:"options"`
 	Services            []string             `json:"services"`
 	RegistryCredentials []RegistryCredential `json:"registry_credentials,omitempty"`
+	BackupPassword      string               `json:"backup_password,omitempty"`
 }
 
 type OperationResponse struct {

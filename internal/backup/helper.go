@@ -70,12 +70,16 @@ func (s *Service) helperLabels(stackName, runID string) map[string]string {
 	}
 }
 
-func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runID string, args []string, mounts []mount.Mount, stdoutLine, stderrLine func(string)) (int, error) {
+func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runID, password string, args []string, mounts []mount.Mount, stdoutLine, stderrLine func(string)) (int, error) {
+	if password == "" {
+		return 0, fmt.Errorf("no backup password was provided for this operation; backups must be enabled and given an encryption password in this server's settings in berth")
+	}
+
 	spec := docker.ContainerRunSpec{
 		Image:      image,
 		Entrypoint: []string{"restic"},
 		Cmd:        args,
-		Env:        resticEnv(s.cfg.BackupPassword),
+		Env:        resticEnv(password),
 		Mounts:     mounts,
 		Labels:     s.helperLabels(stackName, runID),
 	}
@@ -107,13 +111,13 @@ type bufferedResticResult struct {
 	output   string
 }
 
-func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID string, args []string, mounts []mount.Mount) (bufferedResticResult, error) {
+func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID, password string, args []string, mounts []mount.Mount) (bufferedResticResult, error) {
 	var buffer bytes.Buffer
 	appendLine := func(line string) {
 		buffer.WriteString(line)
 		buffer.WriteByte('\n')
 	}
-	exitCode, err := s.runResticStreaming(ctx, image, stackName, runID, args, mounts, appendLine, appendLine)
+	exitCode, err := s.runResticStreaming(ctx, image, stackName, runID, password, args, mounts, appendLine, appendLine)
 	return bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(buffer.String())}, err
 }
 

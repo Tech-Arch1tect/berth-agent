@@ -46,12 +46,12 @@ func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker
 }
 
 func (s *Service) Configured() bool {
-	return s.cfg.BackupLocation != "" && s.cfg.BackupPassword != ""
+	return s.cfg.BackupLocation != ""
 }
 
 func (s *Service) validateConfiguration() error {
-	if s.cfg.BackupLocation == "" || s.cfg.BackupPassword == "" {
-		return fmt.Errorf("backups are not configured on this agent: set BACKUP_LOCATION and BACKUP_PASSWORD in the agent environment")
+	if s.cfg.BackupLocation == "" {
+		return fmt.Errorf("backups are not configured on this agent: set BACKUP_LOCATION in the agent environment")
 	}
 	if !filepath.IsAbs(s.cfg.BackupLocation) {
 		return fmt.Errorf("BACKUP_LOCATION %q must be an absolute host path", s.cfg.BackupLocation)
@@ -108,9 +108,9 @@ func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string,
 		return err
 	}
 
-	runErr := s.executeRun(ctx, image, stackPath, run, writer)
+	runErr := s.executeRun(ctx, image, stackPath, opts.Password, run, writer)
 	if runErr == nil {
-		runErr = s.verifyRepository(ctx, image, run, writer)
+		runErr = s.verifyRepository(ctx, image, opts.Password, run, writer)
 	}
 
 	now := time.Now()
@@ -138,7 +138,7 @@ func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string,
 	return runErr
 }
 
-func (s *Service) executeRun(ctx context.Context, image, stackPath string, run *Run, writer ProgressWriter) error {
+func (s *Service) executeRun(ctx context.Context, image, stackPath, password string, run *Run, writer ProgressWriter) error {
 	if run.StopMode != "" {
 		stopCommand, startCommand := "stop", "start"
 		if run.StopMode == "pause" {
@@ -162,12 +162,12 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath string, run *
 		}()
 	}
 
-	if err := s.prepareRepository(ctx, image, run, writer); err != nil {
+	if err := s.prepareRepository(ctx, image, password, run, writer); err != nil {
 		return err
 	}
 
 	for i := range run.Components {
-		if err := s.backupComponent(ctx, image, run, &run.Components[i], writer); err != nil {
+		if err := s.backupComponent(ctx, image, password, run, &run.Components[i], writer); err != nil {
 			return err
 		}
 		if err := s.persistence.PersistRun(run); err != nil {
@@ -178,9 +178,9 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath string, run *
 	return nil
 }
 
-func (s *Service) verifyRepository(ctx context.Context, image string, run *Run, writer ProgressWriter) error {
+func (s *Service) verifyRepository(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
 	writer.WriteProgress("Verifying repository integrity...")
-	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {
 		return fmt.Errorf("failed to verify the backup repository: %w", err)
 	}
@@ -192,7 +192,7 @@ func (s *Service) verifyRepository(ctx context.Context, image string, run *Run, 
 	}
 	writer.WriteStdout("Repository integrity verified")
 
-	stats, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"stats", "--mode", "raw-data", "--json"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	stats, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"stats", "--mode", "raw-data", "--json"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil || stats.exitCode != 0 {
 		s.logger.Warn("failed to measure repository size after backup",
 			zap.String("run_id", run.ID),
@@ -229,10 +229,10 @@ func lastLine(s string) string {
 	return lines[len(lines)-1]
 }
 
-func (s *Service) prepareRepository(ctx context.Context, image string, run *Run, writer ProgressWriter) error {
+func (s *Service) prepareRepository(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
 	repoPath := s.repoHostPath(run.StackName)
 
-	version, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"version"}, nil)
+	version, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"version"}, nil)
 	if err != nil {
 		return fmt.Errorf("failed to run restic in a helper container: %w", err)
 	}
@@ -242,7 +242,7 @@ func (s *Service) prepareRepository(ctx context.Context, image string, run *Run,
 	run.ResticVersion = firstLine(version.output)
 	writer.WriteStdout("Backup engine: " + run.ResticVersion)
 
-	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
+	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to probe the backup repository: %w", err)
 	}
@@ -250,7 +250,7 @@ func (s *Service) prepareRepository(ctx context.Context, image string, run *Run,
 	case 0:
 	case resticExitRepoDoesNotExist:
 		writer.WriteProgress("Initialising new backup repository for this stack...")
-		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
+		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
 		if err != nil {
 			return fmt.Errorf("failed to initialise the backup repository: %w", err)
 		}
@@ -258,12 +258,12 @@ func (s *Service) prepareRepository(ctx context.Context, image string, run *Run,
 			return fmt.Errorf("repository initialisation failed with exit code %d: %s", initResult.exitCode, initResult.output)
 		}
 	case resticExitWrongPassword:
-		return fmt.Errorf("the configured BACKUP_PASSWORD does not open the existing repository for stack %q; refusing to continue (a new repository is never created next to one that cannot be read)", run.StackName)
+		return fmt.Errorf("the backup password configured for this server in berth does not open the existing repository for stack %q; refusing to continue (a new repository is never created next to one that cannot be read)", run.StackName)
 	default:
 		return fmt.Errorf("backup repository probe failed with exit code %d: %s", probe.exitCode, probe.output)
 	}
 
-	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
+	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
 	}
@@ -273,7 +273,7 @@ func (s *Service) prepareRepository(ctx context.Context, image string, run *Run,
 	return nil
 }
 
-func (s *Service) backupComponent(ctx context.Context, image string, run *Run, component *Component, writer ProgressWriter) error {
+func (s *Service) backupComponent(ctx context.Context, image, password string, run *Run, component *Component, writer ProgressWriter) error {
 	writer.WriteProgress("Backing up " + component.ID + "...")
 
 	sourceMount, err := componentSourceMount(*component)
@@ -286,7 +286,7 @@ func (s *Service) backupComponent(ctx context.Context, image string, run *Run, c
 	parser := newResticOutputParser(component.ID, writer)
 	args := backupArgs(*component, run.StackName, run.ID)
 
-	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, args, mounts,
+	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, args, mounts,
 		parser.handleLine,
 		writer.WriteStderr,
 	)

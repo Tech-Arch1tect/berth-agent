@@ -110,6 +110,14 @@ func ValidateOperationRequest(req OperationRequest) error {
 		return ErrInvalidCommand
 	}
 
+	isBackupCommand := req.Command == "create-backup" || req.Command == "restore-backup"
+	if isBackupCommand && req.BackupPassword == "" {
+		return fmt.Errorf("%w: %s requires a backup password; enable backups and set an encryption password for this server in berth", ErrInvalidOption, req.Command)
+	}
+	if !isBackupCommand && req.BackupPassword != "" {
+		return fmt.Errorf("%w: %s does not accept a backup password", ErrInvalidOption, req.Command)
+	}
+
 	// Handle archive commands separately
 	if req.Command == "create-archive" {
 		return archive.ValidateCreateOptions(req.Options)

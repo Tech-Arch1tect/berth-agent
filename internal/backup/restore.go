@@ -13,6 +13,7 @@ type RestoreOptions struct {
 	ComponentIDs   []string
 	StopMode       string
 	KeepExtraFiles bool
+	Password       string
 }
 
 func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string, opts RestoreOptions, writer ProgressWriter) error {
@@ -67,7 +68,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		writer.WriteStdout("Files created after the backup will be removed (exact snapshot state)")
 	}
 
-	if err := s.openRepositoryForRestore(ctx, image, run); err != nil {
+	if err := s.openRepositoryForRestore(ctx, image, opts.Password, run); err != nil {
 		return err
 	}
 
@@ -84,7 +85,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 	}
 
 	for _, component := range components {
-		if err := s.restoreComponent(ctx, image, run, component, opts.KeepExtraFiles, writer); err != nil {
+		if err := s.restoreComponent(ctx, image, opts.Password, run, component, opts.KeepExtraFiles, writer); err != nil {
 			return err
 		}
 	}
@@ -233,10 +234,10 @@ func (s *Service) runningContainerCount(ctx context.Context, stackName string) (
 	return len(containers), nil
 }
 
-func (s *Service) openRepositoryForRestore(ctx context.Context, image string, run *Run) error {
+func (s *Service) openRepositoryForRestore(ctx context.Context, image, password string, run *Run) error {
 	repoPath := s.repoHostPath(run.StackName)
 
-	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
+	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to probe the backup repository: %w", err)
 	}
@@ -245,12 +246,12 @@ func (s *Service) openRepositoryForRestore(ctx context.Context, image string, ru
 	case resticExitRepoDoesNotExist:
 		return fmt.Errorf("no backup repository exists for stack %q; nothing can be restored", run.StackName)
 	case resticExitWrongPassword:
-		return fmt.Errorf("the configured BACKUP_PASSWORD does not open the repository for stack %q", run.StackName)
+		return fmt.Errorf("the backup password configured for this server in berth does not open the repository for stack %q", run.StackName)
 	default:
 		return fmt.Errorf("backup repository probe failed with exit code %d: %s", probe.exitCode, probe.output)
 	}
 
-	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
+	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
 	}
@@ -296,7 +297,7 @@ func restoreTargetMount(component Component) (mount.Mount, error) {
 	}
 }
 
-func (s *Service) restoreComponent(ctx context.Context, image string, run *Run, component Component, keepExtraFiles bool, writer ProgressWriter) error {
+func (s *Service) restoreComponent(ctx context.Context, image, password string, run *Run, component Component, keepExtraFiles bool, writer ProgressWriter) error {
 	writer.WriteProgress("Restoring " + component.ID + "...")
 
 	targetMount, err := restoreTargetMount(component)
@@ -306,7 +307,7 @@ func (s *Service) restoreComponent(ctx context.Context, image string, run *Run, 
 	mounts := []mount.Mount{repoMount(s.repoHostPath(run.StackName), false), targetMount}
 
 	parser := newResticOutputParser(component.ID, writer)
-	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, restoreArgs(component, keepExtraFiles), mounts,
+	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, restoreArgs(component, keepExtraFiles), mounts,
 		parser.handleLine,
 		writer.WriteStderr,
 	)

@@ -22,7 +22,6 @@ type Config struct {
 	GrypeScannerURL        string
 	GrypeScannerToken      string
 	BackupLocation         string
-	BackupPassword         string
 	BackupHelperImage      string
 	BackupPersistenceDir   string
 }
@@ -43,7 +42,6 @@ func NewConfig() *Config {
 		GrypeScannerURL:        getEnv("GRYPE_SCANNER_URL", ""),
 		GrypeScannerToken:      getEnv("GRYPE_SCANNER_TOKEN", ""),
 		BackupLocation:         getEnv("BACKUP_LOCATION", ""),
-		BackupPassword:         getEnv("BACKUP_PASSWORD", ""),
 		BackupHelperImage:      getEnv("BACKUP_HELPER_IMAGE", ""),
 		BackupPersistenceDir:   getEnv("BACKUP_PERSISTENCE_DIR", "/var/lib/berth-agent/backups"),
 	}

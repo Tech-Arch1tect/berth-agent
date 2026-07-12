@@ -497,7 +497,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 	var err error
 	switch operation.Request.Command {
 	case "create-backup":
-		opts := backup.CreateOptions{}
+		opts := backup.CreateOptions{Password: operation.Request.BackupPassword}
 		for _, option := range operation.Request.Options {
 			switch option {
 			case "--stop":
@@ -508,7 +508,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 		}
 		err = s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
 	case "restore-backup":
-		opts := backup.RestoreOptions{}
+		opts := backup.RestoreOptions{Password: operation.Request.BackupPassword}
 		options := operation.Request.Options
 		for i := 0; i < len(options); i++ {
 			switch options[i] {

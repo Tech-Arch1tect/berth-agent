@@ -12,7 +12,7 @@ import (
 var ErrRunNotFound = errors.New("backup run not found")
 var ErrRepositoryBusy = errors.New("the backup repository is in use by another operation; try again once it finishes")
 
-func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID string) error {
+func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID, password string) error {
 	ctx = context.WithoutCancel(ctx)
 
 	if err := s.validateConfiguration(); err != nil {
@@ -41,7 +41,7 @@ func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID string) 
 		}
 		repo := []mount.Mount{repoMount(s.repoHostPath(stackName), false)}
 
-		unlock, err := s.runResticBuffered(ctx, image, stackName, run.ID, []string{"unlock"}, repo)
+		unlock, err := s.runResticBuffered(ctx, image, stackName, run.ID, password, []string{"unlock"}, repo)
 		if err != nil {
 			return fmt.Errorf("failed to clear stale repository locks: %w", err)
 		}
@@ -50,7 +50,7 @@ func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID string) 
 		}
 
 		args := append([]string{"forget", "--prune"}, snapshotIDs...)
-		forget, err := s.runResticBuffered(ctx, image, stackName, run.ID, args, repo)
+		forget, err := s.runResticBuffered(ctx, image, stackName, run.ID, password, args, repo)
 		if err != nil {
 			return fmt.Errorf("failed to delete the backup's snapshots: %w", err)
 		}

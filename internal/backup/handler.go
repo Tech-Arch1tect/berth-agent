@@ -84,6 +84,10 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 	return common.SendSuccess(c, run)
 }
 
+type DeleteBackupRequest struct {
+	BackupPassword string `json:"backup_password"`
+}
+
 func (h *Handler) DeleteStackBackup(c echo.Context) error {
 	stackName := c.Param("stackName")
 	if err := validation.ValidateStackName(stackName); err != nil {
@@ -94,7 +98,15 @@ func (h *Handler) DeleteStackBackup(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid backup id")
 	}
 
-	err := h.service.DeleteBackup(c.Request().Context(), stackName, backupID)
+	var req DeleteBackupRequest
+	if err := c.Bind(&req); err != nil {
+		return common.SendBadRequest(c, "Invalid request body")
+	}
+	if req.BackupPassword == "" {
+		return common.SendBadRequest(c, "A backup password is required to delete a backup")
+	}
+
+	err := h.service.DeleteBackup(c.Request().Context(), stackName, backupID, req.BackupPassword)
 	switch {
 	case err == nil:
 		return common.SendMessage(c, "backup deleted")
