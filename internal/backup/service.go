@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -190,7 +191,37 @@ func (s *Service) verifyRepository(ctx context.Context, image string, run *Run, 
 		return fmt.Errorf("the repository failed its integrity check after this backup (exit code %d): %s", check.exitCode, lastLine(check.output))
 	}
 	writer.WriteStdout("Repository integrity verified")
+
+	stats, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, []string{"stats", "--mode", "raw-data", "--json"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	if err != nil || stats.exitCode != 0 {
+		s.logger.Warn("failed to measure repository size after backup",
+			zap.String("run_id", run.ID),
+			zap.String("stack_name", run.StackName),
+			zap.Error(err),
+		)
+		return nil
+	}
+	if size, ok := parseRepoStatsTotalSize(stats.output); ok {
+		run.RepoSizeBytes = size
+		writer.WriteStdout("All of this stack's backups now use " + formatBytes(size) + " on disk")
+	}
 	return nil
+}
+
+func parseRepoStatsTotalSize(output string) (uint64, bool) {
+	for line := range strings.Lines(output) {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var stats struct {
+			TotalSize uint64 `json:"total_size"`
+		}
+		if err := json.Unmarshal([]byte(line), &stats); err == nil {
+			return stats.TotalSize, true
+		}
+	}
+	return 0, false
 }
 
 func lastLine(s string) string {
