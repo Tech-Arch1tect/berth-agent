@@ -3,7 +3,6 @@ package backup
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -112,18 +111,10 @@ func (s *Service) ListRunSummaries(stackName string, limit, offset int) (int, []
 	if err := validation.ValidateStackName(stackName); err != nil {
 		return 0, nil, err
 	}
-	loaded, err := s.persistence.LoadStackRuns(stackName)
+	summaries, err := s.persistence.RunSummaries(stackName)
 	if err != nil {
 		return 0, nil, err
 	}
-
-	summaries := make([]RunSummary, 0, len(loaded))
-	for _, run := range loaded {
-		summaries = append(summaries, SummariseRun(run))
-	}
-	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].StartedAt.After(summaries[j].StartedAt)
-	})
 
 	total := len(summaries)
 	if offset >= total {
