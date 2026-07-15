@@ -95,24 +95,6 @@ func (h *Handler) StreamOperation(c echo.Context) error {
 	return h.service.StreamOperation(c.Request().Context(), operationID, c.Response().Writer)
 }
 
-func (h *Handler) GetOperationStatus(c echo.Context) error {
-	operationID := c.Param("operationId")
-	if operationID == "" {
-		return common.SendBadRequest(c, "Operation ID is required")
-	}
-
-	if err := validateOperationID(operationID); err != nil {
-		return common.SendBadRequest(c, "Invalid operation ID format")
-	}
-
-	operation, exists := h.service.GetOperation(operationID)
-	if !exists {
-		return common.SendNotFound(c, "Operation not found")
-	}
-
-	return common.SendSuccess(c, operation)
-}
-
 func validateOperationID(operationID string) error {
 
 	uuidRegex := regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)

@@ -679,6 +679,8 @@ func (s *Service) handleExtractArchive(ctx context.Context, operation *Operation
 	return s.archiveService.ExtractArchive(ctx, stackPath, opts, writer)
 }
 
+const completedOperationRetention = 30 * time.Minute
+
 func (s *Service) updateOperationStatus(operationID, status string, exitCode *int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -686,6 +688,27 @@ func (s *Service) updateOperationStatus(operationID, status string, exitCode *in
 	if op, exists := s.operations[operationID]; exists {
 		op.Status = status
 		op.ExitCode = exitCode
+		if status == "completed" || status == "failed" {
+			op.Request.BackupPassword = ""
+			op.Request.RegistryCredentials = nil
+			time.AfterFunc(completedOperationRetention, func() {
+				s.removeOperation(operationID)
+			})
+		}
+	}
+}
+
+func (s *Service) removeOperation(operationID string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	op, exists := s.operations[operationID]
+	if !exists {
+		return
+	}
+	delete(s.operations, operationID)
+	if currentOpID, active := s.activeOperations[op.StackName]; active && currentOpID == operationID {
+		delete(s.activeOperations, op.StackName)
 	}
 }
 

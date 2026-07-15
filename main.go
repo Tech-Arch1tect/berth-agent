@@ -148,7 +148,6 @@ func RegisterRoutes(
 
 	api.POST("/stacks/:stackName/operations", operationsHandler.StartOperation)
 	api.GET("/operations/:operationId/stream", operationsHandler.StreamOperation)
-	api.GET("/operations/:operationId/status", operationsHandler.GetOperationStatus)
 
 	api.GET("/stacks/:stackName/files", filesHandler.ListDirectory)
 	api.GET("/stacks/:stackName/files/read", filesHandler.ReadFile)
