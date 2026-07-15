@@ -3,7 +3,9 @@ package backup
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -86,6 +88,103 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 
 type DeleteBackupRequest struct {
 	BackupPassword string `json:"backup_password"`
+}
+
+const backupPasswordHeader = "X-Backup-Password"
+
+func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, componentID, password string, err error) {
+	stackName = c.Param("stackName")
+	if err := validation.ValidateStackName(stackName); err != nil {
+		return "", "", "", "", common.SendBadRequest(c, "Invalid stack name: "+err.Error())
+	}
+	backupID = c.Param("backupId")
+	if _, err := uuid.Parse(backupID); err != nil {
+		return "", "", "", "", common.SendBadRequest(c, "Invalid backup id")
+	}
+	componentID = c.QueryParam("component")
+	if componentID == "" {
+		return "", "", "", "", common.SendBadRequest(c, "A component id is required")
+	}
+	password = c.Request().Header.Get(backupPasswordHeader)
+	if password == "" {
+		return "", "", "", "", common.SendBadRequest(c, "A backup password is required")
+	}
+	return stackName, backupID, componentID, password, nil
+}
+
+func (h *Handler) sendBrowseError(c echo.Context, err error) error {
+	switch {
+	case errors.Is(err, ErrRunNotFound):
+		return common.SendNotFound(c, "backup not found")
+	case errors.Is(err, ErrComponentNotFound), errors.Is(err, ErrPathNotFound):
+		return common.SendNotFound(c, err.Error())
+	case errors.Is(err, ErrRepositoryBusy):
+		return common.SendConflict(c, err.Error())
+	default:
+		return common.SendInternalError(c, err.Error())
+	}
+}
+
+func (h *Handler) ListBackupFiles(c echo.Context) error {
+	stackName, backupID, componentID, password, err := h.bindBrowseParams(c)
+	if err != nil {
+		return err
+	}
+
+	listing, svcErr := h.service.ListBackupFiles(c.Request().Context(), stackName, backupID, componentID, c.QueryParam("path"), password)
+	if svcErr != nil {
+		return h.sendBrowseError(c, svcErr)
+	}
+	return common.SendSuccess(c, listing)
+}
+
+func (h *Handler) DownloadBackupFiles(c echo.Context) error {
+	stackName, backupID, componentID, password, err := h.bindBrowseParams(c)
+	if err != nil {
+		return err
+	}
+	paths := c.QueryParams()["path"]
+	if len(paths) == 0 {
+		return common.SendBadRequest(c, "At least one path is required")
+	}
+
+	ctx := c.Request().Context()
+	response := c.Response()
+
+	if len(paths) == 1 {
+		entry, statErr := h.service.StatBackupFile(ctx, stackName, backupID, componentID, paths[0], password)
+		if statErr != nil {
+			return h.sendBrowseError(c, statErr)
+		}
+		if entry.Type == "file" {
+			response.Header().Set(echo.HeaderContentType, "application/octet-stream")
+			response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", entry.Name))
+			response.Header().Set(echo.HeaderContentLength, strconv.FormatUint(entry.Size, 10))
+			response.WriteHeader(http.StatusOK)
+			return h.service.DumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, response.Writer)
+		}
+	}
+
+	response.Header().Set(echo.HeaderContentType, "application/gzip")
+	response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", archiveFileName(stackName, backupID, componentID)))
+	response.WriteHeader(http.StatusOK)
+	return h.service.ArchiveBackupFiles(ctx, stackName, backupID, componentID, paths, password, response.Writer)
+}
+
+func archiveFileName(stackName, backupID, componentID string) string {
+	sanitise := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+				return r
+			}
+			return '-'
+		}, s)
+	}
+	shortID := backupID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	return sanitise(stackName) + "-" + sanitise(shortID) + "-" + sanitise(componentID) + ".tar.gz"
 }
 
 func (h *Handler) DeleteStackBackup(c echo.Context) error {
