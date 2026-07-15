@@ -52,7 +52,8 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 
 	orderComponentsForRestore(components)
 
-	if err := s.validateRestoreTargets(ctx, stackName, stackPath, components); err != nil {
+	volumesToCreate, err := s.validateRestoreTargets(ctx, stackName, stackPath, components)
+	if err != nil {
 		return err
 	}
 
@@ -89,6 +90,12 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 				writer.WriteStderr(fmt.Sprintf("Failed to start the stack after restore: %v", err))
 			}
 		}()
+	}
+
+	for _, component := range volumesToCreate {
+		if err := s.createMissingVolume(ctx, component, writer); err != nil {
+			return err
+		}
 	}
 
 	for _, component := range components {
@@ -185,38 +192,58 @@ func (s *Service) currentComposeTargets(stackName, stackPath string) (binds, vol
 	return binds, volumes, nil
 }
 
-func (s *Service) missingNamedVolumes(ctx context.Context, components []Component) ([]string, error) {
-	var missing []string
+func missingVolumeAction(component Component) (create bool, err error) {
+	if component.VolumeDef == nil {
+		return false, fmt.Errorf("cannot restore volume %s: it does not exist and this backup was taken before volume definitions were recorded; create the stack's volumes first (docker compose up --no-start), then retry", component.VolumeName)
+	}
+	if component.VolumeDef.External {
+		return false, fmt.Errorf("cannot restore volume %s: external volume %q does not exist and cannot be created automatically; provision it, then retry", component.ID, component.VolumeName)
+	}
+	return true, nil
+}
+
+func (s *Service) planMissingVolumes(ctx context.Context, components []Component) ([]Component, error) {
+	var toCreate []Component
 	for _, component := range components {
 		if component.Kind != KindVolume || component.VolumeName == "" {
 			continue
 		}
-		if _, err := s.dockerClient.InspectVolume(ctx, component.VolumeName); err != nil {
-			missing = append(missing, component.VolumeName)
+		if _, err := s.dockerClient.InspectVolume(ctx, component.VolumeName); err == nil {
+			continue
+		}
+		create, err := missingVolumeAction(component)
+		if err != nil {
+			return nil, err
+		}
+		if create {
+			toCreate = append(toCreate, component)
 		}
 	}
-	return missing, nil
+	return toCreate, nil
 }
 
-func (s *Service) validateRestoreTargets(ctx context.Context, stackName, stackPath string, components []Component) error {
+func (s *Service) createMissingVolume(ctx context.Context, component Component, writer ProgressWriter) error {
+	def := component.VolumeDef
+	writer.WriteProgress("Creating missing volume " + component.VolumeName + "...")
+	if _, err := s.dockerClient.CreateVolume(ctx, component.VolumeName, def.Driver, def.DriverOpts, def.Labels); err != nil {
+		return fmt.Errorf("failed to create volume %s before restoring into it: %w", component.VolumeName, err)
+	}
+	writer.WriteStdout("Created volume " + component.VolumeName)
+	return nil
+}
+
+func (s *Service) validateRestoreTargets(ctx context.Context, stackName, stackPath string, components []Component) ([]Component, error) {
 	if !restoringStackDirectory(components) {
 		binds, volumes, err := s.currentComposeTargets(stackName, stackPath)
 		if err != nil {
-			return fmt.Errorf("cannot read the current compose configuration to verify restore targets: %w", err)
+			return nil, fmt.Errorf("cannot read the current compose configuration to verify restore targets: %w", err)
 		}
 		if err := driftError(components, binds, volumes); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	missing, err := s.missingNamedVolumes(ctx, components)
-	if err != nil {
-		return err
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("cannot restore: named volume(s) %s do not exist; create the stack's volumes first (docker compose up --no-start), then retry", strings.Join(missing, ", "))
-	}
-	return nil
+	return s.planMissingVolumes(ctx, components)
 }
 
 func (s *Service) resolveRestoreTargets(ctx context.Context, stackName string, components []Component) ([]Component, error) {

@@ -21,7 +21,11 @@ type composeServiceConfig struct {
 }
 
 type composeVolumeConfig struct {
-	Name string `json:"name"`
+	Name       string            `json:"name"`
+	External   bool              `json:"external"`
+	Driver     string            `json:"driver"`
+	DriverOpts map[string]string `json:"driver_opts"`
+	Labels     map[string]string `json:"labels"`
 }
 
 type composeProject struct {
@@ -48,7 +52,7 @@ func BuildComponents(project *composeProject, stackPath, backupLocation string) 
 
 	var skipped []SkippedMount
 	bindSources := map[string]bool{}
-	volumeNames := map[string]bool{}
+	volumeDefs := map[string]composeVolumeConfig{}
 	anonymousKeys := map[string]Component{}
 
 	serviceNames := make([]string, 0, len(project.Services))
@@ -93,7 +97,7 @@ func BuildComponents(project *composeProject, stackPath, backupLocation string) 
 				if !declared || volumeConfig.Name == "" {
 					return nil, nil, fmt.Errorf("volume %q used by service %q has no resolved name in the compose configuration; refusing to guess which volume to back up", entry.Source, serviceName)
 				}
-				volumeNames[volumeConfig.Name] = true
+				volumeDefs[volumeConfig.Name] = volumeConfig
 			case "tmpfs":
 				skipped = append(skipped, SkippedMount{
 					Kind:    "tmpfs",
@@ -143,16 +147,23 @@ func BuildComponents(project *composeProject, stackPath, backupLocation string) 
 		components = append(components, component)
 	}
 
-	sortedVolumes := make([]string, 0, len(volumeNames))
-	for name := range volumeNames {
+	sortedVolumes := make([]string, 0, len(volumeDefs))
+	for name := range volumeDefs {
 		sortedVolumes = append(sortedVolumes, name)
 	}
 	sort.Strings(sortedVolumes)
 	for _, name := range sortedVolumes {
+		config := volumeDefs[name]
 		components = append(components, Component{
 			ID:         string(KindVolume) + ":" + name,
 			Kind:       KindVolume,
 			VolumeName: name,
+			VolumeDef: &VolumeDefinition{
+				External:   config.External,
+				Driver:     config.Driver,
+				DriverOpts: config.DriverOpts,
+				Labels:     config.Labels,
+			},
 		})
 	}
 

@@ -88,6 +88,19 @@ func (c *Client) InspectVolume(ctx context.Context, volumeID string) (*volume.Vo
 	return &vol, nil
 }
 
+func (c *Client) CreateVolume(ctx context.Context, name, driver string, driverOpts, labels map[string]string) (volume.Volume, error) {
+	vol, err := c.cli.VolumeCreate(ctx, volume.CreateOptions{
+		Name:       name,
+		Driver:     driver,
+		DriverOpts: driverOpts,
+		Labels:     labels,
+	})
+	if err != nil {
+		return volume.Volume{}, fmt.Errorf("failed to create volume %s: %w", name, err)
+	}
+	return vol, nil
+}
+
 func (c *Client) GetVolumesByLabels(ctx context.Context, labels map[string]string) ([]*volume.Volume, error) {
 	args := filters.NewArgs()
 	for key, value := range labels {
