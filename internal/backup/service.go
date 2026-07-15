@@ -349,7 +349,35 @@ func (s *Service) enumerateComponents(ctx context.Context, stackName, stackPath 
 		return nil, nil, err
 	}
 
-	return s.resolveAnonymousVolumes(ctx, stackName, components, skipped)
+	components, skipped, err = s.resolveAnonymousVolumes(ctx, stackName, components, skipped)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	s.enrichVolumeDefinitions(ctx, components)
+	return components, skipped, nil
+}
+
+func (s *Service) enrichVolumeDefinitions(ctx context.Context, components []Component) {
+	for i := range components {
+		component := &components[i]
+		if component.Kind != KindVolume || component.VolumeDef == nil || component.VolumeDef.External || component.VolumeName == "" {
+			continue
+		}
+		vol, err := s.dockerClient.InspectVolume(ctx, component.VolumeName)
+		if err != nil {
+			continue
+		}
+		if vol.Driver != "" {
+			component.VolumeDef.Driver = vol.Driver
+		}
+		if len(vol.Options) > 0 {
+			component.VolumeDef.DriverOpts = vol.Options
+		}
+		if len(vol.Labels) > 0 {
+			component.VolumeDef.Labels = vol.Labels
+		}
+	}
 }
 
 func (s *Service) resolveAnonymousVolumes(ctx context.Context, stackName string, components []Component, skipped []SkippedMount) ([]Component, []SkippedMount, error) {
