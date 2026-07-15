@@ -321,7 +321,7 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 	return nil
 }
 
-func (s *Service) enumerateComponents(ctx context.Context, stackName, stackPath string) ([]Component, []SkippedMount, error) {
+func (s *Service) composeComponents(stackName, stackPath string) ([]Component, []SkippedMount, error) {
 	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
 	if err != nil {
 		return nil, nil, err
@@ -340,7 +340,11 @@ func (s *Service) enumerateComponents(ctx context.Context, stackName, stackPath 
 		return nil, nil, err
 	}
 
-	components, skipped, err := BuildComponents(project, stackPath, s.cfg.BackupLocation)
+	return BuildComponents(project, stackPath, s.cfg.BackupLocation)
+}
+
+func (s *Service) enumerateComponents(ctx context.Context, stackName, stackPath string) ([]Component, []SkippedMount, error) {
+	components, skipped, err := s.composeComponents(stackName, stackPath)
 	if err != nil {
 		return nil, nil, err
 	}

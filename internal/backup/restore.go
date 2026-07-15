@@ -52,6 +52,10 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 
 	orderComponentsForRestore(components)
 
+	if err := s.validateRestoreTargets(ctx, stackName, stackPath, components); err != nil {
+		return err
+	}
+
 	if opts.StopMode == "" {
 		running, err := s.runningContainerCount(ctx, stackName)
 		if err != nil {
@@ -136,6 +140,83 @@ func selectRestoreComponents(run *Run, requested []string) ([]Component, []strin
 		return nil, nil, fmt.Errorf("backup %s contains no restorable components", run.ID)
 	}
 	return selected, notRestorable, nil
+}
+
+func restoringStackDirectory(components []Component) bool {
+	for _, component := range components {
+		if component.Kind == KindStackDirectory {
+			return true
+		}
+	}
+	return false
+}
+
+func driftError(components []Component, currentBinds, currentVolumes map[string]bool) error {
+	for _, component := range components {
+		switch component.Kind {
+		case KindBindMount:
+			if !currentBinds[component.SourcePath] {
+				return fmt.Errorf("cannot restore bind mount %s: its source %q is no longer used by this stack's compose configuration; add it back to the compose file, then retry", component.ID, component.SourcePath)
+			}
+		case KindVolume:
+			if !currentVolumes[component.VolumeName] {
+				return fmt.Errorf("cannot restore volume %s: %q is no longer declared in this stack's compose configuration; add it back to the compose file, then retry", component.ID, component.VolumeName)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) currentComposeTargets(stackName, stackPath string) (binds, volumes map[string]bool, err error) {
+	current, _, err := s.composeComponents(stackName, stackPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	binds = map[string]bool{}
+	volumes = map[string]bool{}
+	for _, component := range current {
+		switch component.Kind {
+		case KindBindMount:
+			binds[component.SourcePath] = true
+		case KindVolume:
+			volumes[component.VolumeName] = true
+		}
+	}
+	return binds, volumes, nil
+}
+
+func (s *Service) missingNamedVolumes(ctx context.Context, components []Component) ([]string, error) {
+	var missing []string
+	for _, component := range components {
+		if component.Kind != KindVolume || component.VolumeName == "" {
+			continue
+		}
+		if _, err := s.dockerClient.InspectVolume(ctx, component.VolumeName); err != nil {
+			missing = append(missing, component.VolumeName)
+		}
+	}
+	return missing, nil
+}
+
+func (s *Service) validateRestoreTargets(ctx context.Context, stackName, stackPath string, components []Component) error {
+	if !restoringStackDirectory(components) {
+		binds, volumes, err := s.currentComposeTargets(stackName, stackPath)
+		if err != nil {
+			return fmt.Errorf("cannot read the current compose configuration to verify restore targets: %w", err)
+		}
+		if err := driftError(components, binds, volumes); err != nil {
+			return err
+		}
+	}
+
+	missing, err := s.missingNamedVolumes(ctx, components)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("cannot restore: named volume(s) %s do not exist; create the stack's volumes first (docker compose up --no-start), then retry", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func (s *Service) resolveRestoreTargets(ctx context.Context, stackName string, components []Component) ([]Component, error) {
