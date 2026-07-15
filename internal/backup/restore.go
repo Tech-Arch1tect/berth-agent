@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/docker/docker/api/types/mount"
@@ -48,6 +49,8 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 	if err != nil {
 		return err
 	}
+
+	orderComponentsForRestore(components)
 
 	if opts.StopMode == "" {
 		running, err := s.runningContainerCount(ctx, stackName)
@@ -271,8 +274,32 @@ func restoreArgs(component Component, keepExtraFiles bool) []string {
 	}
 	if !keepExtraFiles {
 		args = append(args, "--delete")
+		for _, exclude := range component.Excludes {
+			args = append(args, "--exclude", "/"+exclude)
+		}
 	}
 	return args
+}
+
+func restoreKindRank(kind ComponentKind) int {
+	switch kind {
+	case KindStackDirectory:
+		return 0
+	case KindBindMount:
+		return 1
+	case KindVolume:
+		return 2
+	case KindAnonymousVolume:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func orderComponentsForRestore(components []Component) {
+	sort.SliceStable(components, func(i, j int) bool {
+		return restoreKindRank(components[i].Kind) < restoreKindRank(components[j].Kind)
+	})
 }
 
 func restoreTargetMount(component Component) (mount.Mount, error) {
