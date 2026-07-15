@@ -80,32 +80,67 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		return err
 	}
 
+	var stopped []string
 	if opts.StopMode == "stop" {
-		stopped, err := s.stopStackContainers(ctx, stackName, writer)
+		stopped, err = s.stopStackContainers(ctx, stackName, writer)
 		if err != nil {
 			return fmt.Errorf("failed to stop the stack before restore: %w", err)
 		}
-		defer func() {
-			if err := s.startContainers(ctx, stopped, writer); err != nil {
-				writer.WriteStderr(fmt.Sprintf("Failed to start the stack after restore: %v", err))
-			}
-		}()
 	}
 
-	for _, component := range volumesToCreate {
-		if err := s.createMissingVolume(ctx, component, writer); err != nil {
-			return err
-		}
+	restored, restoreErr := s.runRestore(ctx, image, opts, run, components, volumesToCreate, writer)
+	if restoreErr != nil {
+		reportRestoreFailure(writer, components, restored)
+		return restoreErr
 	}
 
-	for _, component := range components {
-		if err := s.restoreComponent(ctx, image, opts.Password, run, component, opts.KeepExtraFiles, writer); err != nil {
-			return err
+	if len(stopped) > 0 {
+		if err := s.startContainers(ctx, stopped, writer); err != nil {
+			writer.WriteStderr(fmt.Sprintf("Failed to start the stack after restore: %v", err))
 		}
 	}
 
 	writer.WriteProgress(fmt.Sprintf("Restore of backup %s completed: %d component(s)", run.ID, len(components)))
 	return nil
+}
+
+func (s *Service) runRestore(ctx context.Context, image string, opts RestoreOptions, run *Run, components, volumesToCreate []Component, writer ProgressWriter) ([]string, error) {
+	for _, component := range volumesToCreate {
+		if err := s.createMissingVolume(ctx, component, writer); err != nil {
+			return nil, err
+		}
+	}
+
+	var restored []string
+	for _, component := range components {
+		if err := s.restoreComponent(ctx, image, opts.Password, run, component, opts.KeepExtraFiles, writer); err != nil {
+			return restored, err
+		}
+		restored = append(restored, component.ID)
+	}
+	return restored, nil
+}
+
+func reportRestoreFailure(writer ProgressWriter, components []Component, restored []string) {
+	restoredSet := make(map[string]bool, len(restored))
+	for _, id := range restored {
+		restoredSet[id] = true
+	}
+	var notRestored []string
+	for _, component := range components {
+		if !restoredSet[component.ID] {
+			notRestored = append(notRestored, component.ID)
+		}
+	}
+
+	writer.WriteStderr("Restore failed. The stack has been left stopped because its data is now inconsistent.")
+	if len(restored) > 0 {
+		writer.WriteStderr("Rolled back to the backup: " + strings.Join(restored, ", "))
+	}
+	if len(notRestored) > 0 {
+		writer.WriteStderr("Left at their previous state: " + strings.Join(notRestored, ", "))
+	}
+	writer.WriteStderr("Resolve the cause and re-run the restore; start the stack manually only once you have accepted the inconsistency.")
 }
 
 func selectRestoreComponents(run *Run, requested []string) ([]Component, []string, error) {
