@@ -289,6 +289,7 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 			)
 			s.updateOperationStatus(operationID, "failed", nil)
 			operation.Broadcaster.BroadcastError(fmt.Sprintf("Command execution error: %v", err))
+			operation.Broadcaster.BroadcastComplete(false, 1)
 
 			s.auditService.LogOperationEvent(audit.EventOperationFailed, "", operation.StackName, operationID, operation.Request.Command, false, err.Error(), duration.Milliseconds(), map[string]any{
 				"services": operation.Request.Services,
@@ -536,6 +537,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 	if err != nil {
 		s.updateOperationStatus(operation.ID, "failed", nil)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Backup operation failed: %v", err))
+		operation.Broadcaster.BroadcastComplete(false, 1)
 		return err
 	}
 
