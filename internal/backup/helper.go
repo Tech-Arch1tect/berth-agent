@@ -121,19 +121,18 @@ func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID
 	return bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(buffer.String())}, err
 }
 
-func (s *Service) probeMissingHostPaths(ctx context.Context, image, stackName, runID string, paths []string) ([]string, error) {
+func (s *Service) probeHostPaths(ctx context.Context, image, stackName, runID string, paths []string) (map[string]string, error) {
 	if len(paths) == 0 {
-		return nil, nil
+		return map[string]string{}, nil
 	}
 
-	script := `missing=0
-for p in "$@"; do
-  if [ ! -e "` + helperHostProbeRoot + `$p" ]; then
-    echo "BERTH_MISSING:$p"
-    missing=1
-  fi
-done
-exit $missing`
+	script := `for p in "$@"; do
+  fp="` + helperHostProbeRoot + `$p"
+  if [ ! -e "$fp" ]; then echo "BERTH_MISSING:$p"
+  elif [ -f "$fp" ]; then echo "BERTH_FILE:$p"
+  elif [ -d "$fp" ]; then echo "BERTH_DIR:$p"
+  else echo "BERTH_OTHER:$p"; fi
+done`
 
 	spec := docker.ContainerRunSpec{
 		Image:      image,
@@ -148,19 +147,28 @@ exit $missing`
 	var buffer bytes.Buffer
 	exitCode, err := s.dockerClient.RunContainer(ctx, spec, &buffer, &buffer)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check that all backup source paths exist on the host: %w", err)
+		return nil, fmt.Errorf("failed to check the backup source paths on the host: %w", err)
 	}
-	if exitCode != 0 && exitCode != 1 {
+	if exitCode != 0 {
 		return nil, fmt.Errorf("host path check failed with exit code %d: %s", exitCode, strings.TrimSpace(buffer.String()))
 	}
 
-	var missing []string
-	for line := range strings.Lines(buffer.String()) {
-		if path, found := strings.CutPrefix(strings.TrimSpace(line), "BERTH_MISSING:"); found {
-			missing = append(missing, path)
+	return parseHostPathTypes(buffer.String()), nil
+}
+
+func parseHostPathTypes(output string) map[string]string {
+	prefixes := map[string]string{"BERTH_MISSING:": "missing", "BERTH_FILE:": "file", "BERTH_DIR:": "dir", "BERTH_OTHER:": "other"}
+	types := map[string]string{}
+	for line := range strings.Lines(output) {
+		line = strings.TrimSpace(line)
+		for prefix, kind := range prefixes {
+			if path, found := strings.CutPrefix(line, prefix); found {
+				types[path] = kind
+				break
+			}
 		}
 	}
-	return missing, nil
+	return types
 }
 
 func streamLines(reader io.Reader, handle func(string)) {

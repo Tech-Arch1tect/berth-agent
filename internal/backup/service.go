@@ -439,9 +439,26 @@ func (s *Service) precheckSources(ctx context.Context, image string, run *Run) e
 		}
 	}
 
-	missing, err := s.probeMissingHostPaths(ctx, image, run.StackName, run.ID, hostPaths)
+	types, err := s.probeHostPaths(ctx, image, run.StackName, run.ID, hostPaths)
 	if err != nil {
 		return err
+	}
+
+	var missing []string
+	for i := range run.Components {
+		component := &run.Components[i]
+		if component.Kind != KindStackDirectory && component.Kind != KindBindMount {
+			continue
+		}
+		switch types[component.SourcePath] {
+		case "file":
+			if component.Kind == KindBindMount {
+				component.IsFile = true
+			}
+		case "dir", "other":
+		default:
+			missing = append(missing, component.SourcePath)
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("refusing to back up: the following mount source paths do not exist on the host: %s", strings.Join(missing, ", "))

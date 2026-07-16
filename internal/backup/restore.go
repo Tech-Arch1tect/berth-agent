@@ -1,12 +1,16 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/docker/docker/api/types/mount"
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
 )
 
 type RestoreOptions struct {
@@ -541,8 +545,14 @@ func restoreTargetMount(component Component) (mount.Mount, error) {
 	}
 }
 
+const helperRestoreParent = "/berth-restore/parent"
+
 func (s *Service) restoreComponent(ctx context.Context, image, password string, run *Run, component Component, keepExtraFiles bool, writer ProgressWriter) error {
 	writer.WriteProgress("Restoring " + component.ID + "...")
+
+	if component.Kind == KindBindMount && component.IsFile {
+		return s.restoreFileComponent(ctx, image, password, run, component, writer)
+	}
 
 	targetMount, err := restoreTargetMount(component)
 	if err != nil {
@@ -567,5 +577,41 @@ func (s *Service) restoreComponent(ctx context.Context, image, password string, 
 	}
 
 	writer.WriteStdout(fmt.Sprintf("%s: restored snapshot %s", component.ID, component.SnapshotID[:8]))
+	return nil
+}
+
+func (s *Service) restoreFileComponent(ctx context.Context, image, password string, run *Run, component Component, writer ProgressWriter) error {
+	parentDir := filepath.Dir(component.SourcePath)
+	fileName := filepath.Base(component.SourcePath)
+	snapshotFilePath := componentSourceMountPath(component)
+
+	script := `set -e
+restic dump "$1" "$2" > "$3"`
+	spec := docker.ContainerRunSpec{
+		Image:      image,
+		Entrypoint: []string{"/bin/sh", "-c", script, "sh", component.SnapshotID, snapshotFilePath, helperRestoreParent + "/" + fileName},
+		Env:        resticEnv(password),
+		Mounts: []mount.Mount{
+			repoMount(s.repoHostPath(run.StackName), false),
+			{
+				Type:        mount.TypeBind,
+				Source:      parentDir,
+				Target:      helperRestoreParent,
+				BindOptions: &mount.BindOptions{CreateMountpoint: true},
+			},
+		},
+		Labels: s.helperLabels(run.StackName, run.ID),
+	}
+
+	var stderr bytes.Buffer
+	exitCode, err := s.dockerClient.RunContainer(ctx, spec, io.Discard, &stderr)
+	if err != nil {
+		return fmt.Errorf("restore of %s failed: %w", component.ID, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("restore of %s failed with exit code %d: %s", component.ID, exitCode, strings.TrimSpace(stderr.String()))
+	}
+
+	writer.WriteStdout(fmt.Sprintf("%s: restored file %s", component.ID, fileName))
 	return nil
 }
