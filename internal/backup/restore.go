@@ -45,7 +45,9 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		return err
 	}
 
-	components, err = s.resolveRestoreTargets(ctx, stackName, components)
+	projectName := s.resolveComposeProjectName(stackName)
+
+	components, err = s.resolveRestoreTargets(ctx, projectName, components)
 	if err != nil {
 		return err
 	}
@@ -58,12 +60,12 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 	}
 
 	if opts.StopMode == "" {
-		running, err := s.runningContainerCount(ctx, stackName)
+		active, err := s.activeContainerCount(ctx, projectName)
 		if err != nil {
 			return fmt.Errorf("failed to check for running containers before restore: %w", err)
 		}
-		if running > 0 {
-			return fmt.Errorf("refusing to restore while %d container(s) of stack %s are running: restoring under a live application corrupts data; stop the stack or request the restore with --stop", running, stackName)
+		if active > 0 {
+			return fmt.Errorf("refusing to restore while %d container(s) of stack %s are running, paused or restarting: restoring under a live application corrupts data; stop the stack or request the restore with --stop", active, stackName)
 		}
 	}
 
@@ -82,7 +84,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 
 	var stopped []string
 	if opts.StopMode == "stop" {
-		stopped, err = s.stopStackContainers(ctx, stackName, writer)
+		stopped, err = s.stopStackContainers(ctx, projectName, writer)
 		if err != nil {
 			return fmt.Errorf("failed to stop the stack before restore: %w", err)
 		}
@@ -281,7 +283,27 @@ func (s *Service) validateRestoreTargets(ctx context.Context, stackName, stackPa
 	return s.planMissingVolumes(ctx, components)
 }
 
-func (s *Service) resolveRestoreTargets(ctx context.Context, stackName string, components []Component) ([]Component, error) {
+func (s *Service) resolveComposeProjectName(stackName string) string {
+	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
+	if err != nil {
+		return stackName
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return stackName
+	}
+	project, err := parseComposeProject(output)
+	if err != nil || project.Name == "" {
+		return stackName
+	}
+	return project.Name
+}
+
+func activeContainerStates() []string {
+	return []string{"running", "paused", "restarting"}
+}
+
+func (s *Service) resolveRestoreTargets(ctx context.Context, projectName string, components []Component) ([]Component, error) {
 	resolved := make([]Component, 0, len(components))
 	for _, component := range components {
 		if component.Kind != KindAnonymousVolume {
@@ -291,7 +313,7 @@ func (s *Service) resolveRestoreTargets(ctx context.Context, stackName string, c
 
 		containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
 			"label": {
-				composeProjectLabel + "=" + stackName,
+				composeProjectLabel + "=" + projectName,
 				composeServiceLabel + "=" + component.Service,
 			},
 		})
@@ -320,17 +342,17 @@ func (s *Service) resolveRestoreTargets(ctx context.Context, stackName string, c
 	return resolved, nil
 }
 
-func (s *Service) stopStackContainers(ctx context.Context, stackName string, writer ProgressWriter) ([]string, error) {
-	running, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-		"label":  {composeProjectLabel + "=" + stackName},
-		"status": {"running"},
+func (s *Service) stopStackContainers(ctx context.Context, projectName string, writer ProgressWriter) ([]string, error) {
+	active, err := s.dockerClient.ContainerList(ctx, map[string][]string{
+		"label":  {composeProjectLabel + "=" + projectName},
+		"status": activeContainerStates(),
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	var stopped []string
-	for _, summary := range running {
+	for _, summary := range active {
 		name := containerDisplayName(summary.Names, summary.ID)
 		writer.WriteProgress("Stopping container " + name + "...")
 		if err := s.dockerClient.ContainerStop(ctx, summary.ID); err != nil {
@@ -369,10 +391,10 @@ func containerDisplayName(names []string, id string) string {
 	return id
 }
 
-func (s *Service) runningContainerCount(ctx context.Context, stackName string) (int, error) {
+func (s *Service) activeContainerCount(ctx context.Context, projectName string) (int, error) {
 	containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-		"label":  {composeProjectLabel + "=" + stackName},
-		"status": {"running"},
+		"label":  {composeProjectLabel + "=" + projectName},
+		"status": activeContainerStates(),
 	})
 	if err != nil {
 		return 0, err
