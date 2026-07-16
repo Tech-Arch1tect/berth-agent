@@ -26,6 +26,7 @@ type Component struct {
 	SourcePath      string            `json:"source_path,omitempty"`
 	Service         string            `json:"service,omitempty"`
 	Target          string            `json:"target,omitempty"`
+	ContainerNumber string            `json:"container_number,omitempty"`
 	Excludes        []string          `json:"excludes,omitempty"`
 	SnapshotID      string            `json:"snapshot_id,omitempty"`
 	FilesNew        uint64            `json:"files_new"`

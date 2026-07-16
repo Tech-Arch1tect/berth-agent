@@ -412,6 +412,7 @@ func (s *Service) resolveAnonymousVolumes(ctx context.Context, stackName string,
 				instance.VolumeName = containerMount.Name
 				if number := info.Config.Labels[composeContainerNumberLabel]; number != "" && len(containers) > 1 {
 					instance.ID = component.ID + ":" + number
+					instance.ContainerNumber = number
 				}
 				resolved = append(resolved, instance)
 				found = true

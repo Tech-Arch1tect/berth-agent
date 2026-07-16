@@ -303,6 +303,79 @@ func activeContainerStates() []string {
 	return []string{"running", "paused", "restarting"}
 }
 
+type anonVolumeMatch struct {
+	number     string
+	volumeName string
+}
+
+func resolveAnonVolumeName(component Component, matches []anonVolumeMatch) (string, error) {
+	names := map[string]bool{}
+	if component.ContainerNumber != "" {
+		for _, match := range matches {
+			if match.number == component.ContainerNumber {
+				names[match.volumeName] = true
+			}
+		}
+		switch len(names) {
+		case 0:
+			return "", fmt.Errorf("cannot restore %s: no current container of service %q is replica %s, so its anonymous volume no longer exists (recreate the service so the replica is present, then retry)", component.ID, component.Service, component.ContainerNumber)
+		case 1:
+			return onlyKey(names), nil
+		default:
+			return "", fmt.Errorf("cannot restore %s: replica %s of service %q maps to more than one anonymous volume; refusing to guess", component.ID, component.ContainerNumber, component.Service)
+		}
+	}
+
+	for _, match := range matches {
+		names[match.volumeName] = true
+	}
+	switch len(names) {
+	case 0:
+		return "", fmt.Errorf("cannot restore %s: no container of service %q currently has an anonymous volume at %s (anonymous volumes only exist once their container has been created)", component.ID, component.Service, component.Target)
+	case 1:
+		return onlyKey(names), nil
+	default:
+		return "", fmt.Errorf("cannot restore %s: service %q now runs multiple replicas; cannot tell which one this backup's anonymous volume belongs to; scale the service to one replica and retry", component.ID, component.Service)
+	}
+}
+
+func onlyKey(m map[string]bool) string {
+	for key := range m {
+		return key
+	}
+	return ""
+}
+
+func (s *Service) resolveAnonymousVolumeName(ctx context.Context, projectName string, component Component) (string, error) {
+	containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
+		"label": {
+			composeProjectLabel + "=" + projectName,
+			composeServiceLabel + "=" + component.Service,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list containers while resolving the anonymous volume for %s: %w", component.ID, err)
+	}
+
+	var matches []anonVolumeMatch
+	for _, summary := range containers {
+		info, err := s.dockerClient.ContainerInspect(ctx, summary.ID)
+		if err != nil {
+			return "", fmt.Errorf("failed to inspect container %s while resolving the anonymous volume for %s: %w", summary.ID, component.ID, err)
+		}
+		for _, containerMount := range info.Mounts {
+			if string(containerMount.Type) == "volume" && containerMount.Destination == component.Target && containerMount.Name != "" {
+				matches = append(matches, anonVolumeMatch{
+					number:     info.Config.Labels[composeContainerNumberLabel],
+					volumeName: containerMount.Name,
+				})
+			}
+		}
+	}
+
+	return resolveAnonVolumeName(component, matches)
+}
+
 func (s *Service) resolveRestoreTargets(ctx context.Context, projectName string, components []Component) ([]Component, error) {
 	resolved := make([]Component, 0, len(components))
 	for _, component := range components {
@@ -311,32 +384,11 @@ func (s *Service) resolveRestoreTargets(ctx context.Context, projectName string,
 			continue
 		}
 
-		containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-			"label": {
-				composeProjectLabel + "=" + projectName,
-				composeServiceLabel + "=" + component.Service,
-			},
-		})
+		name, err := s.resolveAnonymousVolumeName(ctx, projectName, component)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list containers while resolving the anonymous volume for %s: %w", component.ID, err)
+			return nil, err
 		}
-
-		currentName := ""
-		for _, summary := range containers {
-			info, err := s.dockerClient.ContainerInspect(ctx, summary.ID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to inspect container %s while resolving the anonymous volume for %s: %w", summary.ID, component.ID, err)
-			}
-			for _, containerMount := range info.Mounts {
-				if string(containerMount.Type) == "volume" && containerMount.Destination == component.Target && containerMount.Name != "" {
-					currentName = containerMount.Name
-				}
-			}
-		}
-		if currentName == "" {
-			return nil, fmt.Errorf("cannot restore %s: no container of service %q currently has an anonymous volume at %s (anonymous volumes only exist once their container has been created)", component.ID, component.Service, component.Target)
-		}
-		component.VolumeName = currentName
+		component.VolumeName = name
 		resolved = append(resolved, component)
 	}
 	return resolved, nil
