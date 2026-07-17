@@ -97,7 +97,7 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 	operationID := uuid.New().String()
 	isSelfOp := s.isSelfOperation(stackName, req)
 
-	broadcaster := NewBroadcaster(operationID)
+	broadcaster := NewBroadcaster()
 
 	operation := &Operation{
 		ID:          operationID,
@@ -120,6 +120,8 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 		zap.Bool("is_self_operation", isSelfOp),
 		zap.Strings("services", req.Services),
 	)
+
+	go s.runOperation(operation)
 
 	return operationID, nil
 }
@@ -157,59 +159,47 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		return fmt.Errorf("operation broadcaster not initialized")
 	}
 
-	s.mutex.RLock()
-	if existingOpID, exists := s.activeOperations[operation.StackName]; exists && existingOpID != operationID {
-		s.mutex.RUnlock()
-		errorMsg := fmt.Sprintf("Another operation (%s) is already running on stack '%s'", existingOpID, operation.StackName)
-		operation.Broadcaster.BroadcastError(errorMsg)
-		return fmt.Errorf("%s", errorMsg)
-	}
-	s.mutex.RUnlock()
+	operation.Broadcaster.StreamTo(ctx, writer)
+	return nil
+}
 
-	subscriberID := fmt.Sprintf("sub-%d", time.Now().UnixNano())
-
-	err := operation.Broadcaster.Subscribe(subscriberID, writer)
-	if err != nil {
-		return err
-	}
-	defer operation.Broadcaster.Unsubscribe(subscriberID)
-
-	if operation.Broadcaster.IsStarted() {
-
-		s.waitForCompletion(ctx, operation)
-		return nil
-	}
-
-	operation.Broadcaster.MarkStarted()
-
-	defer s.unlockStack(operation.StackName, operationID)
+func (s *Service) runOperation(operation *Operation) {
+	ctx := context.Background()
+	defer s.unlockStack(operation.StackName, operation.ID)
 
 	if operation.IsSelfOp {
-		return s.handleSelfOperationWithBroadcast(ctx, operation)
+		s.handleSelfOperationWithBroadcast(ctx, operation)
+		return
 	}
 
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, operation.StackName)
 	if err != nil {
+		s.updateOperationStatus(operation.ID, "failed", nil)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Invalid stack path: %v", err))
-		return fmt.Errorf("invalid stack path: %w", err)
+		return
 	}
 
-	if operation.Request.Command == "create-archive" || operation.Request.Command == "extract-archive" {
-		return s.handleArchiveOperationWithBroadcast(ctx, operation, stackPath)
+	switch operation.Request.Command {
+	case "create-archive", "extract-archive":
+		s.handleArchiveOperationWithBroadcast(ctx, operation, stackPath)
+	case "create-backup", "restore-backup":
+		s.handleBackupOperationWithBroadcast(ctx, operation, stackPath)
+	default:
+		s.runComposeOperation(ctx, operation, stackPath)
 	}
+}
 
-	if operation.Request.Command == "create-backup" || operation.Request.Command == "restore-backup" {
-		return s.handleBackupOperationWithBroadcast(ctx, operation, stackPath)
-	}
+func (s *Service) runComposeOperation(ctx context.Context, operation *Operation, stackPath string) {
+	operationID := operation.ID
 
 	var tempDockerConfig string
 	if len(operation.Request.RegistryCredentials) > 0 {
 		var err error
 		tempDockerConfig, err = s.createTempDockerConfigWithBroadcast(ctx, operation.Request.RegistryCredentials, operation.Broadcaster)
 		if err != nil {
-			operation.Broadcaster.BroadcastError(fmt.Sprintf("Registry authentication failed: %v", err))
 			s.updateOperationStatus(operationID, "failed", nil)
-			return err
+			operation.Broadcaster.BroadcastError(fmt.Sprintf("Registry authentication failed: %v", err))
+			return
 		}
 		defer os.RemoveAll(tempDockerConfig)
 	}
@@ -223,14 +213,16 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		s.updateOperationStatus(operationID, "failed", nil)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to create stdout pipe: %v", err))
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
+		return
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		s.updateOperationStatus(operationID, "failed", nil)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to create stderr pipe: %v", err))
-		return fmt.Errorf("failed to create stderr pipe: %w", err)
+		return
 	}
 
 	s.logger.Debug("starting docker compose command",
@@ -244,8 +236,9 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 			zap.String("operation_id", operationID),
 			zap.Error(err),
 		)
+		s.updateOperationStatus(operationID, "failed", nil)
 		operation.Broadcaster.BroadcastError(fmt.Sprintf("Failed to start command: %v", err))
-		return err
+		return
 	}
 
 	var wg sync.WaitGroup
@@ -289,7 +282,6 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 			)
 			s.updateOperationStatus(operationID, "failed", nil)
 			operation.Broadcaster.BroadcastError(fmt.Sprintf("Command execution error: %v", err))
-			operation.Broadcaster.BroadcastComplete(false, 1)
 
 			s.auditService.LogOperationEvent(audit.EventOperationFailed, "", operation.StackName, operationID, operation.Request.Command, false, err.Error(), duration.Milliseconds(), map[string]any{
 				"services": operation.Request.Services,
@@ -310,26 +302,6 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 			"exit_code": 0,
 			"services":  operation.Request.Services,
 		})
-	}
-
-	s.unlockStack(operation.StackName, operationID)
-
-	time.Sleep(500 * time.Millisecond)
-
-	return nil
-}
-
-func (s *Service) waitForCompletion(ctx context.Context, operation *Operation) error {
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-			if operation.Broadcaster.IsCompleted() {
-				return nil
-			}
-		}
 	}
 }
 
@@ -487,8 +459,6 @@ func (s *Service) handleArchiveOperationWithBroadcast(ctx context.Context, opera
 	operation.Broadcaster.Broadcast(StreamTypeStdout, "Archive operation completed successfully")
 	operation.Broadcaster.BroadcastComplete(true, exitCode)
 
-	s.unlockStack(operation.StackName, operation.ID)
-
 	return nil
 }
 
@@ -544,8 +514,6 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 	exitCode := 0
 	s.updateOperationStatus(operation.ID, "completed", &exitCode)
 	operation.Broadcaster.BroadcastComplete(true, exitCode)
-
-	s.unlockStack(operation.StackName, operation.ID)
 
 	return nil
 }

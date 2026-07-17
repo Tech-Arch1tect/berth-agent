@@ -1,9 +1,10 @@
 package operations
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 )
@@ -16,61 +17,63 @@ type Message struct {
 	ExitCode  *int
 }
 
-type Subscriber struct {
-	ID     string
-	Writer io.Writer
+type streamFrame struct {
+	Type      StreamMessageType `json:"type"`
+	Data      string            `json:"data"`
+	Timestamp time.Time         `json:"timestamp"`
+	Success   *bool             `json:"success,omitempty"`
+	ExitCode  *int              `json:"exitCode,omitempty"`
 }
 
 type Broadcaster struct {
-	operationID  string
-	subscribers  map[string]*Subscriber
-	messageLog   []Message
-	mu           sync.RWMutex
-	started      bool
-	completed    bool
-	completeOnce sync.Once
+	mu         sync.Mutex
+	messageLog []Message
+	completed  bool
+	notify     chan struct{}
 }
 
-func NewBroadcaster(operationID string) *Broadcaster {
+func NewBroadcaster() *Broadcaster {
 	return &Broadcaster{
-		operationID: operationID,
-		subscribers: make(map[string]*Subscriber),
-		messageLog:  make([]Message, 0, 100),
+		messageLog: make([]Message, 0, 100),
+		notify:     make(chan struct{}),
 	}
 }
 
-func (b *Broadcaster) Subscribe(subscriberID string, writer io.Writer) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Broadcaster) StreamTo(ctx context.Context, writer io.Writer) {
+	cursor := 0
+	for {
+		b.mu.Lock()
+		batch := append([]Message(nil), b.messageLog[cursor:]...)
+		cursor = len(b.messageLog)
+		done := b.completed
+		wait := b.notify
+		b.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "[BROADCASTER] Subscriber %s joining operation %s\n", subscriberID, b.operationID)
+		for _, msg := range batch {
+			if !writeFrame(writer, msg) {
+				return
+			}
+			if msg.Type == StreamTypeComplete {
+				return
+			}
+		}
 
-	b.subscribers[subscriberID] = &Subscriber{
-		ID:     subscriberID,
-		Writer: writer,
-	}
+		if done {
+			return
+		}
 
-	for _, msg := range b.messageLog {
-		if msg.Type == StreamTypeComplete {
-			b.writeCompleteMessage(writer, msg)
-		} else {
-			b.writeMessage(writer, msg)
+		select {
+		case <-ctx.Done():
+			return
+		case <-wait:
 		}
 	}
-
-	fmt.Fprintf(os.Stderr, "[BROADCASTER] Subscriber %s received %d historical messages for operation %s\n",
-		subscriberID, len(b.messageLog), b.operationID)
-
-	return nil
 }
 
-func (b *Broadcaster) Unsubscribe(subscriberID string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	delete(b.subscribers, subscriberID)
-	fmt.Fprintf(os.Stderr, "[BROADCASTER] Subscriber %s left operation %s. Remaining: %d\n",
-		subscriberID, b.operationID, len(b.subscribers))
+func (b *Broadcaster) appendLocked(msg Message) {
+	b.messageLog = append(b.messageLog, msg)
+	close(b.notify)
+	b.notify = make(chan struct{})
 }
 
 func (b *Broadcaster) Broadcast(msgType StreamMessageType, data string) {
@@ -80,44 +83,13 @@ func (b *Broadcaster) Broadcast(msgType StreamMessageType, data string) {
 	if b.completed {
 		return
 	}
-
-	msg := Message{
-		Type:      msgType,
-		Data:      data,
-		Timestamp: time.Now(),
-	}
-
-	b.messageLog = append(b.messageLog, msg)
-
-	for _, sub := range b.subscribers {
-		b.writeMessage(sub.Writer, msg)
-	}
+	b.appendLocked(Message{Type: msgType, Data: data, Timestamp: time.Now()})
 }
 
 func (b *Broadcaster) BroadcastComplete(success bool, exitCode int) {
-	b.completeOnce.Do(func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-
-		b.completed = true
-
-		msg := Message{
-			Type:      StreamTypeComplete,
-			Data:      "",
-			Timestamp: time.Now(),
-			Success:   &success,
-			ExitCode:  &exitCode,
-		}
-
-		b.messageLog = append(b.messageLog, msg)
-
-		for _, sub := range b.subscribers {
-			b.writeCompleteMessage(sub.Writer, msg)
-		}
-
-		fmt.Fprintf(os.Stderr, "[BROADCASTER] Operation %s completed - success: %v, exitCode: %d, sent to %d subscribers\n",
-			b.operationID, success, exitCode, len(b.subscribers))
-	})
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.completeLocked(success, exitCode)
 }
 
 func (b *Broadcaster) BroadcastError(errorMsg string) {
@@ -127,96 +99,39 @@ func (b *Broadcaster) BroadcastError(errorMsg string) {
 	if b.completed {
 		return
 	}
+	b.appendLocked(Message{Type: StreamTypeError, Data: errorMsg, Timestamp: time.Now()})
+	b.completeLocked(false, 1)
+}
 
+func (b *Broadcaster) completeLocked(success bool, exitCode int) {
+	if b.completed {
+		return
+	}
 	b.completed = true
-
-	msg := Message{
-		Type:      StreamTypeError,
-		Data:      errorMsg,
-		Timestamp: time.Now(),
-	}
-
-	b.messageLog = append(b.messageLog, msg)
-
-	for _, sub := range b.subscribers {
-		b.writeMessage(sub.Writer, msg)
-	}
-
-	fmt.Fprintf(os.Stderr, "[BROADCASTER] Operation %s error broadcast to %d subscribers: %s\n",
-		b.operationID, len(b.subscribers), errorMsg)
+	b.appendLocked(Message{Type: StreamTypeComplete, Timestamp: time.Now(), Success: &success, ExitCode: &exitCode})
 }
 
-func (b *Broadcaster) writeMessage(writer io.Writer, msg Message) {
-	output := fmt.Sprintf("data: {\"type\":\"%s\",\"data\":\"%s\",\"timestamp\":\"%s\"}\n\n",
-		msg.Type,
-		escapeJSON(msg.Data),
-		msg.Timestamp.Format(time.RFC3339Nano))
-
-	_, err := writer.Write([]byte(output))
+func writeFrame(writer io.Writer, msg Message) bool {
+	payload, err := json.Marshal(streamFrame{
+		Type:      msg.Type,
+		Data:      msg.Data,
+		Timestamp: msg.Timestamp,
+		Success:   msg.Success,
+		ExitCode:  msg.ExitCode,
+	})
 	if err != nil {
-		return
+		return false
+	}
+
+	if _, err := fmt.Fprintf(writer, "data: %s\n\n", payload); err != nil {
+		return false
 	}
 
 	if flusher, ok := writer.(interface{ Flush() }); ok {
 		defer func() { _ = recover() }()
 		flusher.Flush()
 	}
-}
-
-func (b *Broadcaster) writeCompleteMessage(writer io.Writer, msg Message) {
-	if msg.Success == nil || msg.ExitCode == nil {
-		return
-	}
-
-	output := fmt.Sprintf("data: {\"type\":\"%s\",\"success\":%v,\"exitCode\":%d,\"timestamp\":\"%s\"}\n\n",
-		msg.Type,
-		*msg.Success,
-		*msg.ExitCode,
-		msg.Timestamp.Format(time.RFC3339Nano))
-
-	_, err := writer.Write([]byte(output))
-	if err != nil {
-		return
-	}
-
-	if flusher, ok := writer.(interface{ Flush() }); ok {
-		defer func() { _ = recover() }()
-		flusher.Flush()
-	}
-}
-
-func (b *Broadcaster) MarkStarted() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.started = true
-	fmt.Fprintf(os.Stderr, "[BROADCASTER] Operation %s execution started\n", b.operationID)
-}
-
-func (b *Broadcaster) IsStarted() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.started
-}
-
-func (b *Broadcaster) IsCompleted() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.completed
-}
-
-func escapeJSON(s string) string {
-
-	result := ""
-	for _, ch := range s {
-		if ch == '"' {
-			result += "\\\""
-		} else if ch == '\\' {
-			result += "\\\\"
-		} else {
-			result += string(ch)
-		}
-	}
-	return result
+	return true
 }
 
 type BroadcasterProgressWriter struct {
