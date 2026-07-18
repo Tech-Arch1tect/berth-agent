@@ -257,6 +257,13 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 	switch probe.exitCode {
 	case 0:
 	case resticExitRepoDoesNotExist:
+		hasSnapshots, err := s.persistence.HasRecordedSnapshots(run.StackName)
+		if err != nil {
+			return err
+		}
+		if hasSnapshots {
+			return fmt.Errorf("no repository found at %s but earlier backups are recorded for stack %q; refusing to create a new repository (is the backup disk mounted?) - if the old repository is permanently lost, remove the run records under %s on the agent host and retry", repoPath, run.StackName, filepath.Join(s.cfg.BackupPersistenceDir, run.StackName))
+		}
 		writer.WriteProgress("Initialising new backup repository for this stack...")
 		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
 		if err != nil {
@@ -308,6 +315,9 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 			message += ": " + strings.Join(parser.errors, "; ")
 		}
 		component.Error = message
+		if parser.summary != nil && parser.summary.SnapshotID != "" {
+			s.forgetPartialSnapshot(ctx, image, password, run, parser.summary.SnapshotID, writer)
+		}
 		return fmt.Errorf("%s", message)
 	}
 	if parser.summary == nil {
@@ -327,6 +337,20 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 		component.ID, component.SnapshotID, formatBytes(component.BytesAdded),
 		component.FilesNew, component.FilesChanged, component.FilesUnmodified))
 	return nil
+}
+
+func (s *Service) forgetPartialSnapshot(ctx context.Context, image, password string, run *Run, snapshotID string, writer ProgressWriter) {
+	writer.WriteProgress("Removing partial snapshot " + snapshotID + " left by the failed component...")
+	result, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password,
+		[]string{"forget", "--prune", snapshotID},
+		[]mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	if err != nil {
+		writer.WriteStderr(fmt.Sprintf("Failed to remove partial snapshot %s: %v", snapshotID, err))
+		return
+	}
+	if result.exitCode != 0 {
+		writer.WriteStderr(fmt.Sprintf("Removing partial snapshot %s failed with exit code %d: %s", snapshotID, result.exitCode, lastLine(result.output)))
+	}
 }
 
 func (s *Service) composeComponents(stackName, stackPath string) ([]Component, []SkippedMount, error) {

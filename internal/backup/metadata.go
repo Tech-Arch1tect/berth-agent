@@ -116,6 +116,21 @@ func (p *RunPersistence) LoadStackRuns(stackName string) ([]*Run, error) {
 	return runs, nil
 }
 
+func (p *RunPersistence) HasRecordedSnapshots(stackName string) (bool, error) {
+	runs, err := p.LoadStackRuns(stackName)
+	if err != nil {
+		return false, err
+	}
+	for _, run := range runs {
+		for _, component := range run.Components {
+			if component.SnapshotID != "" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func (p *RunPersistence) DeleteRun(stackName, runID string) error {
 	if err := os.Remove(p.runFilename(stackName, runID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete backup run file: %w", err)

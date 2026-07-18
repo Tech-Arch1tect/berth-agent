@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/docker/docker/api/types/mount"
@@ -50,6 +51,9 @@ func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID, passwor
 		unlock, err := s.runResticBuffered(ctx, image, stackName, run.ID, password, []string{"unlock"}, repo)
 		if err != nil {
 			return fmt.Errorf("failed to clear stale repository locks: %w", err)
+		}
+		if unlock.exitCode == resticExitRepoDoesNotExist {
+			return fmt.Errorf("no repository found at %s for this backup; refusing to delete its records (is the backup disk mounted?) - if the repository is permanently lost, remove this backup's run record under %s on the agent host", s.repoHostPath(stackName), filepath.Join(s.cfg.BackupPersistenceDir, stackName))
 		}
 		if unlock.exitCode != 0 {
 			return fmt.Errorf("clearing stale repository locks failed with exit code %d: %s", unlock.exitCode, unlock.output)
