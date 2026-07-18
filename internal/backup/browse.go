@@ -52,6 +52,9 @@ func (s *Service) findSnapshotComponent(stackName, backupID, componentID string)
 
 func componentSnapshotPath(component Component, relPath string) string {
 	root := componentSourceMountPath(component)
+	if component.IsFile {
+		return root
+	}
 	cleaned := path.Clean("/" + relPath)
 	if cleaned == "/" {
 		return root
@@ -78,6 +81,14 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 		return nil, err
 	}
 
+	if component.IsFile {
+		entry, err := s.statFileComponent(ctx, stackName, run, component, password)
+		if err != nil {
+			return nil, err
+		}
+		return &FileListing{Path: "/", Entries: []FileEntry{*entry}}, nil
+	}
+
 	image, err := s.helperImage(ctx)
 	if err != nil {
 		return nil, err
@@ -98,6 +109,36 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 		Path:    strings.TrimPrefix(fullPath, componentSourceMountPath(*component)) + "/",
 		Entries: parseResticLs(result.output, fullPath),
 	}, nil
+}
+
+func (s *Service) statFileComponent(ctx context.Context, stackName string, run *Run, component *Component, password string) (*FileEntry, error) {
+	image, err := s.helperImage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	root := componentSourceMountPath(*component)
+	result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password,
+		[]string{"ls", "--no-lock", component.SnapshotID, root, "--json"},
+		[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect the backup path: %w", err)
+	}
+	if result.exitCode != 0 {
+		return nil, resticReadError("inspecting the path", result)
+	}
+
+	for _, node := range parseResticLsNodes(result.output) {
+		if node.Path == root {
+			return &FileEntry{
+				Name:  path.Base(component.SourcePath),
+				Type:  node.Type,
+				Size:  node.Size,
+				MTime: node.MTime,
+			}, nil
+		}
+	}
+	return nil, ErrPathNotFound
 }
 
 func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string) ([]FileEntry, error) {
@@ -156,6 +197,14 @@ func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, comp
 	for _, relPath := range relPaths {
 		fullPath := componentSnapshotPath(*component, relPath)
 		if fullPath == root {
+			if component.IsFile {
+				entry, err := s.statFileComponent(ctx, stackName, run, component, password)
+				if err != nil {
+					return nil, err
+				}
+				entries = append(entries, *entry)
+				continue
+			}
 			entries = append(entries, FileEntry{Name: "/", Type: "dir"})
 			continue
 		}
@@ -291,22 +340,24 @@ func resticReadError(action string, result bufferedResticResult) error {
 	}
 }
 
-func parseResticLs(output, dir string) []FileEntry {
-	var entries []FileEntry
+type resticLsNode struct {
+	Name        string    `json:"name"`
+	Type        string    `json:"type"`
+	Path        string    `json:"path"`
+	Size        uint64    `json:"size"`
+	MTime       time.Time `json:"mtime"`
+	StructType  string    `json:"struct_type"`
+	MessageType string    `json:"message_type"`
+}
+
+func parseResticLsNodes(output string) []resticLsNode {
+	var nodes []resticLsNode
 	for line := range strings.Lines(output) {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "{") {
 			continue
 		}
-		var node struct {
-			Name        string    `json:"name"`
-			Type        string    `json:"type"`
-			Path        string    `json:"path"`
-			Size        uint64    `json:"size"`
-			MTime       time.Time `json:"mtime"`
-			StructType  string    `json:"struct_type"`
-			MessageType string    `json:"message_type"`
-		}
+		var node resticLsNode
 		if err := json.Unmarshal([]byte(line), &node); err != nil {
 			continue
 		}
@@ -316,6 +367,14 @@ func parseResticLs(output, dir string) []FileEntry {
 		if node.Type != "file" && node.Type != "dir" {
 			continue
 		}
+		nodes = append(nodes, node)
+	}
+	return nodes
+}
+
+func parseResticLs(output, dir string) []FileEntry {
+	var entries []FileEntry
+	for _, node := range parseResticLsNodes(output) {
 		if node.Path == dir || path.Dir(node.Path) != dir {
 			continue
 		}
