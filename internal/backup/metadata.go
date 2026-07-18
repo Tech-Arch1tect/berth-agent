@@ -41,7 +41,11 @@ func (p *RunPersistence) PersistRun(run *Run) error {
 	}
 
 	filename := p.runFilename(run.StackName, run.ID)
-	if err := os.WriteFile(filename, data, 0644); err != nil {
+	temp := filename + ".tmp"
+	if err := os.WriteFile(temp, data, 0644); err != nil {
+		return fmt.Errorf("failed to write backup run file: %w", err)
+	}
+	if err := os.Rename(temp, filename); err != nil {
 		return fmt.Errorf("failed to write backup run file: %w", err)
 	}
 
@@ -102,12 +106,7 @@ func (p *RunPersistence) LoadStackRuns(stackName string) ([]*Run, error) {
 		}
 		run, err := p.LoadRun(stackName, strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
-			p.logger.Warn("failed to load backup run file",
-				zap.String("stack_name", stackName),
-				zap.String("filename", entry.Name()),
-				zap.Error(err),
-			)
-			continue
+			return nil, fmt.Errorf("backup run file %s for stack %s is unreadable: %w - if it is damaged beyond repair, remove it from the agent host and retry", filepath.Join(p.persistenceDir, stackName, entry.Name()), stackName, err)
 		}
 		if run != nil {
 			runs = append(runs, run)
