@@ -29,6 +29,7 @@ type Service struct {
 	dockerClient *docker.Client
 	commandExec  *docker.CommandExecutor
 	persistence  *RunPersistence
+	repoLocks    *repoLockTable
 }
 
 func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client, commandExec *docker.CommandExecutor) (*Service, error) {
@@ -42,6 +43,7 @@ func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker
 		dockerClient: dockerClient,
 		commandExec:  commandExec,
 		persistence:  persistence,
+		repoLocks:    newRepoLockTable(),
 	}, nil
 }
 
@@ -71,6 +73,12 @@ func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string,
 	if opts.StopMode != "" && opts.StopMode != "stop" && opts.StopMode != "pause" {
 		return fmt.Errorf("unsupported stop mode %q", opts.StopMode)
 	}
+
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return ErrRepositoryBusy
+	}
+	defer lock.RUnlock()
 
 	image, err := s.helperImage(ctx)
 	if err != nil {

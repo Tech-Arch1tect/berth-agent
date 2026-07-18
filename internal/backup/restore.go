@@ -28,6 +28,12 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		return err
 	}
 
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return ErrRepositoryBusy
+	}
+	defer lock.RUnlock()
+
 	run, err := s.GetRun(stackName, opts.BackupID)
 	if err != nil {
 		return err

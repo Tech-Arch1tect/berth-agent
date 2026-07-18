@@ -19,6 +19,12 @@ func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID, passwor
 		return err
 	}
 
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryLock() {
+		return ErrRepositoryBusy
+	}
+	defer lock.Unlock()
+
 	run, err := s.GetRun(stackName, backupID)
 	if err != nil {
 		return err

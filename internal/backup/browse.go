@@ -67,6 +67,12 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 		return nil, errNoPassword
 	}
 
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return nil, ErrRepositoryBusy
+	}
+	defer lock.RUnlock()
+
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {
 		return nil, err
@@ -101,6 +107,12 @@ func (s *Service) StatBackupFile(ctx context.Context, stackName, backupID, compo
 	if password == "" {
 		return nil, errNoPassword
 	}
+
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return nil, ErrRepositoryBusy
+	}
+	defer lock.RUnlock()
 
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {
@@ -143,6 +155,12 @@ func (s *Service) DumpBackupFile(ctx context.Context, stackName, backupID, compo
 	if password == "" {
 		return errNoPassword
 	}
+
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return ErrRepositoryBusy
+	}
+	defer lock.RUnlock()
 
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {
@@ -197,6 +215,12 @@ func (s *Service) ArchiveBackupFiles(ctx context.Context, stackName, backupID, c
 	if password == "" {
 		return errNoPassword
 	}
+
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return ErrRepositoryBusy
+	}
+	defer lock.RUnlock()
 
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {
