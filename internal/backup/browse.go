@@ -100,7 +100,7 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 	}, nil
 }
 
-func (s *Service) StatBackupFile(ctx context.Context, stackName, backupID, componentID, relPath, password string) (*FileEntry, error) {
+func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string) ([]FileEntry, error) {
 	if err := s.validateConfiguration(); err != nil {
 		return nil, err
 	}
@@ -119,33 +119,53 @@ func (s *Service) StatBackupFile(ctx context.Context, stackName, backupID, compo
 		return nil, err
 	}
 
-	fullPath := componentSnapshotPath(*component, relPath)
-	if fullPath == componentSourceMountPath(*component) {
-		return &FileEntry{Name: "/", Type: "dir"}, nil
+	root := componentSourceMountPath(*component)
+	parents := map[string]map[string]FileEntry{}
+	for _, relPath := range relPaths {
+		fullPath := componentSnapshotPath(*component, relPath)
+		if fullPath == root {
+			continue
+		}
+		parents[path.Dir(fullPath)] = nil
 	}
 
-	image, err := s.helperImage(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	parent := path.Dir(fullPath)
-	result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password,
-		[]string{"ls", "--no-lock", component.SnapshotID, parent, "--json"},
-		[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect the backup path: %w", err)
-	}
-	if result.exitCode != 0 {
-		return nil, resticReadError("inspecting the path", result)
-	}
-
-	for _, entry := range parseResticLs(result.output, parent) {
-		if entry.Name == path.Base(fullPath) {
-			return &entry, nil
+	if len(parents) > 0 {
+		image, err := s.helperImage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for parent := range parents {
+			result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password,
+				[]string{"ls", "--no-lock", component.SnapshotID, parent, "--json"},
+				[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
+			if err != nil {
+				return nil, fmt.Errorf("failed to inspect the backup path: %w", err)
+			}
+			if result.exitCode != 0 {
+				return nil, resticReadError("inspecting the path", result)
+			}
+			byName := map[string]FileEntry{}
+			for _, entry := range parseResticLs(result.output, parent) {
+				byName[entry.Name] = entry
+			}
+			parents[parent] = byName
 		}
 	}
-	return nil, ErrPathNotFound
+
+	entries := make([]FileEntry, 0, len(relPaths))
+	for _, relPath := range relPaths {
+		fullPath := componentSnapshotPath(*component, relPath)
+		if fullPath == root {
+			entries = append(entries, FileEntry{Name: "/", Type: "dir"})
+			continue
+		}
+		entry, ok := parents[path.Dir(fullPath)][path.Base(fullPath)]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", ErrPathNotFound, relPath)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 func (s *Service) DumpBackupFile(ctx context.Context, stackName, backupID, componentID, relPath, password string, out io.Writer) error {
@@ -235,7 +255,7 @@ func (s *Service) ArchiveBackupFiles(ctx context.Context, stackName, backupID, c
 	root := componentSourceMountPath(*component)
 	entrypoint := []string{"/bin/sh", "-c", archiveScript, "sh", component.SnapshotID, root}
 	for _, relPath := range relPaths {
-		entrypoint = append(entrypoint, componentSnapshotPath(*component, relPath))
+		entrypoint = append(entrypoint, escapeResticPattern(componentSnapshotPath(*component, relPath)))
 	}
 
 	spec := docker.ContainerRunSpec{

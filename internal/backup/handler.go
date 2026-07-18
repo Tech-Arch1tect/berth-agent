@@ -151,18 +151,17 @@ func (h *Handler) DownloadBackupFiles(c echo.Context) error {
 	ctx := c.Request().Context()
 	response := c.Response()
 
-	if len(paths) == 1 {
-		entry, statErr := h.service.StatBackupFile(ctx, stackName, backupID, componentID, paths[0], password)
-		if statErr != nil {
-			return h.sendBrowseError(c, statErr)
-		}
-		if entry.Type == "file" {
-			response.Header().Set(echo.HeaderContentType, "application/octet-stream")
-			response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", entry.Name))
-			response.Header().Set(echo.HeaderContentLength, strconv.FormatUint(entry.Size, 10))
-			response.WriteHeader(http.StatusOK)
-			return h.service.DumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, response.Writer)
-		}
+	entries, statErr := h.service.StatBackupFiles(ctx, stackName, backupID, componentID, paths, password)
+	if statErr != nil {
+		return h.sendBrowseError(c, statErr)
+	}
+
+	if len(paths) == 1 && entries[0].Type == "file" {
+		response.Header().Set(echo.HeaderContentType, "application/octet-stream")
+		response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", entries[0].Name))
+		response.Header().Set(echo.HeaderContentLength, strconv.FormatUint(entries[0].Size, 10))
+		response.WriteHeader(http.StatusOK)
+		return h.service.DumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, response.Writer)
 	}
 
 	response.Header().Set(echo.HeaderContentType, "application/gzip")

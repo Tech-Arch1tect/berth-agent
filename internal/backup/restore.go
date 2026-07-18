@@ -502,7 +502,7 @@ func restoreArgs(component Component, keepExtraFiles bool) []string {
 	if !keepExtraFiles {
 		args = append(args, "--delete")
 		for _, exclude := range component.Excludes {
-			args = append(args, "--exclude", "/"+exclude)
+			args = append(args, "--exclude", "/"+escapeResticPattern(exclude))
 		}
 	}
 	return args

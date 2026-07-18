@@ -24,6 +24,12 @@ func resticEnv(password string) []string {
 	}
 }
 
+var resticPatternEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`)
+
+func escapeResticPattern(path string) string {
+	return resticPatternEscaper.Replace(path)
+}
+
 func componentSourceMountPath(c Component) string {
 	return helperSourceRoot + "/" + componentMountName(c)
 }
@@ -39,7 +45,7 @@ func backupArgs(c Component, stackName, runID string) []string {
 		"--tag", "component:" + c.ID,
 	}
 	for _, exclude := range c.Excludes {
-		args = append(args, "--exclude", sourcePath+"/"+exclude)
+		args = append(args, "--exclude", sourcePath+"/"+escapeResticPattern(exclude))
 	}
 	return args
 }
