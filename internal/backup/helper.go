@@ -171,6 +171,10 @@ func parseHostPathTypes(output string) map[string]string {
 	return types
 }
 
+func commandEcho(name string, args []string) string {
+	return "Running: " + name + " " + strings.Join(args, " ")
+}
+
 func streamLines(reader io.Reader, handle func(string)) {
 	scanner := newLargeScanner(reader)
 	for scanner.Scan() {

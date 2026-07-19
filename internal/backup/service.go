@@ -188,6 +188,7 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath, password str
 
 func (s *Service) verifyRepository(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
 	writer.WriteProgress("Verifying repository integrity...")
+	writer.WriteStdout(commandEcho("restic", []string{"check"}))
 	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {
 		return fmt.Errorf("failed to verify the backup repository: %w", err)
@@ -200,6 +201,7 @@ func (s *Service) verifyRepository(ctx context.Context, image, password string, 
 	}
 	writer.WriteStdout("Repository integrity verified")
 
+	writer.WriteStdout(commandEcho("restic", []string{"stats", "--mode", "raw-data", "--json"}))
 	stats, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"stats", "--mode", "raw-data", "--json"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil || stats.exitCode != 0 {
 		s.logger.Warn("failed to measure repository size after backup",
@@ -250,6 +252,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 	run.ResticVersion = firstLine(version.output)
 	writer.WriteStdout("Backup engine: " + run.ResticVersion)
 
+	writer.WriteStdout(commandEcho("restic", []string{"cat", "config"}))
 	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to probe the backup repository: %w", err)
@@ -265,6 +268,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 			return fmt.Errorf("no repository found at %s but earlier backups are recorded for stack %q; refusing to create a new repository (is the backup disk mounted?) - if the old repository is permanently lost, remove the run records under %s on the agent host and retry", repoPath, run.StackName, filepath.Join(s.cfg.BackupPersistenceDir, run.StackName))
 		}
 		writer.WriteProgress("Initialising new backup repository for this stack...")
+		writer.WriteStdout(commandEcho("restic", []string{"init"}))
 		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
 		if err != nil {
 			return fmt.Errorf("failed to initialise the backup repository: %w", err)
@@ -278,6 +282,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 		return fmt.Errorf("backup repository probe failed with exit code %d: %s", probe.exitCode, probe.output)
 	}
 
+	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
 	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
@@ -300,6 +305,7 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 
 	parser := newResticOutputParser(component.ID, writer)
 	args := backupArgs(*component, run.StackName, run.ID)
+	writer.WriteStdout(commandEcho("restic", args))
 
 	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, args, mounts,
 		parser.handleLine,
@@ -341,6 +347,7 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 
 func (s *Service) forgetPartialSnapshot(ctx context.Context, image, password string, run *Run, snapshotID string, writer ProgressWriter) {
 	writer.WriteProgress("Removing partial snapshot " + snapshotID + " left by the failed component...")
+	writer.WriteStdout(commandEcho("restic", []string{"forget", "--prune", snapshotID}))
 	result, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password,
 		[]string{"forget", "--prune", snapshotID},
 		[]mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
@@ -499,6 +506,7 @@ func (s *Service) precheckSources(ctx context.Context, image string, run *Run) e
 }
 
 func (s *Service) runComposeLifecycle(ctx context.Context, stackPath, command string, writer ProgressWriter) error {
+	writer.WriteStdout(commandEcho("docker", []string{"compose", command}))
 	cmd := exec.CommandContext(ctx, "docker", "compose", command)
 	cmd.Dir = stackPath
 	cmd.Env = []string{

@@ -89,7 +89,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		writer.WriteStdout("Files created after the backup will be removed (exact snapshot state)")
 	}
 
-	if err := s.openRepositoryForRestore(ctx, image, opts.Password, run); err != nil {
+	if err := s.openRepositoryForRestore(ctx, image, opts.Password, run, writer); err != nil {
 		return err
 	}
 
@@ -468,9 +468,10 @@ func (s *Service) activeContainerCount(ctx context.Context, projectName string) 
 	return len(containers), nil
 }
 
-func (s *Service) openRepositoryForRestore(ctx context.Context, image, password string, run *Run) error {
+func (s *Service) openRepositoryForRestore(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
 	repoPath := s.repoHostPath(run.StackName)
 
+	writer.WriteStdout(commandEcho("restic", []string{"cat", "config"}))
 	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to probe the backup repository: %w", err)
@@ -485,6 +486,7 @@ func (s *Service) openRepositoryForRestore(ctx context.Context, image, password 
 		return fmt.Errorf("backup repository probe failed with exit code %d: %s", probe.exitCode, probe.output)
 	}
 
+	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
 	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
@@ -574,7 +576,9 @@ func (s *Service) restoreComponent(ctx context.Context, image string, opts Resto
 	mounts := []mount.Mount{repoMount(s.repoHostPath(run.StackName), false), targetMount}
 
 	parser := newResticOutputParser(component.ID, writer)
-	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, opts.Password, restoreArgs(component, opts.KeepExtraFiles, opts.Sparse), mounts,
+	args := restoreArgs(component, opts.KeepExtraFiles, opts.Sparse)
+	writer.WriteStdout(commandEcho("restic", args))
+	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, opts.Password, args, mounts,
 		parser.handleLine,
 		writer.WriteStderr,
 	)
@@ -613,6 +617,7 @@ func (s *Service) applyRootMetadata(ctx context.Context, image, password string,
 		if node.Path != root {
 			continue
 		}
+		writer.WriteStdout(commandEcho("chown", []string{fmt.Sprintf("%d:%d", node.UID, node.GID), targetPath}) + " && " + "chmod " + fmt.Sprintf("%o", node.permissionBits()) + " " + targetPath)
 		spec := docker.ContainerRunSpec{
 			Image: image,
 			Entrypoint: []string{"/bin/sh", "-c", `chown "$1:$2" "$4" && chmod "$3" "$4"`, "sh",
@@ -644,6 +649,7 @@ func (s *Service) restoreFileComponent(ctx context.Context, image, password stri
 	fileName := filepath.Base(component.SourcePath)
 	snapshotFilePath := componentSourceMountPath(component)
 
+	writer.WriteStdout(commandEcho("restic", []string{"dump", component.SnapshotID, snapshotFilePath}))
 	script := `set -e
 restic dump "$1" "$2" > "$3"`
 	spec := docker.ContainerRunSpec{

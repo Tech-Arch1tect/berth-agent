@@ -206,6 +206,7 @@ func (s *Service) runComposeOperation(ctx context.Context, operation *Operation,
 
 	cmd := s.buildCommand(operation.Request, stackPath)
 	cmd.Dir = stackPath
+	operation.Broadcaster.Broadcast(StreamTypeStdout, "Running: "+strings.Join(cmd.Args, " "))
 
 	if tempDockerConfig != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("DOCKER_CONFIG=%s", tempDockerConfig))
