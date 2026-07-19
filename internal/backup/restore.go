@@ -110,6 +110,9 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		if err := s.startContainers(ctx, stopped, writer); err != nil {
 			writer.WriteStderr(fmt.Sprintf("Failed to start the stack after restore: %v", err))
 		}
+		writer.WriteStdout("The stack was started with its previous containers, which may not match the compose configuration now on disk. Run docker compose up --remove-orphans to apply the configuration and remove containers for services it no longer defines.")
+	} else {
+		writer.WriteStdout("When starting the stack, use docker compose up --remove-orphans so the running stack matches the compose configuration now on disk.")
 	}
 
 	writer.WriteProgress(fmt.Sprintf("Restore of backup %s completed: %d component(s)", run.ID, len(components)))
