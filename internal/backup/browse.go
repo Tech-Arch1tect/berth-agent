@@ -273,7 +273,7 @@ while [ "$i" -lt "$n" ]; do
   set -- "$@" --include "$p"
   i=$((i+1))
 done
-restic -q restore --no-lock "$snap" --target ` + restoreScratchDir + ` "$@" 1>&2
+restic -q restore --no-lock --sparse "$snap" --target ` + restoreScratchDir + ` "$@" 1>&2
 cd "` + restoreScratchDir + `$sub"
 tar czf - .`
 

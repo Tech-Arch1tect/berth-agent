@@ -18,6 +18,7 @@ type RestoreOptions struct {
 	ComponentIDs   []string
 	StopMode       string
 	KeepExtraFiles bool
+	Sparse         bool
 	Password       string
 }
 
@@ -128,7 +129,7 @@ func (s *Service) runRestore(ctx context.Context, image string, opts RestoreOpti
 
 	var restored []string
 	for _, component := range components {
-		if err := s.restoreComponent(ctx, image, opts.Password, run, component, opts.KeepExtraFiles, writer); err != nil {
+		if err := s.restoreComponent(ctx, image, opts, run, component, writer); err != nil {
 			return restored, err
 		}
 		restored = append(restored, component.ID)
@@ -494,13 +495,16 @@ func (s *Service) openRepositoryForRestore(ctx context.Context, image, password 
 	return nil
 }
 
-func restoreArgs(component Component, keepExtraFiles bool) []string {
+func restoreArgs(component Component, keepExtraFiles, sparse bool) []string {
 	sourcePath := componentSourceMountPath(component)
 	args := []string{
 		"restore",
 		component.SnapshotID + ":" + sourcePath,
 		"--target", sourcePath,
 		"--json",
+	}
+	if sparse {
+		args = append(args, "--sparse")
 	}
 	if !keepExtraFiles {
 		args = append(args, "--delete")
@@ -556,11 +560,11 @@ func restoreTargetMount(component Component) (mount.Mount, error) {
 
 const helperRestoreParent = "/berth-restore/parent"
 
-func (s *Service) restoreComponent(ctx context.Context, image, password string, run *Run, component Component, keepExtraFiles bool, writer ProgressWriter) error {
+func (s *Service) restoreComponent(ctx context.Context, image string, opts RestoreOptions, run *Run, component Component, writer ProgressWriter) error {
 	writer.WriteProgress("Restoring " + component.ID + "...")
 
 	if component.Kind == KindBindMount && component.IsFile {
-		return s.restoreFileComponent(ctx, image, password, run, component, writer)
+		return s.restoreFileComponent(ctx, image, opts.Password, run, component, writer)
 	}
 
 	targetMount, err := restoreTargetMount(component)
@@ -570,7 +574,7 @@ func (s *Service) restoreComponent(ctx context.Context, image, password string, 
 	mounts := []mount.Mount{repoMount(s.repoHostPath(run.StackName), false), targetMount}
 
 	parser := newResticOutputParser(component.ID, writer)
-	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, restoreArgs(component, keepExtraFiles), mounts,
+	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, opts.Password, restoreArgs(component, opts.KeepExtraFiles, opts.Sparse), mounts,
 		parser.handleLine,
 		writer.WriteStderr,
 	)
@@ -585,7 +589,7 @@ func (s *Service) restoreComponent(ctx context.Context, image, password string, 
 		return fmt.Errorf("%s", message)
 	}
 
-	if err := s.applyRootMetadata(ctx, image, password, run, component, targetMount, componentSourceMountPath(component), writer); err != nil {
+	if err := s.applyRootMetadata(ctx, image, opts.Password, run, component, targetMount, componentSourceMountPath(component), writer); err != nil {
 		return err
 	}
 

@@ -200,7 +200,7 @@ func validateRestoreBackupRequest(req OperationRequest) error {
 			if options[i] == "" || containsDangerousChars(options[i]) {
 				return fmt.Errorf("%w: invalid component id", ErrInvalidOption)
 			}
-		case "--stop", "--keep-extra-files":
+		case "--stop", "--keep-extra-files", "--sparse":
 		default:
 			return fmt.Errorf("%w: %s", ErrInvalidOption, options[i])
 		}

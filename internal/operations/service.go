@@ -497,6 +497,8 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 				opts.StopMode = "stop"
 			case "--keep-extra-files":
 				opts.KeepExtraFiles = true
+			case "--sparse":
+				opts.Sparse = true
 			}
 		}
 		err = s.backupService.RestoreBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
