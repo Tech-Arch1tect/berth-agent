@@ -121,17 +121,24 @@ func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID
 	return bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(buffer.String())}, err
 }
 
-func (s *Service) probeHostPaths(ctx context.Context, image, stackName, runID string, paths []string) (map[string]string, error) {
+type hostPathProbe struct {
+	Type     string
+	Resolved string
+}
+
+func (s *Service) probeHostPaths(ctx context.Context, image, stackName, runID string, paths []string) (map[string]hostPathProbe, error) {
 	if len(paths) == 0 {
-		return map[string]string{}, nil
+		return map[string]hostPathProbe{}, nil
 	}
 
 	script := `for p in "$@"; do
   fp="` + helperHostProbeRoot + `$p"
-  if [ ! -e "$fp" ]; then echo "BERTH_MISSING:$p"
-  elif [ -f "$fp" ]; then echo "BERTH_FILE:$p"
-  elif [ -d "$fp" ]; then echo "BERTH_DIR:$p"
-  else echo "BERTH_OTHER:$p"; fi
+  if [ ! -e "$fp" ]; then t=missing
+  elif [ -f "$fp" ]; then t=file
+  elif [ -d "$fp" ]; then t=dir
+  else t=other; fi
+  rp=$(chroot "` + helperHostProbeRoot + `" readlink -f "$p" 2>/dev/null || true)
+  printf 'BERTH_NODE\n%s\n%s\n%s\n' "$p" "$t" "$rp"
 done`
 
 	spec := docker.ContainerRunSpec{
@@ -156,19 +163,18 @@ done`
 	return parseHostPathTypes(buffer.String()), nil
 }
 
-func parseHostPathTypes(output string) map[string]string {
-	prefixes := map[string]string{"BERTH_MISSING:": "missing", "BERTH_FILE:": "file", "BERTH_DIR:": "dir", "BERTH_OTHER:": "other"}
-	types := map[string]string{}
-	for line := range strings.Lines(output) {
-		line = strings.TrimSpace(line)
-		for prefix, kind := range prefixes {
-			if path, found := strings.CutPrefix(line, prefix); found {
-				types[path] = kind
-				break
-			}
+func parseHostPathTypes(output string) map[string]hostPathProbe {
+	probes := map[string]hostPathProbe{}
+	lines := strings.Split(output, "\n")
+	for i := 0; i < len(lines); i++ {
+		if lines[i] != "BERTH_NODE" || i+3 >= len(lines) {
+			continue
 		}
+		path, kind, resolved := lines[i+1], lines[i+2], lines[i+3]
+		probes[path] = hostPathProbe{Type: kind, Resolved: resolved}
+		i += 3
 	}
-	return types
+	return probes
 }
 
 func commandEcho(name string, args []string) string {

@@ -483,13 +483,15 @@ func (s *Service) precheckSources(ctx context.Context, image string, run *Run) e
 		return err
 	}
 
+	backupLocation := filepath.Clean(s.cfg.BackupLocation)
 	var missing []string
 	for i := range run.Components {
 		component := &run.Components[i]
 		if component.Kind != KindStackDirectory && component.Kind != KindBindMount {
 			continue
 		}
-		switch types[component.SourcePath] {
+		probe := types[component.SourcePath]
+		switch probe.Type {
 		case "file":
 			if component.Kind == KindBindMount {
 				component.IsFile = true
@@ -498,9 +500,31 @@ func (s *Service) precheckSources(ctx context.Context, image string, run *Run) e
 		default:
 			missing = append(missing, component.SourcePath)
 		}
+
+		resolved := probe.Resolved
+		if resolved == "" {
+			resolved = component.SourcePath
+		}
+		if err := checkNoOverlap(backupLocation, resolved, "resolved "+string(component.Kind)+" source path"); err != nil {
+			return fmt.Errorf("refusing to back up %q: %w", component.SourcePath, err)
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("refusing to back up: the following mount source paths do not exist on the host: %s", strings.Join(missing, ", "))
+	}
+
+	for i := range run.Components {
+		component := &run.Components[i]
+		if component.VolumeDef == nil {
+			continue
+		}
+		device := component.VolumeDef.DriverOpts["device"]
+		if device == "" {
+			continue
+		}
+		if err := checkNoOverlap(backupLocation, filepath.Clean(device), "device path of volume "+component.VolumeName); err != nil {
+			return fmt.Errorf("refusing to back up: %w", err)
+		}
 	}
 	return nil
 }
