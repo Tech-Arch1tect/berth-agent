@@ -42,13 +42,13 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 	if run == nil {
 		return fmt.Errorf("backup %s does not exist for stack %s", opts.BackupID, stackName)
 	}
-
-	components, notRestorable, err := selectRestoreComponents(run, opts.ComponentIDs)
-	if err != nil {
+	if err := restorableRun(run); err != nil {
 		return err
 	}
-	for _, note := range notRestorable {
-		writer.WriteStdout("Not restorable: " + note)
+
+	components, err := selectRestoreComponents(run, opts.ComponentIDs)
+	if err != nil {
+		return err
 	}
 
 	image, err := s.helperImage(ctx)
@@ -159,7 +159,14 @@ func reportRestoreFailure(writer ProgressWriter, components []Component, restore
 	writer.WriteStderr("Resolve the cause and re-run the restore; start the stack manually only once you have accepted the inconsistency.")
 }
 
-func selectRestoreComponents(run *Run, requested []string) ([]Component, []string, error) {
+func restorableRun(run *Run) error {
+	if run.Status != StatusCompleted {
+		return fmt.Errorf("backup %s cannot be restored: it did not complete successfully (status: %s); only completed backups are restorable", run.ID, run.Status)
+	}
+	return nil
+}
+
+func selectRestoreComponents(run *Run, requested []string) ([]Component, error) {
 	byID := make(map[string]Component, len(run.Components))
 	for _, component := range run.Components {
 		byID[component.ID] = component
@@ -175,29 +182,27 @@ func selectRestoreComponents(run *Run, requested []string) ([]Component, []strin
 			seen[id] = true
 			component, exists := byID[id]
 			if !exists {
-				return nil, nil, fmt.Errorf("backup %s has no component %q", run.ID, id)
+				return nil, fmt.Errorf("backup %s has no component %q", run.ID, id)
 			}
 			if component.SnapshotID == "" {
-				return nil, nil, fmt.Errorf("component %q has no snapshot in backup %s (it failed during the backup) and cannot be restored", id, run.ID)
+				return nil, fmt.Errorf("component %q has no snapshot in backup %s and cannot be restored", id, run.ID)
 			}
 			selected = append(selected, component)
 		}
-		return selected, nil, nil
+		return selected, nil
 	}
 
-	var selected []Component
-	var notRestorable []string
+	selected := make([]Component, 0, len(run.Components))
 	for _, component := range run.Components {
 		if component.SnapshotID == "" {
-			notRestorable = append(notRestorable, fmt.Sprintf("%s (no snapshot was taken: %s)", component.ID, component.Error))
-			continue
+			return nil, fmt.Errorf("backup %s cannot be restored: component %s has no snapshot; refusing a partial restore", run.ID, component.ID)
 		}
 		selected = append(selected, component)
 	}
 	if len(selected) == 0 {
-		return nil, nil, fmt.Errorf("backup %s contains no restorable components", run.ID)
+		return nil, fmt.Errorf("backup %s contains no components to restore", run.ID)
 	}
-	return selected, notRestorable, nil
+	return selected, nil
 }
 
 func restoringStackDirectory(components []Component) bool {
