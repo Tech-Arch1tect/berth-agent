@@ -345,9 +345,16 @@ type resticLsNode struct {
 	Type        string    `json:"type"`
 	Path        string    `json:"path"`
 	Size        uint64    `json:"size"`
+	Mode        uint64    `json:"mode"`
+	UID         uint32    `json:"uid"`
+	GID         uint32    `json:"gid"`
 	MTime       time.Time `json:"mtime"`
 	StructType  string    `json:"struct_type"`
 	MessageType string    `json:"message_type"`
+}
+
+func (n resticLsNode) permissionBits() uint64 {
+	return n.Mode & 0o7777
 }
 
 func parseResticLsNodes(output string) []resticLsNode {

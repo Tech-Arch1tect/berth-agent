@@ -585,8 +585,54 @@ func (s *Service) restoreComponent(ctx context.Context, image, password string, 
 		return fmt.Errorf("%s", message)
 	}
 
+	if err := s.applyRootMetadata(ctx, image, password, run, component, targetMount, componentSourceMountPath(component), writer); err != nil {
+		return err
+	}
+
 	writer.WriteStdout(fmt.Sprintf("%s: restored snapshot %s", component.ID, component.SnapshotID[:8]))
 	return nil
+}
+
+func (s *Service) applyRootMetadata(ctx context.Context, image, password string, run *Run, component Component, target mount.Mount, targetPath string, writer ProgressWriter) error {
+	root := componentSourceMountPath(component)
+	ls, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password,
+		[]string{"ls", "--no-lock", component.SnapshotID, root, "--json"},
+		[]mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	if err != nil {
+		return fmt.Errorf("failed to read the recorded ownership of %s: %w", component.ID, err)
+	}
+	if ls.exitCode != 0 {
+		return fmt.Errorf("reading the recorded ownership of %s failed with exit code %d: %s", component.ID, ls.exitCode, lastLine(ls.output))
+	}
+
+	for _, node := range parseResticLsNodes(ls.output) {
+		if node.Path != root {
+			continue
+		}
+		spec := docker.ContainerRunSpec{
+			Image: image,
+			Entrypoint: []string{"/bin/sh", "-c", `chown "$1:$2" "$4" && chmod "$3" "$4"`, "sh",
+				fmt.Sprintf("%d", node.UID),
+				fmt.Sprintf("%d", node.GID),
+				fmt.Sprintf("%o", node.permissionBits()),
+				targetPath,
+			},
+			Env:    []string{},
+			Mounts: []mount.Mount{target},
+			Labels: s.helperLabels(run.StackName, run.ID),
+		}
+		var output bytes.Buffer
+		exitCode, err := s.dockerClient.RunContainer(ctx, spec, &output, &output)
+		if err != nil {
+			return fmt.Errorf("failed to apply the recorded ownership of %s: %w", component.ID, err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("applying the recorded ownership of %s failed with exit code %d: %s", component.ID, exitCode, strings.TrimSpace(output.String()))
+		}
+		writer.WriteStdout(fmt.Sprintf("%s: ownership %d:%d and mode %o applied to the restored root", component.ID, node.UID, node.GID, node.permissionBits()))
+		return nil
+	}
+	return fmt.Errorf("the snapshot for %s does not record its root entry; its ownership cannot be restored", component.ID)
 }
 
 func (s *Service) restoreFileComponent(ctx context.Context, image, password string, run *Run, component Component, writer ProgressWriter) error {
@@ -619,6 +665,15 @@ restic dump "$1" "$2" > "$3"`
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("restore of %s failed with exit code %d: %s", component.ID, exitCode, strings.TrimSpace(stderr.String()))
+	}
+
+	parentMount := mount.Mount{
+		Type:   mount.TypeBind,
+		Source: parentDir,
+		Target: helperRestoreParent,
+	}
+	if err := s.applyRootMetadata(ctx, image, password, run, component, parentMount, helperRestoreParent+"/"+fileName, writer); err != nil {
+		return err
 	}
 
 	writer.WriteStdout(fmt.Sprintf("%s: restored file %s", component.ID, fileName))
