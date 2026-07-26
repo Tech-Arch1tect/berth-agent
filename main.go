@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"github.com/tech-arch1tect/berth-agent/internal/auth"
 	"github.com/tech-arch1tect/berth-agent/internal/backup"
@@ -122,7 +123,14 @@ func RegisterRoutes(
 	backupHandler *backup.Handler,
 	logger *logging.Logger,
 ) {
+	verifier, maxBody, err := agentsign.LoadVerifier(ssl.CertDir, cfg.MaxSignedBodyBytes)
+	if err != nil {
+		logger.Error("refusing to start without the berth certificate authority", zap.Error(err))
+		e.Logger.Fatal(err)
+	}
+
 	api := e.Group("/api")
+	api.Use(agentsign.Middleware(verifier, maxBody, logger))
 	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 
 	api.GET("/health", healthHandler.Health)
@@ -174,6 +182,7 @@ func RegisterRoutes(
 	api.DELETE("/maintenance/resource", maintenanceHandler.DeleteResource)
 
 	ws := e.Group("/ws")
+	ws.Use(agentsign.Middleware(verifier, maxBody, logger))
 	ws.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 	ws.GET("/agent/status", wsHandler.HandleAgentWebSocket)
 	ws.GET("/terminal", terminalHandler.HandleTerminalWebSocket)

@@ -24,6 +24,7 @@ type Config struct {
 	BackupLocation         string
 	BackupHelperImage      string
 	BackupPersistenceDir   string
+	MaxSignedBodyBytes     int64
 }
 
 func NewConfig() *Config {
@@ -43,6 +44,7 @@ func NewConfig() *Config {
 		GrypeScannerToken:      getEnv("GRYPE_SCANNER_TOKEN", ""),
 		BackupLocation:         getEnv("BACKUP_LOCATION", ""),
 		BackupHelperImage:      getEnv("BACKUP_HELPER_IMAGE", ""),
+		MaxSignedBodyBytes:     int64(getEnvInt("MAX_SIGNED_BODY_MB", 128)) * 1024 * 1024,
 		BackupPersistenceDir:   getEnv("BACKUP_PERSISTENCE_DIR", "/var/lib/berth-agent/backups"),
 	}
 }
