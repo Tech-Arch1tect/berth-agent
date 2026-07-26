@@ -13,21 +13,38 @@ import (
 )
 
 const (
-	AuthorityFileName = "ca.crt"
-	DefaultSkew       = time.Minute
+	AuthorityFileName   = "ca.crt"
+	CertificateFileName = "agent.crt"
+	KeyFileName         = "agent.key"
+	DefaultSkew         = time.Minute
 )
 
-func LoadVerifier(certDir string, maxBodyBytes int64) (*Verifier, int64, error) {
+func LoadMaterial(certDir string) (*Verifier, *Responder, error) {
 	authorityPath := filepath.Join(certDir, AuthorityFileName)
 	authorityPEM, err := os.ReadFile(authorityPath)
 	if err != nil {
-		return nil, 0, &startupError{path: authorityPath, cause: err}
+		return nil, nil, &startupError{path: authorityPath, cause: err}
 	}
 	verifier, err := NewVerifier(authorityPEM, DefaultSkew)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
-	return verifier, maxBodyBytes, nil
+
+	certificatePath := filepath.Join(certDir, CertificateFileName)
+	certPEM, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return nil, nil, &startupError{path: certificatePath, cause: err}
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(certDir, KeyFileName))
+	if err != nil {
+		return nil, nil, &startupError{path: filepath.Join(certDir, KeyFileName), cause: err}
+	}
+	responder, err := NewResponder(certPEM, keyPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return verifier, responder, nil
 }
 
 type startupError struct {
@@ -36,8 +53,8 @@ type startupError struct {
 }
 
 func (e *startupError) Error() string {
-	return "could not read the berth certificate authority at " + e.path + ": " + e.cause.Error() +
-		"; issue an agent certificate bundle for this server in berth and place ca.crt in " + filepath.Dir(e.path)
+	return "could not read " + e.path + ": " + e.cause.Error() +
+		"; issue an agent certificate bundle for this server in berth and place agent.crt, agent.key and ca.crt in " + filepath.Dir(e.path)
 }
 
 func (e *startupError) Unwrap() error { return e.cause }

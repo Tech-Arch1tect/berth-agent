@@ -21,9 +21,13 @@ const (
 	HeaderCertificate = "X-Berth-Certificate"
 	HeaderTimestamp   = "X-Berth-Timestamp"
 	HeaderNonce       = "X-Berth-Nonce"
+	HeaderBodyDigest  = "X-Berth-Body-Digest"
 
-	RequestContext = "berth-request-v1"
-	ServerIdentity = "berth-server"
+	RequestContext  = "berth-request-v1"
+	ResponseContext = "berth-response-v1"
+	ServerIdentity  = "berth-server"
+
+	BodyUnsigned = "unsigned"
 )
 
 func Canonical(fields ...string) []byte {
@@ -46,6 +50,22 @@ func RequestBase(method, target, contentType string, body []byte, timestamp int6
 		strconv.FormatInt(timestamp, 10),
 		nonce,
 	)
+}
+
+func ResponseBase(requestNonce string, status int, contentType string, bodyDigest string, timestamp int64) []byte {
+	return Canonical(
+		ResponseContext,
+		requestNonce,
+		strconv.Itoa(status),
+		contentType,
+		bodyDigest,
+		strconv.FormatInt(timestamp, 10),
+	)
+}
+
+func BodyDigest(body []byte) string {
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
 }
 
 var ErrRejected = errors.New("request signature rejected")

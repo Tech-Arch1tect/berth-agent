@@ -123,13 +123,15 @@ func RegisterRoutes(
 	backupHandler *backup.Handler,
 	logger *logging.Logger,
 ) {
-	verifier, maxBody, err := agentsign.LoadVerifier(ssl.CertDir, cfg.MaxSignedBodyBytes)
+	verifier, responder, err := agentsign.LoadMaterial(ssl.CertDir)
 	if err != nil {
-		logger.Error("refusing to start without the berth certificate authority", zap.Error(err))
+		logger.Error("refusing to start without the berth agent certificate bundle", zap.Error(err))
 		e.Logger.Fatal(err)
 	}
+	maxBody := cfg.MaxSignedBodyBytes
 
 	api := e.Group("/api")
+	api.Use(agentsign.SignResponses(responder, maxBody))
 	api.Use(agentsign.Middleware(verifier, maxBody, logger))
 	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 
@@ -184,6 +186,7 @@ func RegisterRoutes(
 	ws := e.Group("/ws")
 	ws.Use(agentsign.Middleware(verifier, maxBody, logger))
 	ws.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
+	ws.Use(agentsign.SignUpgradeResponses(responder))
 	ws.GET("/agent/status", wsHandler.HandleAgentWebSocket)
 	ws.GET("/terminal", terminalHandler.HandleTerminalWebSocket)
 }
