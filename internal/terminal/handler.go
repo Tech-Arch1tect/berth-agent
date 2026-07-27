@@ -68,7 +68,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		return err
 	}
 
-	rawConn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	rawConn, err := upgrader.Upgrade(c.Response(), c.Request(), agentsign.UpgradeHeader(c))
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
 			zap.String("source_ip", c.RealIP()),

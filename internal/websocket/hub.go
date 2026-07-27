@@ -154,7 +154,7 @@ func (h *Hub) ServeWebSocket(c echo.Context) error {
 		return err
 	}
 
-	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	conn, err := upgrader.Upgrade(c.Response(), c.Request(), agentsign.UpgradeHeader(c))
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
 			zap.Error(err))
