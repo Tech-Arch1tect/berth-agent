@@ -39,14 +39,13 @@ func Canonical(fields ...string) []byte {
 	return base.Bytes()
 }
 
-func RequestBase(method, target, contentType string, body []byte, timestamp int64, nonce string) []byte {
-	digest := sha256.Sum256(body)
+func RequestBase(method, target, contentType, bodyDigest string, timestamp int64, nonce string) []byte {
 	return Canonical(
 		RequestContext,
 		method,
 		target,
 		contentType,
-		hex.EncodeToString(digest[:]),
+		bodyDigest,
 		strconv.FormatInt(timestamp, 10),
 		nonce,
 	)
@@ -119,7 +118,7 @@ func NewVerifier(authorityPEM []byte, skew time.Duration) (*Verifier, error) {
 	}, nil
 }
 
-func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (*x509.Certificate, error) {
+func (v *Verifier) VerifyRequest(req *http.Request) (*x509.Certificate, error) {
 	signature, err := base64.StdEncoding.DecodeString(req.Header.Get(HeaderSignature))
 	if err != nil || len(signature) == 0 {
 		return nil, ErrRejected
@@ -161,7 +160,7 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (*x509.Certific
 		return nil, ErrRejected
 	}
 
-	base := RequestBase(req.Method, req.URL.RequestURI(), req.Header.Get("Content-Type"), body, timestamp, nonce)
+	base := RequestBase(req.Method, req.URL.RequestURI(), req.Header.Get("Content-Type"), req.Header.Get(HeaderBodyDigest), timestamp, nonce)
 	digest := sha256.Sum256(base)
 	if !ecdsa.VerifyASN1(publicKey, digest[:], signature) {
 		return nil, ErrRejected
@@ -171,6 +170,13 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (*x509.Certific
 		return nil, ErrRejected
 	}
 	return certificate, nil
+}
+
+func VerifyBody(req *http.Request, body []byte) error {
+	if BodyDigest(body) != req.Header.Get(HeaderBodyDigest) {
+		return ErrRejected
+	}
+	return nil
 }
 
 func ReadBody(req *http.Request, limit int64) ([]byte, error) {

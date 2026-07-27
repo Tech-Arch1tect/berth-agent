@@ -90,18 +90,27 @@ func Middleware(verifier *Verifier, responder *Responder, maxBodyBytes int64, lo
 		return func(c echo.Context) error {
 			request := c.Request()
 
+			peer, err := verifier.VerifyRequest(request)
+			if err != nil {
+				logger.Warn("rejected a request that berth did not sign",
+					zap.String("source_ip", c.RealIP()),
+					zap.String("method", request.Method),
+					zap.String("path", request.URL.Path),
+				)
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid request signature"})
+			}
+
 			body, err := ReadBody(request, maxBodyBytes)
 			if err != nil {
-				logger.Warn("rejected an oversized request body before verifying its signature",
+				logger.Warn("rejected an oversized request body",
 					zap.String("source_ip", c.RealIP()),
 					zap.String("path", request.URL.Path),
 				)
 				return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "Request too large"})
 			}
 
-			peer, err := verifier.VerifyRequest(request, body)
-			if err != nil {
-				logger.Warn("rejected a request that berth did not sign",
+			if err := VerifyBody(request, body); err != nil {
+				logger.Warn("rejected a request whose body is not the one berth signed",
 					zap.String("source_ip", c.RealIP()),
 					zap.String("method", request.Method),
 					zap.String("path", request.URL.Path),
