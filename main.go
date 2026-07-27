@@ -132,7 +132,7 @@ func RegisterRoutes(
 
 	api := e.Group("/api")
 	api.Use(agentsign.SignResponses(responder, maxBody))
-	api.Use(agentsign.Middleware(verifier, maxBody, logger))
+	api.Use(agentsign.Middleware(verifier, responder, maxBody, logger))
 	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 
 	api.GET("/health", healthHandler.Health)
@@ -184,7 +184,7 @@ func RegisterRoutes(
 	api.DELETE("/maintenance/resource", maintenanceHandler.DeleteResource)
 
 	ws := e.Group("/ws")
-	ws.Use(agentsign.Middleware(verifier, maxBody, logger))
+	ws.Use(agentsign.Middleware(verifier, responder, maxBody, logger))
 	ws.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 	ws.Use(agentsign.SignUpgradeResponses(responder))
 	ws.GET("/agent/status", wsHandler.HandleAgentWebSocket)

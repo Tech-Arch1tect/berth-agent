@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"net/http"
 	"sync"
 
@@ -28,9 +29,10 @@ type Hub struct {
 }
 
 type Client struct {
-	hub  *Hub
-	conn *websocket.Conn
-	send chan []byte
+	hub    *Hub
+	conn   *websocket.Conn
+	frames *agentsign.FrameWriter
+	send   chan []byte
 }
 
 func NewHub(logger *logging.Logger) *Hub {
@@ -146,6 +148,12 @@ func (h *Hub) BroadcastOperationProgress(event OperationProgressEvent) {
 }
 
 func (h *Hub) ServeWebSocket(c echo.Context) error {
+	frames, _, err := agentsign.SessionFor(c, agentsign.DirectionToBerth)
+	if err != nil {
+		h.logger.Error("status stream session key could not be agreed", zap.Error(err))
+		return err
+	}
+
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
@@ -154,9 +162,10 @@ func (h *Hub) ServeWebSocket(c echo.Context) error {
 	}
 
 	client := &Client{
-		hub:  h,
-		conn: conn,
-		send: make(chan []byte, 256),
+		hub:    h,
+		conn:   conn,
+		frames: frames,
+		send:   make(chan []byte, 256),
 	}
 
 	client.hub.register <- client
@@ -189,7 +198,7 @@ func (c *Client) writePump() {
 	defer func() { _ = c.conn.Close() }()
 
 	for message := range c.send {
-		_ = c.conn.WriteMessage(websocket.TextMessage, message)
+		_ = c.conn.WriteMessage(websocket.BinaryMessage, c.frames.WrapTyped(byte(websocket.TextMessage), message))
 	}
 	_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 }

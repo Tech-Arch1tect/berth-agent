@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"net/http"
 	"strings"
@@ -61,7 +62,13 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		zap.String("user_agent", c.Request().UserAgent()),
 	)
 
-	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	frames, unframe, err := agentsign.SessionFor(c, agentsign.DirectionToBerth)
+	if err != nil {
+		h.logger.Error("terminal session key could not be agreed", zap.Error(err))
+		return err
+	}
+
+	rawConn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
 			zap.String("source_ip", c.RealIP()),
@@ -69,6 +76,8 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		)
 		return err
 	}
+
+	conn := &framedConn{conn: rawConn, frames: frames, unframe: unframe}
 
 	done := make(chan struct{})
 
@@ -400,7 +409,7 @@ func (h *Handler) logTerminalSession(c echo.Context, req TerminalRequest, sessio
 	h.auditLog.LogRequest(entry)
 }
 
-func (h *Handler) sendError(conn *websocket.Conn, message, details string) {
+func (h *Handler) sendError(conn *framedConn, message, details string) {
 	event := ws.ErrorEvent{
 		BaseMessage: ws.BaseMessage{
 			Type:      ws.MessageTypeError,
@@ -412,7 +421,7 @@ func (h *Handler) sendError(conn *websocket.Conn, message, details string) {
 	_ = conn.WriteJSON(event)
 }
 
-func (h *Handler) sendSuccess(conn *websocket.Conn, message, sessionID string) {
+func (h *Handler) sendSuccess(conn *framedConn, message, sessionID string) {
 	response := map[string]any{
 		"type":       "success",
 		"message":    message,

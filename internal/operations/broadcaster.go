@@ -2,8 +2,10 @@ package operations
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"io"
 	"sync"
 	"time"
@@ -39,7 +41,7 @@ func NewBroadcaster() *Broadcaster {
 	}
 }
 
-func (b *Broadcaster) StreamTo(ctx context.Context, writer io.Writer) {
+func (b *Broadcaster) StreamTo(ctx context.Context, writer io.Writer, frames *agentsign.FrameWriter) {
 	cursor := 0
 	for {
 		b.mu.Lock()
@@ -50,7 +52,7 @@ func (b *Broadcaster) StreamTo(ctx context.Context, writer io.Writer) {
 		b.mu.Unlock()
 
 		for _, msg := range batch {
-			if !writeFrame(writer, msg) {
+			if !writeFrame(writer, msg, frames) {
 				return
 			}
 			if msg.Type == StreamTypeComplete {
@@ -111,7 +113,7 @@ func (b *Broadcaster) completeLocked(success bool, exitCode int) {
 	b.appendLocked(Message{Type: StreamTypeComplete, Timestamp: time.Now(), Success: &success, ExitCode: &exitCode})
 }
 
-func writeFrame(writer io.Writer, msg Message) bool {
+func writeFrame(writer io.Writer, msg Message, frames *agentsign.FrameWriter) bool {
 	payload, err := json.Marshal(streamFrame{
 		Type:      msg.Type,
 		Data:      msg.Data,
@@ -123,7 +125,7 @@ func writeFrame(writer io.Writer, msg Message) bool {
 		return false
 	}
 
-	if _, err := fmt.Fprintf(writer, "data: %s\n\n", payload); err != nil {
+	if _, err := fmt.Fprintf(writer, "data: %s\n\n", base64.StdEncoding.EncodeToString(frames.Wrap(payload))); err != nil {
 		return false
 	}
 

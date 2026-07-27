@@ -119,58 +119,58 @@ func NewVerifier(authorityPEM []byte, skew time.Duration) (*Verifier, error) {
 	}, nil
 }
 
-func (v *Verifier) VerifyRequest(req *http.Request, body []byte) error {
+func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (*x509.Certificate, error) {
 	signature, err := base64.StdEncoding.DecodeString(req.Header.Get(HeaderSignature))
 	if err != nil || len(signature) == 0 {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 	certificateDER, err := base64.StdEncoding.DecodeString(req.Header.Get(HeaderCertificate))
 	if err != nil || len(certificateDER) == 0 {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 	nonce := req.Header.Get(HeaderNonce)
 	if nonce == "" {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 	timestamp, err := strconv.ParseInt(req.Header.Get(HeaderTimestamp), 10, 64)
 	if err != nil {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 
 	now := time.Now()
 	if difference := now.Sub(time.Unix(timestamp, 0)); difference > v.skew || difference < -v.skew {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 
 	certificate, err := x509.ParseCertificate(certificateDER)
 	if err != nil {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 	if _, err := certificate.Verify(x509.VerifyOptions{
 		Roots:     v.authority,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}); err != nil {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 	if err := certificate.VerifyHostname(ServerIdentity); err != nil {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 
 	publicKey, ok := certificate.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 
 	base := RequestBase(req.Method, req.URL.RequestURI(), req.Header.Get("Content-Type"), body, timestamp, nonce)
 	digest := sha256.Sum256(base)
 	if !ecdsa.VerifyASN1(publicKey, digest[:], signature) {
-		return ErrRejected
+		return nil, ErrRejected
 	}
 
 	if !v.nonces.admit(nonce, now) {
-		return ErrRejected
+		return nil, ErrRejected
 	}
-	return nil
+	return certificate, nil
 }
 
 func ReadBody(req *http.Request, limit int64) ([]byte, error) {

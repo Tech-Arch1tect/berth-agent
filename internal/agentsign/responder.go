@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -64,6 +65,18 @@ func (r *Responder) sign(header http.Header, requestNonce string, status int, co
 	header.Set(HeaderTimestamp, strconv.FormatInt(timestamp, 10))
 	header.Set(HeaderBodyDigest, bodyDigest)
 	return nil
+}
+
+func (r *Responder) SessionKeyFor(peer *x509.Certificate, salt string) ([]byte, error) {
+	local, ok := r.key.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("the agent key cannot agree a session key")
+	}
+	remote, ok := peer.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, errors.New("berth's certificate cannot agree a session key")
+	}
+	return SessionKey(local, remote, salt)
 }
 
 func SignResponses(responder *Responder, limit int64) echo.MiddlewareFunc {

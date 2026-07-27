@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"github.com/tech-arch1tect/berth-agent/internal/common"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
@@ -78,6 +79,11 @@ func (h *Handler) StreamOperation(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid operation ID format")
 	}
 
+	frames, _, err := agentsign.SessionFor(c, agentsign.DirectionToBerth)
+	if err != nil {
+		return common.SendBadRequest(c, "Stream session key could not be agreed")
+	}
+
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
@@ -92,7 +98,7 @@ func (h *Handler) StreamOperation(c echo.Context) error {
 		flusher.Flush()
 	}
 
-	return h.service.StreamOperation(c.Request().Context(), operationID, c.Response().Writer)
+	return h.service.StreamOperation(c.Request().Context(), operationID, c.Response().Writer, frames)
 }
 
 func validateOperationID(operationID string) error {

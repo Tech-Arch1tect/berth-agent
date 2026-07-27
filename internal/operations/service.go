@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"github.com/tech-arch1tect/berth-agent/internal/archive"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"github.com/tech-arch1tect/berth-agent/internal/backup"
@@ -149,7 +150,7 @@ func (s *Service) GetOperation(operationID string) (*Operation, bool) {
 	return op, exists
 }
 
-func (s *Service) StreamOperation(ctx context.Context, operationID string, writer io.Writer) error {
+func (s *Service) StreamOperation(ctx context.Context, operationID string, writer io.Writer, frames *agentsign.FrameWriter) error {
 	operation, exists := s.GetOperation(operationID)
 	if !exists {
 		return fmt.Errorf("operation not found")
@@ -159,7 +160,7 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 		return fmt.Errorf("operation broadcaster not initialized")
 	}
 
-	operation.Broadcaster.StreamTo(ctx, writer)
+	operation.Broadcaster.StreamTo(ctx, writer, frames)
 	return nil
 }
 

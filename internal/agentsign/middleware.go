@@ -1,6 +1,8 @@
 package agentsign
 
 import (
+	"crypto/x509"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -59,7 +61,31 @@ func (e *startupError) Error() string {
 
 func (e *startupError) Unwrap() error { return e.cause }
 
-func Middleware(verifier *Verifier, maxBodyBytes int64, logger *logging.Logger) echo.MiddlewareFunc {
+type streamContext struct {
+	peer      *x509.Certificate
+	nonce     string
+	responder *Responder
+}
+
+const streamContextKey = "berth.stream"
+
+func SessionFor(c echo.Context, direction string) (*FrameWriter, *FrameReader, error) {
+	stored, ok := c.Get(streamContextKey).(streamContext)
+	if !ok {
+		return nil, nil, errors.New("this request was not verified, so no stream session exists")
+	}
+	key, err := stored.responder.SessionKeyFor(stored.peer, stored.nonce)
+	if err != nil {
+		return nil, nil, err
+	}
+	opposite := DirectionToBerth
+	if direction == DirectionToBerth {
+		opposite = DirectionToAgent
+	}
+	return NewFrameWriter(key, direction), NewFrameReader(key, opposite), nil
+}
+
+func Middleware(verifier *Verifier, responder *Responder, maxBodyBytes int64, logger *logging.Logger) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			request := c.Request()
@@ -73,7 +99,8 @@ func Middleware(verifier *Verifier, maxBodyBytes int64, logger *logging.Logger) 
 				return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "Request too large"})
 			}
 
-			if err := verifier.VerifyRequest(request, body); err != nil {
+			peer, err := verifier.VerifyRequest(request, body)
+			if err != nil {
 				logger.Warn("rejected a request that berth did not sign",
 					zap.String("source_ip", c.RealIP()),
 					zap.String("method", request.Method),
@@ -81,6 +108,12 @@ func Middleware(verifier *Verifier, maxBodyBytes int64, logger *logging.Logger) 
 				)
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid request signature"})
 			}
+
+			c.Set(streamContextKey, streamContext{
+				peer:      peer,
+				nonce:     request.Header.Get(HeaderNonce),
+				responder: responder,
+			})
 
 			return next(c)
 		}
