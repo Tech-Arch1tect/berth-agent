@@ -196,7 +196,10 @@ func (c *Client) writePump() {
 	defer func() { _ = c.conn.Close(websocket.StatusNormalClosure, "") }()
 
 	for message := range c.send {
-		if err := c.conn.Write(c.ctx, websocket.MessageBinary, c.frames.WrapTyped(byte(websocket.MessageText), message)); err != nil {
+		err := c.frames.SendTyped(byte(websocket.MessageText), message, func(frame []byte) error {
+			return c.conn.Write(c.ctx, websocket.MessageBinary, frame)
+		})
+		if err != nil {
 			return
 		}
 	}

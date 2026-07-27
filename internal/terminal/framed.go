@@ -35,7 +35,9 @@ func (f *framedConn) WriteJSON(value any) error {
 
 	writeCtx, cancel := context.WithTimeout(f.ctx, terminalWriteWait)
 	defer cancel()
-	return f.conn.Write(writeCtx, websocket.MessageBinary, f.frames.WrapTyped(byte(websocket.MessageText), payload))
+	return f.frames.SendTyped(byte(websocket.MessageText), payload, func(frame []byte) error {
+		return f.conn.Write(writeCtx, websocket.MessageBinary, frame)
+	})
 }
 
 func (f *framedConn) Ping() error {
