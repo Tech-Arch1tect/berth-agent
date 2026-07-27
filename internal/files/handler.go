@@ -1,7 +1,6 @@
 package files
 
 import (
-	"encoding/base64"
 	"fmt"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"net/http"
@@ -317,7 +316,7 @@ func (h *Handler) DownloadFile(c echo.Context) error {
 		})
 	}
 
-	fileContent, err := h.service.ReadFile(stackName, path)
+	file, stat, err := h.service.OpenFile(stackName, path)
 	if err != nil {
 		h.auditService.LogFileEvent(audit.EventFileDownload, c.RealIP(), stackName, path, false, err.Error(), nil)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -325,36 +324,24 @@ func (h *Handler) DownloadFile(c echo.Context) error {
 			Code:  "READ_FILE_ERROR",
 		})
 	}
+	defer func() { _ = file.Close() }()
 
 	h.auditService.LogFileEvent(audit.EventFileDownload, c.RealIP(), stackName, path, true, "", map[string]any{
-		"size": fileContent.Size,
+		"size": stat.Size(),
 	})
 
 	filename := c.QueryParam("filename")
 	if filename == "" {
-		filename = fileContent.Path
+		filename = path
 		if idx := strings.LastIndex(filename, "/"); idx >= 0 {
 			filename = filename[idx+1:]
 		}
 	}
 
 	c.Response().Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	c.Response().Header().Set("Content-Length", strconv.FormatInt(fileContent.Size, 10))
+	c.Response().Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
 
-	if fileContent.Encoding == "base64" {
-		c.Response().Header().Set("Content-Type", "application/octet-stream")
-		decoded, err := base64.StdEncoding.DecodeString(fileContent.Content)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Error: "Failed to decode file content",
-				Code:  "DECODE_ERROR",
-			})
-		}
-		return c.Blob(http.StatusOK, "application/octet-stream", decoded)
-	} else {
-		c.Response().Header().Set("Content-Type", "text/plain")
-		return c.String(http.StatusOK, fileContent.Content)
-	}
+	return c.Stream(http.StatusOK, "application/octet-stream", file)
 }
 
 func (h *Handler) GetDirectoryStats(c echo.Context) error {

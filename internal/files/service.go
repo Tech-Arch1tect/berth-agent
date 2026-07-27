@@ -23,12 +23,16 @@ import (
 
 type Service struct {
 	stackLocation string
+	maxDownload   int64
+	maxUpload     int64
 	logger        *logging.Logger
 }
 
 func NewService(cfg *config.Config, logger *logging.Logger) *Service {
 	return &Service{
 		stackLocation: cfg.StackLocation,
+		maxDownload:   cfg.MaxDownloadBytes,
+		maxUpload:     cfg.MaxUploadBytes,
 		logger:        logger.With(zap.String("service", "files")),
 	}
 }
@@ -305,9 +309,11 @@ func (s *Service) ReadFile(stackName, path string) (*FileContent, error) {
 	}
 
 	encoding := "utf-8"
-	contentStr := string(content)
+	contentStr := ""
 
-	if !utf8.Valid(content) {
+	if utf8.Valid(content) {
+		contentStr = string(content)
+	} else {
 		encoding = "base64"
 		contentStr = base64.StdEncoding.EncodeToString(content)
 	}
@@ -327,6 +333,40 @@ func (s *Service) ReadFile(stackName, path string) (*FileContent, error) {
 		Size:     stat.Size(),
 		Encoding: encoding,
 	}, nil
+}
+
+func (s *Service) OpenFile(stackName, path string) (*os.File, os.FileInfo, error) {
+	fullPath, err := s.validateStackPath(stackName, path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	stat, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("file not found: %s", path)
+		}
+		return nil, nil, fmt.Errorf("cannot access file: %w", err)
+	}
+	if stat.IsDir() {
+		return nil, nil, fmt.Errorf("path is a directory, not a file: %s", path)
+	}
+	if s.maxDownload > 0 && stat.Size() > s.maxDownload {
+		s.logger.Warn("file too large to download",
+			zap.String("operation", "download_file"),
+			zap.String("stack", stackName),
+			zap.String("path", path),
+			zap.Int64("size", stat.Size()),
+			zap.Int64("max_size", s.maxDownload),
+		)
+		return nil, nil, fmt.Errorf("file too large (>%dMB)", s.maxDownload/(1024*1024))
+	}
+
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read file: %w", err)
+	}
+	return file, stat, nil
 }
 
 func (s *Service) WriteFile(stackName string, req WriteFileRequest) error {
@@ -880,15 +920,15 @@ func (s *Service) WriteUploadedFile(stackName, path string, src io.Reader, size 
 		return err
 	}
 
-	if size > 100*1024*1024 {
+	if s.maxUpload > 0 && size > s.maxUpload {
 		s.logger.Error("uploaded file too large",
 			zap.String("operation", "upload_file"),
 			zap.String("stack", stackName),
 			zap.String("path", path),
 			zap.Int64("size", size),
-			zap.Int64("max_size", 100*1024*1024),
+			zap.Int64("max_size", s.maxUpload),
 		)
-		return errors.New("file too large (>100MB)")
+		return fmt.Errorf("file too large (>%dMB)", s.maxUpload/(1024*1024))
 	}
 
 	dir := filepath.Dir(fullPath)
