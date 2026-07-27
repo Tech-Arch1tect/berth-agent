@@ -179,23 +179,19 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 			session.closeSession(0)
 		}()
 
-		outputReceived := false
-		timeoutTimer := time.NewTimer(5 * time.Second)
+		firstOutput := make(chan struct{})
+		go warnWhenSilent(session.ctx, firstOutput, shellStartupWait, func() {
+			session.mutex.RLock()
+			callback := session.onOutput
+			session.mutex.RUnlock()
 
-		go func() {
-			<-timeoutTimer.C
-			if !outputReceived {
-				session.mutex.RLock()
-				callback := session.onOutput
-				session.mutex.RUnlock()
-
-				if callback != nil {
-					errorMsg := fmt.Sprintf("\r\n\x1b[31mTerminal Error: Shell may not be available in this container.\r\nTried shells: %v\x1b[0m\r\n", selectedShell)
-					callback([]byte(errorMsg))
-				}
+			if callback != nil {
+				errorMsg := fmt.Sprintf("\r\n\x1b[31mTerminal Error: Shell may not be available in this container.\r\nTried shells: %v\x1b[0m\r\n", selectedShell)
+				callback([]byte(errorMsg))
 			}
-		}()
+		})
 
+		announced := false
 		buf := make([]byte, 1024)
 		for {
 			n, err := hijackedResp.Reader.Read(buf)
@@ -210,9 +206,9 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 			}
 
 			if n > 0 {
-				if !outputReceived {
-					outputReceived = true
-					timeoutTimer.Stop()
+				if !announced {
+					announced = true
+					close(firstOutput)
 				}
 
 				session.logger.Debug("Terminal output received",
