@@ -98,19 +98,11 @@ func SignResponses(responder *Responder, limit int64) echo.MiddlewareFunc {
 	}
 }
 
-const upgradeHeaderKey = "berth.upgrade_header"
-
-func UpgradeHeader(c echo.Context) http.Header {
-	header, _ := c.Get(upgradeHeaderKey).(http.Header)
-	return header
-}
-
 func SignUpgradeResponses(responder *Responder) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			signed := http.Header{}
 			if err := responder.sign(
-				signed,
+				c.Response().Header(),
 				c.Request().Header.Get(HeaderNonce),
 				http.StatusSwitchingProtocols,
 				"",
@@ -118,11 +110,6 @@ func SignUpgradeResponses(responder *Responder) echo.MiddlewareFunc {
 			); err != nil {
 				return err
 			}
-
-			for name, values := range signed {
-				c.Response().Header()[name] = values
-			}
-			c.Set(upgradeHeaderKey, signed)
 
 			return next(c)
 		}

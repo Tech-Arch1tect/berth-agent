@@ -1,23 +1,17 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
-	"net/http"
 	"sync"
 
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
 
 type Hub struct {
 	clients    map[*Client]bool
@@ -29,10 +23,12 @@ type Hub struct {
 }
 
 type Client struct {
-	hub    *Hub
-	conn   *websocket.Conn
-	frames *agentsign.FrameWriter
-	send   chan []byte
+	hub        *Hub
+	conn       *websocket.Conn
+	frames     *agentsign.FrameWriter
+	send       chan []byte
+	ctx        context.Context
+	disconnect context.CancelFunc
 }
 
 func NewHub(logger *logging.Logger) *Hub {
@@ -154,18 +150,21 @@ func (h *Hub) ServeWebSocket(c echo.Context) error {
 		return err
 	}
 
-	conn, err := upgrader.Upgrade(c.Response(), c.Request(), agentsign.UpgradeHeader(c))
+	conn, err := websocket.Accept(c.Response(), c.Request(), &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
 			zap.Error(err))
 		return err
 	}
 
+	ctx, disconnect := context.WithCancel(context.Background())
 	client := &Client{
-		hub:    h,
-		conn:   conn,
-		frames: frames,
-		send:   make(chan []byte, 256),
+		hub:        h,
+		conn:       conn,
+		frames:     frames,
+		send:       make(chan []byte, 256),
+		ctx:        ctx,
+		disconnect: disconnect,
 	}
 
 	client.hub.register <- client
@@ -178,27 +177,27 @@ func (h *Hub) ServeWebSocket(c echo.Context) error {
 
 func (c *Client) readPump() {
 	defer func() {
+		c.disconnect()
 		c.hub.unregister <- c
-		_ = c.conn.Close()
+		_ = c.conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
 	for {
-		_, _, err := c.conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.hub.logger.Warn("Unexpected WebSocket close error",
-					zap.Error(err))
+		if _, _, err := c.conn.Read(c.ctx); err != nil {
+			if websocket.CloseStatus(err) == -1 && c.ctx.Err() == nil {
+				c.hub.logger.Warn("Unexpected WebSocket close error", zap.Error(err))
 			}
-			break
+			return
 		}
 	}
 }
 
 func (c *Client) writePump() {
-	defer func() { _ = c.conn.Close() }()
+	defer func() { _ = c.conn.Close(websocket.StatusNormalClosure, "") }()
 
 	for message := range c.send {
-		_ = c.conn.WriteMessage(websocket.BinaryMessage, c.frames.WrapTyped(byte(websocket.TextMessage), message))
+		if err := c.conn.Write(c.ctx, websocket.MessageBinary, c.frames.WrapTyped(byte(websocket.MessageText), message)); err != nil {
+			return
+		}
 	}
-	_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 }

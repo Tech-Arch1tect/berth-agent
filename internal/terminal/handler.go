@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
@@ -41,12 +40,6 @@ const (
 	terminalWriteWait    = 10 * time.Second
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
 func NewHandler(dockerClient *client.Client, auditLog *logging.Service, logger *logging.Logger) *Handler {
 	return &Handler{
 		manager:      NewManager(dockerClient, logger),
@@ -68,7 +61,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		return err
 	}
 
-	rawConn, err := upgrader.Upgrade(c.Response(), c.Request(), agentsign.UpgradeHeader(c))
+	rawConn, err := websocket.Accept(c.Response(), c.Request(), &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		h.logger.Error("WebSocket upgrade failed",
 			zap.String("source_ip", c.RealIP()),
@@ -77,11 +70,13 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		return err
 	}
 
-	conn := &framedConn{conn: rawConn, frames: frames, unframe: unframe}
+	ctx, disconnect := context.WithCancel(c.Request().Context())
+	conn := &framedConn{conn: rawConn, ctx: ctx, frames: frames, unframe: unframe}
 
 	done := make(chan struct{})
 
 	defer func() {
+		disconnect()
 		select {
 		case <-done:
 		default:
@@ -93,12 +88,6 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		)
 	}()
 
-	_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
-	conn.SetPongHandler(func(string) error {
-		_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
-		return nil
-	})
-
 	go func() {
 		ticker := time.NewTicker(terminalPingInterval)
 		defer ticker.Stop()
@@ -106,12 +95,12 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		for {
 			select {
 			case <-ticker.C:
-				_ = conn.SetWriteDeadline(time.Now().Add(terminalWriteWait))
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					h.logger.Debug("Ping failed, connection likely closed",
+				if err := conn.Ping(); err != nil {
+					h.logger.Debug("Ping was not answered, closing the terminal",
 						zap.String("source_ip", c.RealIP()),
 						zap.Error(err),
 					)
+					disconnect()
 					return
 				}
 			case <-done:
@@ -126,7 +115,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 	for {
 		var rawMessage json.RawMessage
 		if err := conn.ReadJSON(&rawMessage); err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+			if websocket.CloseStatus(err) == -1 && ctx.Err() == nil {
 				h.logger.Error("WebSocket read error",
 					zap.String("source_ip", c.RealIP()),
 					zap.Error(err),
@@ -134,8 +123,6 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			}
 			break
 		}
-
-		_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
 
 		var baseMsg ws.BaseMessage
 		if err := json.Unmarshal(rawMessage, &baseMsg); err != nil {

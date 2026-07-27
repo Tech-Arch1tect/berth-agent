@@ -3,12 +3,12 @@ module github.com/tech-arch1tect/berth-agent
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/compose-spec/compose-go/v2 v2.10.2
 	github.com/distribution/reference v0.6.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
 	github.com/labstack/echo/v4 v4.15.1
 	go.uber.org/fx v1.24.0
 	go.uber.org/zap v1.27.1

@@ -1,21 +1,22 @@
 package terminal
 
 import (
+	"context"
 	"encoding/json"
-	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 )
 
 type framedConn struct {
 	conn    *websocket.Conn
+	ctx     context.Context
 	frames  *agentsign.FrameWriter
 	unframe *agentsign.FrameReader
 }
 
 func (f *framedConn) ReadJSON(target any) error {
-	_, framed, err := f.conn.ReadMessage()
+	_, framed, err := f.conn.Read(f.ctx)
 	if err != nil {
 		return err
 	}
@@ -31,25 +32,22 @@ func (f *framedConn) WriteJSON(value any) error {
 	if err != nil {
 		return err
 	}
-	return f.conn.WriteMessage(websocket.BinaryMessage, f.frames.WrapTyped(byte(websocket.TextMessage), payload))
+
+	writeCtx, cancel := context.WithTimeout(f.ctx, terminalWriteWait)
+	defer cancel()
+	return f.conn.Write(writeCtx, websocket.MessageBinary, f.frames.WrapTyped(byte(websocket.MessageText), payload))
 }
 
-func (f *framedConn) WriteMessage(messageType int, data []byte) error {
-	return f.conn.WriteMessage(messageType, data)
-}
-
-func (f *framedConn) SetWriteDeadline(deadline time.Time) error {
-	return f.conn.SetWriteDeadline(deadline)
-}
-
-func (f *framedConn) SetReadDeadline(deadline time.Time) error {
-	return f.conn.SetReadDeadline(deadline)
-}
-
-func (f *framedConn) SetPongHandler(handler func(string) error) {
-	f.conn.SetPongHandler(handler)
+func (f *framedConn) Ping() error {
+	pingCtx, cancel := context.WithTimeout(f.ctx, terminalPongWait)
+	defer cancel()
+	return f.conn.Ping(pingCtx)
 }
 
 func (f *framedConn) Close() error {
-	return f.conn.Close()
+	return f.conn.Close(websocket.StatusNormalClosure, "")
+}
+
+func (f *framedConn) CloseWithError() {
+	_ = f.conn.Close(websocket.StatusInternalError, "terminal ended")
 }
