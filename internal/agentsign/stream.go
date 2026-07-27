@@ -6,18 +6,26 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"io"
 	"sync"
 )
 
 const (
 	StreamContext = "berth-stream-v1"
 
-	DirectionToAgent = "to-agent"
-	DirectionToBerth = "to-berth"
+	DirectionToAgent     = "to-agent"
+	DirectionToBerth     = "to-berth"
+	DirectionBodyToBerth = "body-to-berth"
 
 	sequenceBytes = 8
 	macBytes      = 32
 	frameOverhead = sequenceBytes + macBytes
+
+	lengthBytes   = 4
+	maxFrameBytes = 256 * 1024
+
+	bodyChunk byte = 1
+	bodyEnd   byte = 2
 )
 
 var ErrFrameRejected = errors.New("stream frame rejected")
@@ -119,6 +127,50 @@ func (r *FrameReader) UnwrapTyped(frame []byte) (byte, []byte, error) {
 		return 0, nil, ErrFrameRejected
 	}
 	return payload[0], payload[1:], nil
+}
+
+type BodyWriter struct {
+	writer io.Writer
+	frames *FrameWriter
+}
+
+func NewBodyWriter(writer io.Writer, key []byte) *BodyWriter {
+	return &BodyWriter{writer: writer, frames: NewFrameWriter(key, DirectionBodyToBerth)}
+}
+
+func (w *BodyWriter) Write(payload []byte) (int, error) {
+	if len(payload) == 0 {
+		return 0, nil
+	}
+	written := 0
+	for {
+		chunk := payload[written:]
+		if len(chunk) > maxFrameBytes {
+			chunk = chunk[:maxFrameBytes]
+		}
+		if err := w.emit(bodyChunk, chunk); err != nil {
+			return written, err
+		}
+		written += len(chunk)
+		if written == len(payload) {
+			return written, nil
+		}
+	}
+}
+
+func (w *BodyWriter) Close() error {
+	return w.emit(bodyEnd, nil)
+}
+
+func (w *BodyWriter) emit(kind byte, payload []byte) error {
+	frame := w.frames.WrapTyped(kind, payload)
+	var length [lengthBytes]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(frame)))
+	if _, err := w.writer.Write(length[:]); err != nil {
+		return err
+	}
+	_, err := w.writer.Write(frame)
+	return err
 }
 
 func frameMAC(key []byte, direction string, sequence uint64, payload []byte) []byte {

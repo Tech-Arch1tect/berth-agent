@@ -131,7 +131,7 @@ func RegisterRoutes(
 	maxBody := cfg.MaxSignedBodyBytes
 
 	api := e.Group("/api")
-	api.Use(agentsign.SignResponses(responder, maxBody))
+	api.Use(agentsign.SignResponses(responder))
 	api.Use(agentsign.Middleware(verifier, responder, maxBody, logger))
 	api.Use(auth.TokenMiddleware(cfg.AccessToken, logger))
 

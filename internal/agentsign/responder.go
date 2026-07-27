@@ -79,20 +79,20 @@ func (r *Responder) SessionKeyFor(peer *x509.Certificate, salt string) ([]byte, 
 	return SessionKey(local, remote, salt)
 }
 
-func SignResponses(responder *Responder, limit int64) echo.MiddlewareFunc {
+func SignResponses(responder *Responder) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			writer := &signingWriter{
 				ResponseWriter: c.Response().Writer,
 				responder:      responder,
 				requestNonce:   c.Request().Header.Get(HeaderNonce),
-				limit:          limit,
+				context:        c,
 				status:         http.StatusOK,
 			}
 			c.Response().Writer = writer
 
 			err := next(c)
-			writer.finish()
+			writer.finish(err)
 			return err
 		}
 	}
@@ -120,10 +120,11 @@ type signingWriter struct {
 	http.ResponseWriter
 	responder    *Responder
 	requestNonce string
-	limit        int64
+	context      echo.Context
 	status       int
 	buffer       bytes.Buffer
 	committed    bool
+	frames       *BodyWriter
 }
 
 func (w *signingWriter) WriteHeader(status int) {
@@ -131,14 +132,31 @@ func (w *signingWriter) WriteHeader(status int) {
 }
 
 func (w *signingWriter) Write(payload []byte) (int, error) {
-	if w.committed {
-		return w.ResponseWriter.Write(payload)
+	if !w.committed && int64(w.buffer.Len()+len(payload)) > FrameBodyBeyond {
+		w.startFraming()
 	}
-	if int64(w.buffer.Len()+len(payload)) > w.limit {
-		w.commit(BodyUnsigned)
+	if w.committed {
+		if w.frames != nil {
+			return w.frames.Write(payload)
+		}
 		return w.ResponseWriter.Write(payload)
 	}
 	return w.buffer.Write(payload)
+}
+
+func (w *signingWriter) startFraming() {
+	key, err := sessionKey(w.context)
+	if err != nil {
+		w.commit(BodyUnsigned)
+		return
+	}
+
+	buffered := bytes.Clone(w.buffer.Bytes())
+	w.buffer.Reset()
+	w.Header().Del("Content-Length")
+	w.commit(BodyFramed)
+	w.frames = NewBodyWriter(w.ResponseWriter, key)
+	_, _ = w.frames.Write(buffered)
 }
 
 func (w *signingWriter) Flush() {
@@ -162,7 +180,13 @@ func (w *signingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return hijacker.Hijack()
 }
 
-func (w *signingWriter) finish() {
+func (w *signingWriter) finish(handlerErr error) {
+	if w.frames != nil {
+		if handlerErr == nil {
+			_ = w.frames.Close()
+		}
+		return
+	}
 	if w.committed {
 		return
 	}

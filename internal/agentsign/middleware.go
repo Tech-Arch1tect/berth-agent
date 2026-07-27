@@ -69,12 +69,16 @@ type streamContext struct {
 
 const streamContextKey = "berth.stream"
 
-func SessionFor(c echo.Context, direction string) (*FrameWriter, *FrameReader, error) {
+func sessionKey(c echo.Context) ([]byte, error) {
 	stored, ok := c.Get(streamContextKey).(streamContext)
 	if !ok {
-		return nil, nil, errors.New("this request was not verified, so no stream session exists")
+		return nil, errors.New("this request was not verified, so no session key exists")
 	}
-	key, err := stored.responder.SessionKeyFor(stored.peer, stored.nonce)
+	return stored.responder.SessionKeyFor(stored.peer, stored.nonce)
+}
+
+func SessionFor(c echo.Context, direction string) (*FrameWriter, *FrameReader, error) {
+	key, err := sessionKey(c)
 	if err != nil {
 		return nil, nil, err
 	}

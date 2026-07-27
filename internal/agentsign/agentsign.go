@@ -28,6 +28,9 @@ const (
 	ServerIdentity  = "berth-server"
 
 	BodyUnsigned = "unsigned"
+	BodyFramed   = "framed"
+
+	FrameBodyBeyond = 1024 * 1024
 )
 
 func Canonical(fields ...string) []byte {
