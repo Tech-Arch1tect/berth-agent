@@ -18,6 +18,7 @@ import (
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
 
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"go.uber.org/zap"
@@ -100,11 +101,35 @@ type RestartPolicy struct {
 }
 
 type ResourceLimits struct {
-	CPUShares  int64 `json:"cpu_shares,omitempty"`
-	Memory     int64 `json:"memory,omitempty"`
-	MemorySwap int64 `json:"memory_swap,omitempty"`
-	CPUQuota   int64 `json:"cpu_quota,omitempty"`
-	CPUPeriod  int64 `json:"cpu_period,omitempty"`
+	CPUCores          float64 `json:"cpu_cores,omitempty"`
+	Memory            int64   `json:"memory,omitempty"`
+	MemoryReservation int64   `json:"memory_reservation,omitempty"`
+	MemorySwap        int64   `json:"memory_swap,omitempty"`
+}
+
+func resourceLimitsFrom(hostConfig *dockercontainer.HostConfig) *ResourceLimits {
+	if hostConfig == nil {
+		return nil
+	}
+
+	limits := ResourceLimits{
+		Memory:            hostConfig.Memory,
+		MemoryReservation: hostConfig.MemoryReservation,
+		MemorySwap:        hostConfig.MemorySwap,
+	}
+
+	switch {
+	case hostConfig.NanoCPUs > 0:
+		limits.CPUCores = float64(hostConfig.NanoCPUs) / 1e9
+	case hostConfig.CPUQuota > 0 && hostConfig.CPUPeriod > 0:
+		limits.CPUCores = float64(hostConfig.CPUQuota) / float64(hostConfig.CPUPeriod)
+	}
+
+	if limits == (ResourceLimits{}) {
+		return nil
+	}
+
+	return &limits
 }
 
 type HealthStatus struct {
@@ -792,33 +817,7 @@ func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Contain
 				}
 			}
 
-			resourceLimits := &ResourceLimits{}
-			hasLimits := false
-
-			if containerDetails.HostConfig.CPUShares > 0 {
-				resourceLimits.CPUShares = containerDetails.HostConfig.CPUShares
-				hasLimits = true
-			}
-			if containerDetails.HostConfig.Memory > 0 {
-				resourceLimits.Memory = containerDetails.HostConfig.Memory
-				hasLimits = true
-			}
-			if containerDetails.HostConfig.MemorySwap > 0 {
-				resourceLimits.MemorySwap = containerDetails.HostConfig.MemorySwap
-				hasLimits = true
-			}
-			if containerDetails.HostConfig.CPUQuota > 0 {
-				resourceLimits.CPUQuota = containerDetails.HostConfig.CPUQuota
-				hasLimits = true
-			}
-			if containerDetails.HostConfig.CPUPeriod > 0 {
-				resourceLimits.CPUPeriod = containerDetails.HostConfig.CPUPeriod
-				hasLimits = true
-			}
-
-			if hasLimits {
-				container.ResourceLimits = resourceLimits
-			}
+			container.ResourceLimits = resourceLimitsFrom(containerDetails.HostConfig)
 
 			if containerDetails.State.Health != nil {
 				healthLogs := make([]HealthLog, 0)
