@@ -25,8 +25,6 @@ const (
 	maxSampleWindow = 30 * time.Second
 	sampleRetention = 5 * time.Minute
 	collectTimeout  = 10 * time.Second
-	composeProject  = "com.docker.compose.project"
-	composeService  = "com.docker.compose.service"
 )
 
 type containerLister interface {
@@ -196,7 +194,7 @@ func (s *Service) sampleStack(name string) (stackSample, error) {
 	defer cancel()
 
 	summaries, err := s.containers.ContainerList(ctx, map[string][]string{
-		"label": {fmt.Sprintf("%s=%s", composeProject, name)},
+		"label": {fmt.Sprintf("%s=%s", docker.LabelComposeProject, name)},
 	})
 	if err != nil {
 		return stackSample{}, fmt.Errorf("failed to list containers for stack '%s': %w", name, err)
@@ -205,7 +203,7 @@ func (s *Service) sampleStack(name string) (stackSample, error) {
 	stack := stackSample{at: time.Now(), containers: make(map[string]containerSample, len(summaries))}
 
 	for _, summary := range summaries {
-		serviceName := summary.Labels[composeService]
+		serviceName := summary.Labels[docker.LabelComposeService]
 		if serviceName == "" {
 			continue
 		}

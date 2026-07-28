@@ -523,76 +523,46 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 	}, nil
 }
 
-func (s *Service) GetContainerInfo(stackName string) (map[string][]Container, error) {
-	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "--format", "json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create compose command: %w", err)
-	}
+type stackContainerRef struct {
+	Name    string
+	Service string
+	ID      string
+}
 
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
+func stackContainerRefsFrom(summaries []dockercontainer.Summary) []stackContainerRef {
+	refs := make([]stackContainerRef, 0, len(summaries))
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	containers := make(map[string][]Container)
-
-	for _, line := range lines {
-		if line == "" {
+	for _, summary := range summaries {
+		service := summary.Labels[docker.LabelComposeService]
+		if service == "" {
 			continue
 		}
 
-		var containerInfo map[string]any
-		if err := json.Unmarshal([]byte(line), &containerInfo); err != nil {
-			continue
+		name := ""
+		if len(summary.Names) > 0 {
+			name = strings.TrimPrefix(summary.Names[0], "/")
 		}
 
-		name, _ := containerInfo["Name"].(string)
-		image, _ := containerInfo["Image"].(string)
-		state, _ := containerInfo["State"].(string)
-		service, _ := containerInfo["Service"].(string)
-
-		var ports []Port
-		if publishedPorts, ok := containerInfo["Publishers"]; ok {
-			if portsList, ok := publishedPorts.([]any); ok {
-				for _, portInfo := range portsList {
-					if portMap, ok := portInfo.(map[string]any); ok {
-						private, _ := portMap["TargetPort"].(float64)
-						public, _ := portMap["PublishedPort"].(float64)
-						protocol, _ := portMap["Protocol"].(string)
-
-						if protocol == "" {
-							protocol = "tcp"
-						}
-
-						ports = append(ports, Port{
-							Private: int(private),
-							Public:  int(public),
-							Type:    protocol,
-						})
-					}
-				}
-			}
-		}
-
-		sort.Slice(ports, func(i, j int) bool {
-			if ports[i].Private != ports[j].Private {
-				return ports[i].Private < ports[j].Private
-			}
-			return ports[i].Type < ports[j].Type
-		})
-
-		container := Container{
-			Name:  name,
-			Image: image,
-			State: state,
-			Ports: ports,
-		}
-
-		containers[service] = append(containers[service], container)
+		refs = append(refs, stackContainerRef{Name: name, Service: service, ID: summary.ID})
 	}
 
-	return containers, nil
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
+
+	return refs
+}
+
+func (s *Service) listStackContainers(stackName string) ([]stackContainerRef, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	summaries, err := s.dockerClient.ContainerList(ctx, map[string][]string{
+		"label": {fmt.Sprintf("%s=%s", docker.LabelComposeProject, stackName)},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers for stack '%s': %w", stackName, err)
+	}
+
+	return stackContainerRefsFrom(summaries), nil
 }
 
 func (s *Service) parseComposeServicesAndImages(stackPath, composeFile string) ([]ComposeService, error) {
@@ -1333,36 +1303,16 @@ func (s *Service) parseComposeVolumes(stackPath, composeFile string) (map[string
 }
 
 func (s *Service) getStackContainerVolumes(stackName string) (map[string][]VolumeUsage, error) {
-	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "ps", "-a", "--format", "json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create compose command: %w", err)
-	}
-
-	output, err := cmd.Output()
+	containers, err := s.listStackContainers(stackName)
 	if err != nil {
 		return nil, err
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	volumeUsage := make(map[string][]VolumeUsage)
 
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		var container struct {
-			Name    string `json:"Name"`
-			Service string `json:"Service"`
-			ID      string `json:"ID"`
-		}
-
-		if err := json.Unmarshal([]byte(line), &container); err != nil {
-			continue
-		}
-
+	for _, ref := range containers {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		containerInfo, err := s.dockerClient.ContainerInspect(ctx, container.ID)
+		containerInfo, err := s.dockerClient.ContainerInspect(ctx, ref.ID)
 		cancel()
 
 		if err != nil {
@@ -1391,8 +1341,8 @@ func (s *Service) getStackContainerVolumes(stackName string) (map[string][]Volum
 
 			if volumeKey != "" {
 				usage := VolumeUsage{
-					ContainerName: container.Name,
-					ServiceName:   container.Service,
+					ContainerName: ref.Name,
+					ServiceName:   ref.Service,
 					Mounts:        []VolumeMount{volumeMount},
 				}
 				volumeUsage[volumeKey] = append(volumeUsage[volumeKey], usage)
@@ -1633,45 +1583,38 @@ func (s *Service) parseComposeEnvironment(stackPath, composeFile string) (map[st
 }
 
 func (s *Service) getRuntimeEnvironment(stackPath string) (map[string][]ServiceEnvironment, error) {
-	stackName := filepath.Base(stackPath)
-	containers, err := s.GetContainerInfo(stackName)
+	containers, err := s.listStackContainers(filepath.Base(stackPath))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get container info: %w", err)
+		return nil, err
 	}
 
 	services := make(map[string][]ServiceEnvironment)
 
-	for serviceName, containerList := range containers {
-		var envVars []ServiceEnvironment
+	for _, ref := range containers {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		containerJSON, err := s.dockerClient.ContainerInspect(ctx, ref.ID)
+		cancel()
 
-		for _, container := range containerList {
-			ctx := context.Background()
-			containerJSON, err := s.dockerClient.ContainerInspect(ctx, container.Name)
-			if err != nil {
-				continue
-			}
-
-			var containerEnvVars []EnvironmentVariable
-			for _, envStr := range containerJSON.Config.Env {
-				key, value := s.parseEnvString(envStr)
-				containerEnvVars = append(containerEnvVars, EnvironmentVariable{
-					Key:             key,
-					Value:           value,
-					IsSensitive:     s.isSensitiveVariable(key),
-					Source:          "runtime",
-					IsFromContainer: true,
-				})
-			}
-
-			if len(containerEnvVars) > 0 {
-				envVars = append(envVars, ServiceEnvironment{
-					Variables: containerEnvVars,
-				})
-			}
+		if err != nil {
+			continue
 		}
 
-		if len(envVars) > 0 {
-			services[serviceName] = envVars
+		var containerEnvVars []EnvironmentVariable
+		for _, envStr := range containerJSON.Config.Env {
+			key, value := s.parseEnvString(envStr)
+			containerEnvVars = append(containerEnvVars, EnvironmentVariable{
+				Key:             key,
+				Value:           value,
+				IsSensitive:     s.isSensitiveVariable(key),
+				Source:          "runtime",
+				IsFromContainer: true,
+			})
+		}
+
+		if len(containerEnvVars) > 0 {
+			services[ref.Service] = append(services[ref.Service], ServiceEnvironment{
+				Variables: containerEnvVars,
+			})
 		}
 	}
 

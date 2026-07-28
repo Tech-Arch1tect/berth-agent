@@ -17,6 +17,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	LabelComposeProject = "com.docker.compose.project"
+	LabelComposeService = "com.docker.compose.service"
+)
+
 type Client struct {
 	cli    *client.Client
 	logger *logging.Logger
