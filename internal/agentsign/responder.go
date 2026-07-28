@@ -91,6 +91,13 @@ func SignResponses(responder *Responder) echo.MiddlewareFunc {
 			}
 			c.Response().Writer = writer
 
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					writer.failed()
+					panic(recovered)
+				}
+			}()
+
 			err := next(c)
 			writer.finish(err)
 			return err
@@ -124,14 +131,36 @@ type signingWriter struct {
 	status       int
 	buffer       bytes.Buffer
 	committed    bool
+	sealed       bool
 	frames       *BodyWriter
 }
 
 func (w *signingWriter) WriteHeader(status int) {
+	if w.sealed {
+		return
+	}
 	w.status = status
 }
 
+func (w *signingWriter) failed() {
+	defer func() { w.sealed = true }()
+	if w.committed {
+		return
+	}
+
+	body := []byte(`{"error":"Internal server error"}`)
+	w.status = http.StatusInternalServerError
+	w.buffer.Reset()
+	w.buffer.Write(body)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Del("Content-Length")
+	w.commit(BodyDigest(body))
+}
+
 func (w *signingWriter) Write(payload []byte) (int, error) {
+	if w.sealed {
+		return len(payload), nil
+	}
 	if !w.committed && int64(w.buffer.Len()+len(payload)) > FrameBodyBeyond {
 		w.startFraming()
 	}
