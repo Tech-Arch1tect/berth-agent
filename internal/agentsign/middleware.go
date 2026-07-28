@@ -2,7 +2,9 @@ package agentsign
 
 import (
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,16 +29,21 @@ func LoadMaterial(certDir string) (*Verifier, *Responder, error) {
 	if err != nil {
 		return nil, nil, &startupError{path: authorityPath, cause: err}
 	}
-	verifier, err := NewVerifier(authorityPEM, DefaultSkew)
-	if err != nil {
-		return nil, nil, err
-	}
 
 	certificatePath := filepath.Join(certDir, CertificateFileName)
 	certPEM, err := os.ReadFile(certificatePath)
 	if err != nil {
 		return nil, nil, &startupError{path: certificatePath, cause: err}
 	}
+	identity, err := CertificateIdentity(certPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+	verifier, err := NewVerifier(authorityPEM, identity, DefaultSkew)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	keyPEM, err := os.ReadFile(filepath.Join(certDir, KeyFileName))
 	if err != nil {
 		return nil, nil, &startupError{path: filepath.Join(certDir, KeyFileName), cause: err}
@@ -47,6 +54,21 @@ func LoadMaterial(certDir string) (*Verifier, *Responder, error) {
 	}
 
 	return verifier, responder, nil
+}
+
+func CertificateIdentity(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", errors.New("the agent certificate is not valid PEM")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("the agent certificate could not be parsed: %w", err)
+	}
+	if len(certificate.DNSNames) == 0 {
+		return "", errors.New("the agent certificate does not name the agent it was issued for")
+	}
+	return certificate.DNSNames[0], nil
 }
 
 type startupError struct {

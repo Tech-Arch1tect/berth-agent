@@ -42,9 +42,10 @@ func Canonical(fields ...string) []byte {
 	return base.Bytes()
 }
 
-func RequestBase(method, target, contentType, bodyDigest string, timestamp int64, nonce string) []byte {
+func RequestBase(audience, method, target, contentType, bodyDigest string, timestamp int64, nonce string) []byte {
 	return Canonical(
 		RequestContext,
+		audience,
 		method,
 		target,
 		contentType,
@@ -105,17 +106,22 @@ func (c *nonceCache) admit(nonce string, now time.Time) bool {
 
 type Verifier struct {
 	authority *x509.CertPool
+	identity  string
 	skew      time.Duration
 	nonces    *nonceCache
 }
 
-func NewVerifier(authorityPEM []byte, skew time.Duration) (*Verifier, error) {
+func NewVerifier(authorityPEM []byte, identity string, skew time.Duration) (*Verifier, error) {
 	authority := x509.NewCertPool()
 	if !authority.AppendCertsFromPEM(authorityPEM) {
 		return nil, errors.New("the berth certificate authority file does not contain a certificate")
 	}
+	if identity == "" {
+		return nil, errors.New("this agent has no identity to check requests against")
+	}
 	return &Verifier{
 		authority: authority,
+		identity:  identity,
 		skew:      skew,
 		nonces:    newNonceCache(2 * skew),
 	}, nil
@@ -163,7 +169,7 @@ func (v *Verifier) VerifyRequest(req *http.Request) (*x509.Certificate, error) {
 		return nil, ErrRejected
 	}
 
-	base := RequestBase(req.Method, req.URL.RequestURI(), req.Header.Get("Content-Type"), req.Header.Get(HeaderBodyDigest), timestamp, nonce)
+	base := RequestBase(v.identity, req.Method, req.URL.RequestURI(), req.Header.Get("Content-Type"), req.Header.Get(HeaderBodyDigest), timestamp, nonce)
 	digest := sha256.Sum256(base)
 	if !ecdsa.VerifyASN1(publicKey, digest[:], signature) {
 		return nil, ErrRejected
