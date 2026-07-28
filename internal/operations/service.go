@@ -12,6 +12,7 @@ import (
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
 	"github.com/tech-arch1tect/berth-agent/internal/backup"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/sidecar"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"io"
 	"net/http"
@@ -339,6 +340,18 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 		return fmt.Errorf("invalid stack path: %w", err)
 	}
 
+	if err := sidecar.ValidateOperation(operation.Request.Command, operation.Request.Options); err != nil {
+		s.logger.Warn("self-operation refused before handoff",
+			zap.String("operation_id", operation.ID),
+			zap.String("command", operation.Request.Command),
+			zap.Strings("options", operation.Request.Options),
+			zap.Error(err),
+		)
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		operation.Broadcaster.BroadcastError(err.Error())
+		return err
+	}
+
 	operation.Broadcaster.Broadcast(StreamTypeStdout, "Detected self-operation, forwarding to sidecar updater...")
 	operation.Broadcaster.Broadcast(StreamTypeStdout, fmt.Sprintf("Sidecar will handle %s operation independently", operation.Request.Command))
 	operation.Broadcaster.Broadcast(StreamTypeStdout, "Agent update will continue in background after this connection closes")
@@ -367,10 +380,8 @@ func (s *Service) handleSelfOperationWithBroadcast(ctx context.Context, operatio
 	}
 
 	payload := map[string]any{
-		"command":    operation.Request.Command,
-		"options":    operation.Request.Options,
-		"services":   operation.Request.Services,
-		"stack_path": stackPath,
+		"command": operation.Request.Command,
+		"options": operation.Request.Options,
 	}
 
 	jsonData, err := json.Marshal(payload)

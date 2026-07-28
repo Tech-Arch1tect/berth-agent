@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -30,70 +31,49 @@ func NewService(cfg *config.Config, logger *logging.Logger) *Service {
 	}
 }
 
+func (s *Service) AgentStackPath() (string, error) {
+	base, err := filepath.Abs(s.stackLocation)
+	if err != nil {
+		return "", fmt.Errorf("invalid stack location %q: %w", s.stackLocation, err)
+	}
+
+	stackPath := filepath.Join(base, AgentStackName)
+	if _, err := os.Stat(stackPath); err != nil {
+		return "", fmt.Errorf("the %s stack directory is not readable at %s: %w", AgentStackName, stackPath, err)
+	}
+	return stackPath, nil
+}
+
 func (s *Service) ExecuteOperation(_ context.Context, req OperationRequest) error {
 	s.logger.Info("sidecar operation starting",
 		zap.String("command", req.Command),
-		zap.String("stack_path", req.StackPath),
 		zap.Strings("options", req.Options),
-		zap.Strings("services", req.Services),
 	)
 
-	if req.StackPath == "" {
-		s.logger.Error("stack path is empty")
-		return fmt.Errorf("stack path cannot be empty")
-	}
-
-	absStackPath, err := filepath.Abs(req.StackPath)
-	if err != nil {
-		s.logger.Error("invalid stack path",
-			zap.String("stack_path", req.StackPath),
+	if err := ValidateOperation(req.Command, req.Options); err != nil {
+		s.logger.Error("sidecar refused an operation outside what it exists to do",
+			zap.String("command", req.Command),
+			zap.Strings("options", req.Options),
 			zap.Error(err),
 		)
-		return fmt.Errorf("invalid stack path: %w", err)
+		return err
 	}
 
-	absBase, err := filepath.Abs(s.stackLocation)
+	absStackPath, err := s.AgentStackPath()
 	if err != nil {
-		s.logger.Error("invalid stack location config",
+		s.logger.Error("sidecar cannot reach the agent stack",
 			zap.String("stack_location", s.stackLocation),
 			zap.Error(err),
 		)
-		return fmt.Errorf("invalid stack location: %w", err)
+		return err
 	}
 
-	rel, err := filepath.Rel(absBase, absStackPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.Contains(rel, string(filepath.Separator)) {
-		s.logger.Error("stack path outside allowed directory",
-			zap.String("stack_path", req.StackPath),
-			zap.String("stack_location", s.stackLocation),
-			zap.String("resolved_rel", rel),
-		)
-		return fmt.Errorf("stack path is outside the allowed directory")
-	}
-
-	args := []string{"compose", req.Command}
-
-	s.logger.Debug("processing options", zap.Strings("options", req.Options))
-	for _, option := range req.Options {
-		if option != "-d" && option != "--detach" {
-			args = append(args, option)
-			s.logger.Debug("added option", zap.String("option", option))
-		} else {
-			s.logger.Debug("filtered out detach option", zap.String("option", option))
-		}
-	}
-
-	args = append(args, "berth-agent")
-
-	if req.Command == "up" {
-		args = append(args, "-d")
-		s.logger.Debug("added detach flag for up command")
-	}
+	args := composeArgs(req.Command, req.Options)
 
 	fullCommand := "docker " + strings.Join(args, " ")
 	s.logger.Info("sidecar executing docker compose command",
 		zap.String("full_command", fullCommand),
-		zap.String("working_dir", req.StackPath),
+		zap.String("working_dir", absStackPath),
 		zap.Strings("args", args),
 	)
 

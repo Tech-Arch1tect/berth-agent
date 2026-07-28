@@ -39,15 +39,12 @@ func (h *Handler) HandleOperation(c echo.Context) error {
 
 	h.logger.Info("sidecar executing operation",
 		zap.String("command", req.Command),
-		zap.String("stack_path", req.StackPath),
 		zap.Strings("options", req.Options),
-		zap.Strings("services", req.Services),
 	)
 
 	if err := h.service.ExecuteOperation(c.Request().Context(), req); err != nil {
 		h.logger.Error("sidecar operation failed",
 			zap.String("command", req.Command),
-			zap.String("stack_path", req.StackPath),
 			zap.Error(err),
 		)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -57,7 +54,6 @@ func (h *Handler) HandleOperation(c echo.Context) error {
 
 	h.logger.Info("sidecar operation completed successfully",
 		zap.String("command", req.Command),
-		zap.String("stack_path", req.StackPath),
 	)
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Sidecar operation completed successfully",
