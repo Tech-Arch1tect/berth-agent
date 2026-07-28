@@ -1,711 +1,658 @@
 package stats
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/config"
-	"github.com/tech-arch1tect/berth-agent/internal/docker"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
-	"github.com/tech-arch1tect/berth-agent/internal/stack"
-	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/tech-arch1tect/berth-agent/config"
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/validation"
+
+	"github.com/docker/docker/api/types/container"
 	"go.uber.org/zap"
 )
 
-type cpuCacheEntry struct {
-	userUsec     uint64
-	systemUsec   uint64
-	timestamp    time.Time
-	lastAccessed time.Time
+const (
+	cacheTTL        = 900 * time.Millisecond
+	maxSampleWindow = 30 * time.Second
+	sampleRetention = 5 * time.Minute
+	collectTimeout  = 10 * time.Second
+	composeProject  = "com.docker.compose.project"
+	composeService  = "com.docker.compose.service"
+)
+
+type containerLister interface {
+	ContainerList(ctx context.Context, filterLabels map[string][]string) ([]container.Summary, error)
 }
 
 type Service struct {
 	stackLocation string
-	dockerClient  *docker.Client
-	stackService  *stack.Service
+	containers    containerLister
 	cgroupRoot    string
-	cpuCache      map[string]*cpuCacheEntry
-	cacheMutex    sync.RWMutex
+	procRoot      string
 	logger        *logging.Logger
+
+	mu       sync.Mutex
+	cache    map[string]cacheEntry
+	previous map[string]stackSample
+	inflight map[string]*collection
 }
 
-func NewService(cfg *config.Config, dockerClient *docker.Client, stackService *stack.Service, logger *logging.Logger) *Service {
+type cacheEntry struct {
+	stats *StackStats
+	at    time.Time
+}
+
+type collection struct {
+	done  chan struct{}
+	stats *StackStats
+	err   error
+}
+
+type containerSample struct {
+	name        string
+	serviceName string
+	state       string
+	collected   bool
+
+	memoryCurrent      uint64
+	memoryAnon         uint64
+	memoryFile         uint64
+	memoryInactiveFile uint64
+	memorySwap         uint64
+	memoryPeak         uint64
+	memoryLimit        uint64
+	oomKills           uint64
+	memoryLimitHits    uint64
+	pageFaults         uint64
+	pageMajorFaults    uint64
+
+	cpuUsageUsec     uint64
+	cpuUserUsec      uint64
+	cpuSystemUsec    uint64
+	cpuThrottledUsec uint64
+	cpuPeriods       uint64
+	cpuThrottled     uint64
+	cpuQuotaCores    float64
+
+	networkRxBytes   uint64
+	networkTxBytes   uint64
+	networkRxPackets uint64
+	networkTxPackets uint64
+
+	blockReadBytes  uint64
+	blockWriteBytes uint64
+	blockReadOps    uint64
+	blockWriteOps   uint64
+}
+
+type stackSample struct {
+	at         time.Time
+	containers map[string]containerSample
+}
+
+func NewService(cfg *config.Config, dockerClient *docker.Client, logger *logging.Logger) *Service {
 	service := &Service{
 		stackLocation: cfg.StackLocation,
-		dockerClient:  dockerClient,
-		stackService:  stackService,
+		containers:    dockerClient,
 		cgroupRoot:    "/sys/fs/cgroup",
-		cpuCache:      make(map[string]*cpuCacheEntry),
+		procRoot:      "/proc",
 		logger:        logger.With(zap.String("component", "stats")),
+		cache:         make(map[string]cacheEntry),
+		previous:      make(map[string]stackSample),
+		inflight:      make(map[string]*collection),
 	}
 
-	logger.Info("Stats service initialized",
+	logger.Info("stats service initialized",
 		zap.String("stack_location", cfg.StackLocation),
 		zap.String("cgroup_root", service.cgroupRoot),
 	)
-
-	go service.cleanupCacheLoop()
 
 	return service
 }
 
 func (s *Service) GetStackStats(name string) (*StackStats, error) {
-	s.logger.Info("Collecting stack stats", zap.String("stack", name))
-
 	stackPath, err := validation.SanitizeStackPath(s.stackLocation, name)
 	if err != nil {
-		s.logger.Error("Invalid stack name", zap.String("stack", name), zap.Error(err))
+		s.logger.Error("invalid stack name", zap.String("stack", name), zap.Error(err))
 		return nil, fmt.Errorf("invalid stack name '%s': %w", name, err)
 	}
 
 	if _, err := os.Stat(stackPath); os.IsNotExist(err) {
-		s.logger.Error("Stack not found", zap.String("stack", name), zap.String("path", stackPath))
 		return nil, fmt.Errorf("stack '%s' not found", name)
 	}
 
-	containers, err := s.stackService.GetContainerInfo(name)
-	if err != nil {
-		s.logger.Error("Failed to get container info", zap.String("stack", name), zap.Error(err))
-		return nil, fmt.Errorf("failed to get container info: %w", err)
+	return s.cachedStats(name)
+}
+
+func (s *Service) cachedStats(name string) (*StackStats, error) {
+	s.mu.Lock()
+	if entry, ok := s.cache[name]; ok && time.Since(entry.at) < cacheTTL {
+		s.mu.Unlock()
+		return entry.stats, nil
 	}
+
+	if inflight, ok := s.inflight[name]; ok {
+		s.mu.Unlock()
+		<-inflight.done
+		return inflight.stats, inflight.err
+	}
+
+	inflight := &collection{done: make(chan struct{})}
+	s.inflight[name] = inflight
+	previous := s.previous[name]
+	s.mu.Unlock()
+
+	stats, current, err := s.collect(name, previous)
+
+	s.mu.Lock()
+	delete(s.inflight, name)
+	if err == nil {
+		s.cache[name] = cacheEntry{stats: stats, at: current.at}
+		s.previous[name] = current
+	}
+	s.prune()
+	s.mu.Unlock()
+
+	inflight.stats, inflight.err = stats, err
+	close(inflight.done)
+
+	return stats, err
+}
+
+func (s *Service) prune() {
+	cutoff := time.Now().Add(-sampleRetention)
+	for name, entry := range s.cache {
+		if entry.at.Before(cutoff) {
+			delete(s.cache, name)
+		}
+	}
+	for name, sample := range s.previous {
+		if sample.at.Before(cutoff) {
+			delete(s.previous, name)
+		}
+	}
+}
+
+func (s *Service) collect(name string, previous stackSample) (*StackStats, stackSample, error) {
+	current, err := s.sampleStack(name)
+	if err != nil {
+		return nil, stackSample{}, err
+	}
+
+	return s.buildStats(name, current, previous, s.hostStats()), current, nil
+}
+
+func (s *Service) sampleStack(name string) (stackSample, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), collectTimeout)
+	defer cancel()
+
+	summaries, err := s.containers.ContainerList(ctx, map[string][]string{
+		"label": {fmt.Sprintf("%s=%s", composeProject, name)},
+	})
+	if err != nil {
+		return stackSample{}, fmt.Errorf("failed to list containers for stack '%s': %w", name, err)
+	}
+
+	stack := stackSample{at: time.Now(), containers: make(map[string]containerSample, len(summaries))}
+
+	for _, summary := range summaries {
+		serviceName := summary.Labels[composeService]
+		if serviceName == "" {
+			continue
+		}
+
+		sample := containerSample{
+			name:        containerName(summary.Names),
+			serviceName: serviceName,
+			state:       summary.State,
+		}
+
+		if summary.State == "running" {
+			s.sampleCgroup(&sample, summary.ID)
+		}
+
+		stack.containers[summary.ID] = sample
+	}
+
+	return stack, nil
+}
+
+func containerName(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(names[0], "/")
+}
+
+func (s *Service) sampleCgroup(sample *containerSample, containerID string) {
+	path := s.containerCgroupPath(containerID)
+	if _, err := os.Stat(path); err != nil {
+		s.logger.Debug("cgroup unavailable",
+			zap.String("container", sample.name),
+			zap.String("path", path),
+			zap.Error(err),
+		)
+		return
+	}
+
+	memory := s.parseKeyedFile(filepath.Join(path, "memory.stat"))
+	events := s.parseKeyedFile(filepath.Join(path, "memory.events"))
+	cpu := s.parseKeyedFile(filepath.Join(path, "cpu.stat"))
+	io := s.parseIOStat(filepath.Join(path, "io.stat"))
+
+	sample.memoryCurrent = s.readUint(filepath.Join(path, "memory.current"))
+	sample.memoryPeak = s.readUint(filepath.Join(path, "memory.peak"))
+	sample.memoryLimit = s.readLimit(filepath.Join(path, "memory.max"))
+	sample.memoryAnon = memory["anon"]
+	sample.memoryFile = memory["file"]
+	sample.memoryInactiveFile = memory["inactive_file"]
+	sample.memorySwap = memory["swap"]
+	sample.pageFaults = memory["pgfault"]
+	sample.pageMajorFaults = memory["pgmajfault"]
+	sample.oomKills = events["oom_kill"]
+	sample.memoryLimitHits = events["max"]
+
+	sample.cpuUsageUsec = cpu["usage_usec"]
+	sample.cpuUserUsec = cpu["user_usec"]
+	sample.cpuSystemUsec = cpu["system_usec"]
+	sample.cpuThrottledUsec = cpu["throttled_usec"]
+	sample.cpuPeriods = cpu["nr_periods"]
+	sample.cpuThrottled = cpu["nr_throttled"]
+	sample.cpuQuotaCores = s.readCPUQuota(filepath.Join(path, "cpu.max"))
+
+	sample.blockReadBytes = io["rbytes"]
+	sample.blockWriteBytes = io["wbytes"]
+	sample.blockReadOps = io["rios"]
+	sample.blockWriteOps = io["wios"]
+
+	s.sampleNetwork(sample, path)
+
+	sample.collected = true
+}
+
+func (s *Service) containerCgroupPath(containerID string) string {
+	scope := filepath.Join(s.cgroupRoot, "system.slice", fmt.Sprintf("docker-%s.scope", containerID))
+	if _, err := os.Stat(scope); err == nil {
+		return scope
+	}
+	return filepath.Join(s.cgroupRoot, "docker", containerID)
+}
+
+func (s *Service) sampleNetwork(sample *containerSample, cgroupPath string) {
+	pid, ok := s.firstProcess(filepath.Join(cgroupPath, "cgroup.procs"))
+	if !ok {
+		return
+	}
+
+	data, err := os.ReadFile(filepath.Join(s.procRoot, pid, "net", "dev"))
+	if err != nil {
+		s.logger.Debug("network stats unavailable",
+			zap.String("container", sample.name),
+			zap.String("pid", pid),
+			zap.Error(err),
+		)
+		return
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		name, values, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+
+		if strings.TrimSpace(name) == "lo" {
+			continue
+		}
+
+		fields := strings.Fields(values)
+		if len(fields) < 10 {
+			continue
+		}
+
+		sample.networkRxBytes += parseUint(fields[0])
+		sample.networkRxPackets += parseUint(fields[1])
+		sample.networkTxBytes += parseUint(fields[8])
+		sample.networkTxPackets += parseUint(fields[9])
+	}
+}
+
+func (s *Service) firstProcess(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+
+	pid, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	if pid == "" {
+		return "", false
+	}
+
+	return pid, true
+}
+
+func (s *Service) buildStats(name string, current, previous stackSample, host HostStats) *StackStats {
+	window := current.at.Sub(previous.at).Seconds()
+	comparable := !previous.at.IsZero() && window > 0 && window <= maxSampleWindow.Seconds()
 
 	stats := &StackStats{
-		StackName:  name,
-		Containers: make([]ContainerStats, 0),
+		StackName:   name,
+		CollectedAt: current.at,
+		Host:        host,
+		Containers:  make([]ContainerStats, 0, len(current.containers)),
 	}
 
-	type containerJob struct {
-		name        string
-		serviceName string
-		id          string
-		pid         int
+	if comparable {
+		stats.SampleWindowSeconds = &window
 	}
 
-	var runningContainers []containerJob
+	for id, sample := range current.containers {
+		entry := ContainerStats{
+			Name:        sample.name,
+			ServiceName: sample.serviceName,
+			State:       sample.state,
+		}
 
-	for serviceName, containerList := range containers {
-		for _, container := range containerList {
-			if container.State == "running" {
-				containerID, err := s.getContainerID(container.Name)
-				if err != nil {
-					continue
-				}
-				runningContainers = append(runningContainers, containerJob{
-					name:        container.Name,
-					serviceName: serviceName,
-					id:          containerID,
-				})
+		if sample.collected {
+			entry.CPUQuotaCores = sample.cpuQuotaCores
+			entry.CPUUserTime = sample.cpuUserUsec / 1000
+			entry.CPUSystemTime = sample.cpuSystemUsec / 1000
+
+			entry.MemoryCurrent = sample.memoryCurrent
+			entry.MemoryWorkingSet = saturatingSub(sample.memoryCurrent, sample.memoryInactiveFile)
+			entry.MemoryAnon = sample.memoryAnon
+			entry.MemoryFile = sample.memoryFile
+			entry.MemoryInactiveFile = sample.memoryInactiveFile
+			entry.MemorySwap = sample.memorySwap
+			entry.MemoryPeak = sample.memoryPeak
+			entry.MemoryLimit = sample.memoryLimit
+			entry.OOMKills = sample.oomKills
+			entry.MemoryLimitHits = sample.memoryLimitHits
+			entry.PageFaults = sample.pageFaults
+			entry.PageMajorFaults = sample.pageMajorFaults
+
+			entry.NetworkRxBytes = sample.networkRxBytes
+			entry.NetworkTxBytes = sample.networkTxBytes
+			entry.NetworkRxPackets = sample.networkRxPackets
+			entry.NetworkTxPackets = sample.networkTxPackets
+
+			entry.BlockReadBytes = sample.blockReadBytes
+			entry.BlockWriteBytes = sample.blockWriteBytes
+			entry.BlockReadOps = sample.blockReadOps
+			entry.BlockWriteOps = sample.blockWriteOps
+
+			if sample.memoryLimit > 0 {
+				entry.MemoryPercentOfLimit = ratio(entry.MemoryWorkingSet, sample.memoryLimit)
+			}
+			if host.MemoryTotal > 0 {
+				entry.MemoryPercentOfHost = ratio(entry.MemoryWorkingSet, host.MemoryTotal)
 			}
 		}
-	}
 
-	if len(runningContainers) == 0 {
-		s.logger.Debug("No running containers found", zap.String("stack", name))
-		return stats, nil
-	}
-
-	s.logger.Debug("Found running containers",
-		zap.String("stack", name),
-		zap.Int("count", len(runningContainers)),
-	)
-
-	ctx := context.Background()
-	for i, job := range runningContainers {
-		s.logger.Debug("Inspecting container",
-			zap.String("container", job.name),
-			zap.String("id", job.id),
-		)
-		containerInfo, err := s.dockerClient.ContainerInspect(ctx, job.id)
-		if err == nil && containerInfo.State.Pid != 0 {
-			runningContainers[i].pid = containerInfo.State.Pid
-		} else if err != nil {
-			s.logger.Debug("Failed to inspect container",
-				zap.String("container", job.name),
-				zap.Error(err),
-			)
+		prior, seen := previous.containers[id]
+		if comparable && seen && sample.collected && prior.collected {
+			s.applyRates(&entry, sample, prior, window, host)
 		}
-	}
 
-	statsChan := make(chan ContainerStats, len(runningContainers))
-	var wg sync.WaitGroup
-
-	for _, job := range runningContainers {
-		wg.Add(1)
-		go func(containerName, serviceName, containerID string, pid int) {
-			defer wg.Done()
-
-			s.logger.Debug("Collecting container stats",
-				zap.String("container", containerName),
-				zap.String("service", serviceName),
-			)
-
-			containerStats, err := s.getContainerStatsFromCgroups(containerName, serviceName, containerID, pid)
-			if err != nil {
-				s.logger.Error("Failed to collect container stats",
-					zap.String("container", containerName),
-					zap.Error(err),
-				)
-				return
-			}
-
-			statsChan <- *containerStats
-		}(job.name, job.serviceName, job.id, job.pid)
-	}
-
-	go func() {
-		wg.Wait()
-		close(statsChan)
-	}()
-
-	for containerStats := range statsChan {
-		stats.Containers = append(stats.Containers, containerStats)
+		stats.Containers = append(stats.Containers, entry)
 	}
 
 	sort.Slice(stats.Containers, func(i, j int) bool {
 		return stats.Containers[i].Name < stats.Containers[j].Name
 	})
 
-	s.logger.Info("Stack stats collected successfully",
-		zap.String("stack", name),
-		zap.Int("containers", len(stats.Containers)),
-	)
-
-	return stats, nil
+	return stats
 }
 
-func (s *Service) getContainerID(containerName string) (string, error) {
-	s.logger.Debug("Looking up container ID", zap.String("container", containerName))
+func (s *Service) applyRates(entry *ContainerStats, sample, prior containerSample, window float64, host HostStats) {
+	entry.NetworkRxBytesPerSecond = rate(sample.networkRxBytes, prior.networkRxBytes, window)
+	entry.NetworkTxBytesPerSecond = rate(sample.networkTxBytes, prior.networkTxBytes, window)
+	entry.BlockReadBytesPerSecond = rate(sample.blockReadBytes, prior.blockReadBytes, window)
+	entry.BlockWriteBytesPerSecond = rate(sample.blockWriteBytes, prior.blockWriteBytes, window)
 
-	ctx := context.Background()
-	containers, err := s.dockerClient.ContainerList(ctx, nil)
+	usage := rate(sample.cpuUsageUsec, prior.cpuUsageUsec, window)
+	if usage == nil {
+		return
+	}
+
+	cores := *usage / 1_000_000
+	entry.CPUUsageCores = &cores
+
+	if sample.cpuQuotaCores > 0 {
+		percent := cores / sample.cpuQuotaCores * 100
+		entry.CPUPercentOfQuota = &percent
+	}
+
+	if host.CPUCores > 0 {
+		percent := cores / float64(host.CPUCores) * 100
+		entry.CPUPercentOfHost = &percent
+	}
+
+	if periods := saturatingSub(sample.cpuPeriods, prior.cpuPeriods); periods > 0 {
+		throttled := saturatingSub(sample.cpuThrottled, prior.cpuThrottled)
+		entry.CPUThrottledPercent = ratio(throttled, periods)
+	}
+}
+
+func rate(current, prior uint64, window float64) *float64 {
+	if current < prior || window <= 0 {
+		return nil
+	}
+
+	value := float64(current-prior) / window
+	return &value
+}
+
+func ratio(part, whole uint64) *float64 {
+	if whole == 0 {
+		return nil
+	}
+
+	value := float64(part) / float64(whole) * 100
+	return &value
+}
+
+func saturatingSub(a, b uint64) uint64 {
+	if a < b {
+		return 0
+	}
+	return a - b
+}
+
+func (s *Service) hostStats() HostStats {
+	memory := s.parseMeminfo()
+	load1, load5, load15 := s.parseLoadAverage()
+
+	return HostStats{
+		MemoryTotal:     memory["MemTotal"] * 1024,
+		MemoryAvailable: memory["MemAvailable"] * 1024,
+		CPUCores:        s.hostCPUCores(),
+		Load1:           load1,
+		Load5:           load5,
+		Load15:          load15,
+	}
+}
+
+func (s *Service) parseMeminfo() map[string]uint64 {
+	values := make(map[string]uint64, 2)
+
+	data, err := os.ReadFile(filepath.Join(s.procRoot, "meminfo"))
 	if err != nil {
-		s.logger.Error("Failed to list containers via Docker API",
-			zap.String("container", containerName),
-			zap.Error(err),
-		)
-		return "", fmt.Errorf("failed to list containers: %w", err)
+		s.logger.Debug("host memory unavailable", zap.Error(err))
+		return values
 	}
 
-	for _, container := range containers {
-		for _, name := range container.Names {
-			if strings.TrimPrefix(name, "/") == containerName {
-				s.logger.Debug("Container ID found",
-					zap.String("container", containerName),
-					zap.String("id", container.ID),
-				)
-				return container.ID, nil
-			}
-		}
-	}
-
-	s.logger.Debug("Container not found in Docker API",
-		zap.String("container", containerName),
-	)
-	return "", fmt.Errorf("container %s not found", containerName)
-}
-
-func (s *Service) getContainerStatsFromCgroups(containerName, serviceName, containerID string, pid int) (*ContainerStats, error) {
-	s.logger.Debug("Collecting stats from cgroups",
-		zap.String("container", containerName),
-		zap.String("id", containerID),
-		zap.Int("pid", pid),
-	)
-
-	stats := &ContainerStats{
-		Name:        containerName,
-		ServiceName: serviceName,
-	}
-
-	cgroupPath := s.getContainerCgroupPath(containerID)
-	s.logger.Debug("Using cgroup path",
-		zap.String("container", containerName),
-		zap.String("path", cgroupPath),
-	)
-
-	memoryStats, err := s.getMemoryStats(cgroupPath)
-	if err == nil {
-		stats.MemoryUsage = memoryStats.Usage
-		stats.MemoryLimit = memoryStats.Limit
-		stats.MemoryPercent = memoryStats.Percent
-		stats.MemoryRSS = memoryStats.RSS
-		stats.MemoryCache = memoryStats.Cache
-		stats.MemorySwap = memoryStats.Swap
-		stats.PageFaults = memoryStats.PageFaults
-		stats.PageMajorFaults = memoryStats.PageMajorFaults
-		s.logger.Debug("Memory stats collected",
-			zap.String("container", containerName),
-			zap.Uint64("usage", memoryStats.Usage),
-			zap.Float64("percent", memoryStats.Percent),
-		)
-	} else {
-		s.logger.Debug("Failed to collect memory stats",
-			zap.String("container", containerName),
-			zap.Error(err),
-		)
-	}
-
-	cpuStats, err := s.getCPUStats(cgroupPath)
-	if err == nil {
-		stats.CPUUserTime = cpuStats.UserTime
-		stats.CPUSystemTime = cpuStats.SystemTime
-		s.logger.Debug("CPU stats collected",
-			zap.String("container", containerName),
-			zap.Uint64("user_time", cpuStats.UserTime),
-			zap.Uint64("system_time", cpuStats.SystemTime),
-		)
-	} else {
-		s.logger.Debug("Failed to collect CPU stats",
-			zap.String("container", containerName),
-			zap.Error(err),
-		)
-	}
-
-	stats.CPUPercent = s.calculateCPUPercentFromCgroup(cgroupPath)
-
-	blkioStats, err := s.getBlockIOStats(cgroupPath)
-	if err == nil {
-		stats.BlockReadBytes = blkioStats.ReadBytes
-		stats.BlockWriteBytes = blkioStats.WriteBytes
-		stats.BlockReadOps = blkioStats.ReadOps
-		stats.BlockWriteOps = blkioStats.WriteOps
-		s.logger.Debug("Block I/O stats collected",
-			zap.String("container", containerName),
-			zap.Uint64("read_bytes", blkioStats.ReadBytes),
-			zap.Uint64("write_bytes", blkioStats.WriteBytes),
-		)
-	} else {
-		s.logger.Debug("Failed to collect block I/O stats",
-			zap.String("container", containerName),
-			zap.Error(err),
-		)
-	}
-
-	networkStats, err := s.getNetworkStats(pid)
-	if err == nil {
-		stats.NetworkRxBytes = networkStats.RxBytes
-		stats.NetworkTxBytes = networkStats.TxBytes
-		stats.NetworkRxPackets = networkStats.RxPackets
-		stats.NetworkTxPackets = networkStats.TxPackets
-		s.logger.Debug("Network stats collected",
-			zap.String("container", containerName),
-			zap.Uint64("rx_bytes", networkStats.RxBytes),
-			zap.Uint64("tx_bytes", networkStats.TxBytes),
-		)
-	} else {
-		s.logger.Debug("Failed to collect network stats",
-			zap.String("container", containerName),
-			zap.Error(err),
-		)
-	}
-
-	return stats, nil
-}
-
-func (s *Service) getContainerCgroupPath(containerID string) string {
-	systemdPath := filepath.Join(s.cgroupRoot, "system.slice", fmt.Sprintf("docker-%s.scope", containerID))
-	if _, err := os.Stat(systemdPath); err == nil {
-		return systemdPath
-	}
-	return filepath.Join(s.cgroupRoot, "docker", containerID)
-}
-
-type memoryStats struct {
-	Usage           uint64
-	Limit           uint64
-	Percent         float64
-	RSS             uint64
-	Cache           uint64
-	Swap            uint64
-	PageFaults      uint64
-	PageMajorFaults uint64
-}
-
-type cpuStats struct {
-	Percent    float64
-	UserTime   uint64
-	SystemTime uint64
-}
-
-type blkioStats struct {
-	ReadBytes  uint64
-	WriteBytes uint64
-	ReadOps    uint64
-	WriteOps   uint64
-}
-
-type networkStats struct {
-	RxBytes   uint64
-	TxBytes   uint64
-	RxPackets uint64
-	TxPackets uint64
-}
-
-func (s *Service) getMemoryStats(cgroupPath string) (*memoryStats, error) {
-	memoryUsagePath := filepath.Join(cgroupPath, "memory.current")
-	memoryLimitPath := filepath.Join(cgroupPath, "memory.max")
-	memoryStatPath := filepath.Join(cgroupPath, "memory.stat")
-
-	usage, err := s.readUint64FromFile(memoryUsagePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read memory usage: %w", err)
-	}
-
-	limit, err := s.readUint64FromFile(memoryLimitPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read memory limit: %w", err)
-	}
-
-	memStat, err := s.parseMemoryStat(memoryStatPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse memory.stat: %w", err)
-	}
-
-	percent := 0.0
-	if limit > 0 {
-		percent = float64(usage) / float64(limit) * 100.0
-	}
-
-	return &memoryStats{
-		Usage:           usage,
-		Limit:           limit,
-		Percent:         percent,
-		RSS:             memStat["anon"],
-		Cache:           memStat["file"],
-		Swap:            memStat["swap"],
-		PageFaults:      memStat["pgfault"],
-		PageMajorFaults: memStat["pgmajfault"],
-	}, nil
-}
-
-func (s *Service) getCPUStats(cgroupPath string) (*cpuStats, error) {
-	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
-
-	cpuStat, err := s.parseCPUStat(cpuStatPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse cpu.stat: %w", err)
-	}
-
-	percent := 0.0
-
-	return &cpuStats{
-		Percent:    percent,
-		UserTime:   cpuStat["user_usec"] / 1000,
-		SystemTime: cpuStat["system_usec"] / 1000,
-	}, nil
-}
-
-func (s *Service) cleanupCacheLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		s.cleanupStaleCache()
-	}
-}
-
-func (s *Service) cleanupStaleCache() {
-	s.cacheMutex.Lock()
-	defer s.cacheMutex.Unlock()
-
-	cutoff := time.Now().Add(-5 * time.Minute)
-	initialSize := len(s.cpuCache)
-	removed := 0
-
-	for cacheKey, entry := range s.cpuCache {
-		if entry.lastAccessed.Before(cutoff) {
-			delete(s.cpuCache, cacheKey)
-			removed++
-		}
-	}
-
-	if removed > 0 {
-		s.logger.Debug("Cleaned up stale cache entries",
-			zap.Int("removed", removed),
-			zap.Int("initial_size", initialSize),
-			zap.Int("final_size", len(s.cpuCache)),
-		)
-	}
-}
-
-func (s *Service) calculateCPUPercentFromCgroup(cgroupPath string) float64 {
-	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
-
-	cpuStat, err := s.parseCPUStat(cpuStatPath)
-	if err != nil {
-		return 0.0
-	}
-
-	userUsec := cpuStat["user_usec"]
-	systemUsec := cpuStat["system_usec"]
-
-	now := time.Now()
-
-	s.cacheMutex.Lock()
-	defer s.cacheMutex.Unlock()
-
-	cacheKey := cgroupPath
-	if cached, exists := s.cpuCache[cacheKey]; exists {
-		s.logger.Debug("CPU cache hit",
-			zap.String("cgroup", cgroupPath),
-			zap.Time("cached_at", cached.timestamp),
-		)
-		cached.lastAccessed = now
-
-		deltaTime := now.Sub(cached.timestamp).Seconds()
-
-		if deltaTime == 0 {
-			return -1.0
+	for line := range strings.SplitSeq(string(data), "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
 		}
 
-		deltaUserUsec := float64(userUsec - cached.userUsec)
-		deltaSystemUsec := float64(systemUsec - cached.systemUsec)
-		totalDeltaUsec := deltaUserUsec + deltaSystemUsec
-
-		deltaCPUSeconds := totalDeltaUsec / 1_000_000.0
-
-		numCores := float64(runtime.NumCPU())
-		maxPossibleCPUTime := deltaTime * numCores
-
-		cpuPercent := (deltaCPUSeconds / maxPossibleCPUTime) * 100.0
-
-		if cpuPercent > 100.0 {
-			cpuPercent = 100.0
+		if key != "MemTotal" && key != "MemAvailable" {
+			continue
 		}
 
-		s.logger.Debug("CPU percentage calculated",
-			zap.String("cgroup", cgroupPath),
-			zap.Float64("percent", cpuPercent),
-			zap.Float64("delta_time", deltaTime),
-		)
-
-		cached.userUsec = userUsec
-		cached.systemUsec = systemUsec
-		cached.timestamp = now
-
-		return cpuPercent
-	}
-
-	s.logger.Debug("CPU cache miss - initializing",
-		zap.String("cgroup", cgroupPath),
-	)
-
-	s.cpuCache[cacheKey] = &cpuCacheEntry{
-		userUsec:     userUsec,
-		systemUsec:   systemUsec,
-		timestamp:    now,
-		lastAccessed: now,
-	}
-
-	return -1.0
-}
-
-func (s *Service) getBlockIOStats(cgroupPath string) (*blkioStats, error) {
-	ioStatPath := filepath.Join(cgroupPath, "io.stat")
-
-	ioStat, err := s.parseIOStat(ioStatPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse io.stat: %w", err)
-	}
-
-	return &blkioStats{
-		ReadBytes:  ioStat["rbytes"],
-		WriteBytes: ioStat["wbytes"],
-		ReadOps:    ioStat["rios"],
-		WriteOps:   ioStat["wios"],
-	}, nil
-}
-
-func (s *Service) getNetworkStats(pid int) (*networkStats, error) {
-	if pid == 0 {
-		return &networkStats{}, nil
-	}
-
-	procNetDevPath := fmt.Sprintf("/proc/%d/net/dev", pid)
-
-	file, err := os.Open(procNetDevPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open %s: %w", procNetDevPath, err)
-	}
-	defer file.Close()
-
-	var totalRxBytes, totalTxBytes, totalRxPackets, totalTxPackets uint64
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.Contains(line, ":") && !strings.HasPrefix(line, "Inter-") && !strings.HasPrefix(line, " face") {
-			parts := strings.Fields(line)
-			if len(parts) >= 10 {
-				rxBytes, _ := strconv.ParseUint(parts[1], 10, 64)
-				rxPackets, _ := strconv.ParseUint(parts[2], 10, 64)
-				txBytes, _ := strconv.ParseUint(parts[9], 10, 64)
-				txPackets, _ := strconv.ParseUint(parts[10], 10, 64)
-
-				totalRxBytes += rxBytes
-				totalRxPackets += rxPackets
-				totalTxBytes += txBytes
-				totalTxPackets += txPackets
-			}
+		fields := strings.Fields(value)
+		if len(fields) == 0 {
+			continue
 		}
+
+		values[key] = parseUint(fields[0])
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan %s: %w", procNetDevPath, err)
-	}
-
-	return &networkStats{
-		RxBytes:   totalRxBytes,
-		TxBytes:   totalTxBytes,
-		RxPackets: totalRxPackets,
-		TxPackets: totalTxPackets,
-	}, nil
+	return values
 }
 
-func (s *Service) readUint64FromFile(filePath string) (uint64, error) {
-	data, err := os.ReadFile(filePath)
+func (s *Service) parseLoadAverage() (float64, float64, float64) {
+	data, err := os.ReadFile(filepath.Join(s.procRoot, "loadavg"))
 	if err != nil {
-		return 0, err
+		s.logger.Debug("host load average unavailable", zap.Error(err))
+		return 0, 0, 0
 	}
 
-	content := strings.TrimSpace(string(data))
-	if content == "max" {
-		return s.getHostTotalMemory(), nil
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return 0, 0, 0
 	}
 
-	value, err := strconv.ParseUint(content, 10, 64)
-	if err != nil {
-		return 0, err
-	}
+	load1, _ := strconv.ParseFloat(fields[0], 64)
+	load5, _ := strconv.ParseFloat(fields[1], 64)
+	load15, _ := strconv.ParseFloat(fields[2], 64)
 
-	return value, nil
+	return load1, load5, load15
 }
 
-func (s *Service) getHostTotalMemory() uint64 {
-	data, err := os.ReadFile("/proc/meminfo")
+func (s *Service) hostCPUCores() int {
+	data, err := os.ReadFile(filepath.Join(s.procRoot, "stat"))
 	if err != nil {
-		s.logger.Debug("Failed to read /proc/meminfo", zap.Error(err))
+		s.logger.Debug("host cpu count unavailable", zap.Error(err))
 		return 0
 	}
 
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "MemTotal:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				kbValue, err := strconv.ParseUint(fields[1], 10, 64)
-				if err == nil {
-					return kbValue * 1024
-				}
-			}
+	cores := 0
+	for line := range strings.SplitSeq(string(data), "\n") {
+		field, _, _ := strings.Cut(line, " ")
+		if len(field) > 3 && strings.HasPrefix(field, "cpu") && field[3] >= '0' && field[3] <= '9' {
+			cores++
 		}
 	}
 
-	s.logger.Debug("Failed to parse MemTotal from /proc/meminfo")
-	return 0
+	return cores
 }
 
-func (s *Service) parseMemoryStat(filePath string) (map[string]uint64, error) {
-	file, err := os.Open(filePath)
+func (s *Service) parseKeyedFile(path string) map[string]uint64 {
+	values := make(map[string]uint64)
+
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return values
 	}
-	defer func() { _ = file.Close() }()
 
-	stats := make(map[string]uint64)
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Fields(line)
-		if len(parts) != 2 {
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
 			continue
 		}
 
-		key := parts[0]
-		value, err := strconv.ParseUint(parts[1], 10, 64)
+		value, err := strconv.ParseUint(fields[1], 10, 64)
 		if err != nil {
 			continue
 		}
 
-		stats[key] = value
+		values[fields[0]] = value
 	}
 
-	return stats, scanner.Err()
+	return values
 }
 
-func (s *Service) parseCPUStat(filePath string) (map[string]uint64, error) {
-	file, err := os.Open(filePath)
+func (s *Service) parseIOStat(path string) map[string]uint64 {
+	values := make(map[string]uint64)
+
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return values
 	}
-	defer func() { _ = file.Close() }()
 
-	stats := make(map[string]uint64)
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Fields(line)
-		if len(parts) != 2 {
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
 			continue
 		}
 
-		key := parts[0]
-		value, err := strconv.ParseUint(parts[1], 10, 64)
-		if err != nil {
-			continue
-		}
-
-		stats[key] = value
-	}
-
-	return stats, scanner.Err()
-}
-
-func (s *Service) parseIOStat(filePath string) (map[string]uint64, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-
-	stats := make(map[string]uint64)
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-
-		for i := 1; i < len(parts); i++ {
-			kvPair := strings.Split(parts[i], "=")
-			if len(kvPair) != 2 {
+		for _, field := range fields[1:] {
+			key, value, found := strings.Cut(field, "=")
+			if !found {
 				continue
 			}
 
-			key := kvPair[0]
-			value, err := strconv.ParseUint(kvPair[1], 10, 64)
+			parsed, err := strconv.ParseUint(value, 10, 64)
 			if err != nil {
 				continue
 			}
 
-			if _, exists := stats[key]; !exists {
-				stats[key] = 0
-			}
-			stats[key] += value
+			values[key] += parsed
 		}
 	}
 
-	return stats, scanner.Err()
+	return values
+}
+
+func (s *Service) readUint(path string) uint64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+
+	return parseUint(strings.TrimSpace(string(data)))
+}
+
+func (s *Service) readLimit(path string) uint64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "max" {
+		return 0
+	}
+
+	return parseUint(content)
+}
+
+func (s *Service) readCPUQuota(path string) float64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+
+	quota, period, found := strings.Cut(strings.TrimSpace(string(data)), " ")
+	if !found || quota == "max" {
+		return 0
+	}
+
+	quotaUsec := parseUint(quota)
+	periodUsec := parseUint(period)
+	if quotaUsec == 0 || periodUsec == 0 {
+		return 0
+	}
+
+	return float64(quotaUsec) / float64(periodUsec)
+}
+
+func parseUint(value string) uint64 {
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	return parsed
 }
