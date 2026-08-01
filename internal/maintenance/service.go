@@ -3,12 +3,25 @@ package maintenance
 import (
 	"context"
 	"fmt"
-	"github.com/tech-arch1tect/berth-agent/internal/docker"
-	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/tech-arch1tect/berth-agent/internal/docker"
+	"github.com/tech-arch1tect/berth-agent/internal/logging"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/build"
+	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"go.uber.org/zap"
+)
+
+const (
+	localVolumeDriver    = "local"
+	anonymousVolumeLabel = "com.docker.volume.anonymous"
 )
 
 type Service struct {
@@ -23,78 +36,409 @@ func NewService(dockerClient *docker.Client, logger *logging.Logger) *Service {
 	}
 }
 
+type diskUsageResult struct {
+	usage types.DiskUsage
+	err   error
+}
+
 func (s *Service) GetSystemInfo(ctx context.Context) (*MaintenanceInfo, error) {
 	s.logger.Debug("collecting system information")
+
+	diskUsageCh := make(chan diskUsageResult, 1)
+	go func() {
+		usage, err := s.dockerClient.SystemDiskUsage(ctx)
+		diskUsageCh <- diskUsageResult{usage: usage, err: err}
+	}()
 
 	systemInfo, err := s.getSystemInfo(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system info: %w", err)
 	}
 
-	diskUsage, err := s.getDiskUsage(ctx)
+	networks, err := s.dockerClient.ListNetworks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get disk usage: %w", err)
+		return nil, fmt.Errorf("failed to list networks: %w", err)
 	}
 
-	imageSummary, err := s.getImageSummary(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image summary: %w", err)
+	diskUsage := <-diskUsageCh
+	if diskUsage.err != nil {
+		return nil, fmt.Errorf("failed to get disk usage: %w", diskUsage.err)
 	}
 
-	containerSummary, err := s.getContainerSummary(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get container summary: %w", err)
-	}
+	networkSummary := networkSummaryFrom(networks, diskUsage.usage.Containers)
 
-	volumeSummary, err := s.getVolumeSummary(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get volume summary: %w", err)
-	}
+	info := &MaintenanceInfo{
+		SystemInfo:        *systemInfo,
+		ImageSummary:      imageSummaryFrom(diskUsage.usage.Images, diskUsage.usage.LayersSize),
+		ContainerSummary:  containerSummaryFrom(diskUsage.usage.Containers),
+		VolumeSummary:     volumeSummaryFrom(diskUsage.usage.Volumes),
+		NetworkSummary:    networkSummary,
+		BuildCacheSummary: buildCacheSummaryFrom(diskUsage.usage.BuildCache),
 
-	networkSummary, err := s.getNetworkSummary(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get network summary: %w", err)
-	}
-
-	buildCacheSummary, err := s.getBuildCacheSummary(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get build cache summary: %w", err)
+		SystemCleanupCovers: systemCleanupCovers,
+		LastUpdated:         time.Now(),
 	}
 
 	s.logger.Info("system information collected",
-		zap.Int("total_images", imageSummary.TotalCount),
-		zap.Int("total_containers", containerSummary.TotalCount),
-		zap.Int("total_volumes", volumeSummary.TotalCount),
-		zap.Int("total_networks", networkSummary.TotalCount),
-		zap.Int64("total_size_bytes", diskUsage.TotalSize),
+		zap.Int("total_images", info.ImageSummary.Total.Count),
+		zap.Int("total_containers", info.ContainerSummary.Total.Count),
+		zap.Int("total_volumes", info.VolumeSummary.Total.Count),
+		zap.Int("total_networks", info.NetworkSummary.TotalCount),
+		zap.Int64("images_size_bytes", info.ImageSummary.Total.Size),
+		zap.Int64("volumes_size_bytes", info.VolumeSummary.Total.Size),
+		zap.Int64("build_cache_size_bytes", info.BuildCacheSummary.Total.Size),
 	)
 
-	return &MaintenanceInfo{
-		SystemInfo:        *systemInfo,
-		DiskUsage:         *diskUsage,
-		ImageSummary:      *imageSummary,
-		ContainerSummary:  *containerSummary,
-		VolumeSummary:     *volumeSummary,
-		NetworkSummary:    *networkSummary,
-		BuildCacheSummary: *buildCacheSummary,
-		LastUpdated:       time.Now(),
+	return info, nil
+}
+
+func (s *Service) getSystemInfo(ctx context.Context) (*SystemInfo, error) {
+	info, err := s.dockerClient.SystemInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	version, err := s.dockerClient.SystemVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SystemInfo{
+		Version:       version.Version,
+		APIVersion:    version.APIVersion,
+		Architecture:  info.Architecture,
+		OS:            info.OperatingSystem,
+		KernelVersion: info.KernelVersion,
+		TotalMemory:   info.MemTotal,
+		NCPU:          info.NCPU,
+		StorageDriver: info.Driver,
+		DockerRootDir: info.DockerRootDir,
 	}, nil
 }
+
+func bareID(id string) string {
+	if _, hex, found := strings.Cut(id, ":"); found {
+		return hex
+	}
+	return id
+}
+
+func imageTagsFrom(repoTags []string) []string {
+	tags := make([]string, 0, len(repoTags))
+	for _, tag := range repoTags {
+		if tag != "" && tag != "<none>:<none>" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+func parentImageIDs(images []*image.Summary) map[string]bool {
+	parents := make(map[string]bool)
+	for _, img := range images {
+		if img != nil && img.ParentID != "" {
+			parents[img.ParentID] = true
+		}
+	}
+	return parents
+}
+
+func imageRemoval(img *image.Summary, tags []string, isParent bool) Removal {
+	if img.Containers != 0 {
+		return RemovalNever
+	}
+	if len(tags) > 0 {
+		return RemovalWithAll
+	}
+	if len(img.RepoDigests) == 0 && isParent {
+		return RemovalNever
+	}
+	return RemovalAlways
+}
+
+func imageSummaryFrom(images []*image.Summary, layersSize int64) ImageSummary {
+	summary := ImageSummary{
+		Total:  Amount{Count: len(images), Size: layersSize},
+		Images: make([]ImageInfo, 0, len(images)),
+	}
+
+	parents := parentImageIDs(images)
+
+	for _, img := range images {
+		if img == nil {
+			continue
+		}
+
+		tags := imageTagsFrom(img.RepoTags)
+		unused := img.Containers == 0
+
+		summary.Images = append(summary.Images, ImageInfo{
+			ID:         bareID(img.ID),
+			Tags:       tags,
+			Size:       img.Size,
+			SharedSize: img.SharedSize,
+			Created:    time.Unix(img.Created, 0),
+			Containers: int(img.Containers),
+			Dangling:   len(tags) == 0,
+			Unused:     unused,
+			Removal:    imageRemoval(img, tags, parents[img.ID]),
+		})
+
+		if unused {
+			summary.UnusedCount++
+		}
+	}
+
+	sort.Slice(summary.Images, func(i, j int) bool {
+		return summary.Images[i].Size > summary.Images[j].Size
+	})
+
+	return summary
+}
+
+func containerIsPrunable(state dockercontainer.ContainerState) bool {
+	switch state {
+	case dockercontainer.StateRunning, dockercontainer.StatePaused, dockercontainer.StateRestarting:
+		return false
+	}
+	return true
+}
+
+func containerSummaryFrom(containers []*dockercontainer.Summary) ContainerSummary {
+	summary := ContainerSummary{
+		Containers: make([]ContainerInfo, 0, len(containers)),
+	}
+
+	for _, c := range containers {
+		if c == nil {
+			continue
+		}
+
+		if c.State == dockercontainer.StateRunning {
+			summary.RunningCount++
+		}
+
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		removal := RemovalNever
+		if containerIsPrunable(c.State) {
+			removal = RemovalAlways
+		}
+
+		summary.Containers = append(summary.Containers, ContainerInfo{
+			ID:      bareID(c.ID),
+			Name:    name,
+			Image:   c.Image,
+			State:   c.State,
+			Status:  c.Status,
+			Created: time.Unix(c.Created, 0),
+			Size:    c.SizeRw,
+			Labels:  c.Labels,
+			Removal: removal,
+		})
+
+		summary.Total.Count++
+		summary.Total.Size += c.SizeRw
+	}
+
+	sort.Slice(summary.Containers, func(i, j int) bool {
+		return summary.Containers[i].Name < summary.Containers[j].Name
+	})
+
+	return summary
+}
+
+func volumeIsAnonymous(vol *volume.Volume) bool {
+	_, anonymous := vol.Labels[anonymousVolumeLabel]
+	return anonymous
+}
+
+func volumeIsUnused(vol *volume.Volume) bool {
+	return vol.UsageData != nil && vol.UsageData.RefCount == 0
+}
+
+func volumeRemoval(vol *volume.Volume) Removal {
+	if vol.Driver != localVolumeDriver || len(vol.Options) > 0 || !volumeIsUnused(vol) {
+		return RemovalNever
+	}
+	if volumeIsAnonymous(vol) {
+		return RemovalAlways
+	}
+	return RemovalWithAll
+}
+
+func volumeSize(vol *volume.Volume) int64 {
+	if vol.UsageData == nil || vol.UsageData.Size < 0 {
+		return 0
+	}
+	return vol.UsageData.Size
+}
+
+func volumeSummaryFrom(volumes []*volume.Volume) VolumeSummary {
+	summary := VolumeSummary{
+		Volumes: make([]VolumeInfo, 0, len(volumes)),
+	}
+
+	for _, vol := range volumes {
+		if vol == nil {
+			continue
+		}
+
+		size := volumeSize(vol)
+		unused := volumeIsUnused(vol)
+		created, _ := time.Parse(time.RFC3339, vol.CreatedAt)
+
+		summary.Volumes = append(summary.Volumes, VolumeInfo{
+			Name:       vol.Name,
+			Driver:     vol.Driver,
+			Mountpoint: vol.Mountpoint,
+			Created:    created,
+			Size:       size,
+			Labels:     vol.Labels,
+			Anonymous:  volumeIsAnonymous(vol),
+			Unused:     unused,
+			Removal:    volumeRemoval(vol),
+		})
+
+		summary.Total.Count++
+		summary.Total.Size += size
+
+		if unused {
+			summary.Unused.Count++
+			summary.Unused.Size += size
+		}
+	}
+
+	sort.Slice(summary.Volumes, func(i, j int) bool {
+		return summary.Volumes[i].Size > summary.Volumes[j].Size
+	})
+
+	return summary
+}
+
+func networkIsPredefined(name string) bool {
+	return name == "bridge" || name == "host" || name == "none"
+}
+
+func networkSummaryFrom(networks []network.Summary, containers []*dockercontainer.Summary) NetworkSummary {
+	attached := make(map[string]bool)
+	for _, c := range containers {
+		if c == nil || c.NetworkSettings == nil {
+			continue
+		}
+		for name := range c.NetworkSettings.Networks {
+			attached[name] = true
+		}
+	}
+
+	summary := NetworkSummary{
+		TotalCount: len(networks),
+		Networks:   make([]NetworkInfo, 0, len(networks)),
+	}
+
+	for _, net := range networks {
+		unused := !attached[net.Name] && !networkIsPredefined(net.Name)
+		removal := RemovalNever
+		if unused {
+			summary.UnusedCount++
+			removal = RemovalAlways
+		}
+
+		subnet := ""
+		if len(net.IPAM.Config) > 0 {
+			subnet = net.IPAM.Config[0].Subnet
+		}
+
+		summary.Networks = append(summary.Networks, NetworkInfo{
+			ID:       bareID(net.ID),
+			Name:     net.Name,
+			Driver:   net.Driver,
+			Scope:    net.Scope,
+			Created:  net.Created,
+			Internal: net.Internal,
+			Labels:   net.Labels,
+			Unused:   unused,
+			Subnet:   subnet,
+			Removal:  removal,
+		})
+	}
+
+	sort.Slice(summary.Networks, func(i, j int) bool {
+		return summary.Networks[i].Name < summary.Networks[j].Name
+	})
+
+	return summary
+}
+
+func buildCacheRemoval(record *build.CacheRecord) Removal {
+	switch {
+	case record.InUse:
+		return RemovalNever
+	case record.Shared:
+		return RemovalWithAll
+	default:
+		return RemovalAlways
+	}
+}
+
+func buildCacheSummaryFrom(records []*build.CacheRecord) BuildCacheSummary {
+	summary := BuildCacheSummary{
+		Cache: make([]BuildCacheInfo, 0, len(records)),
+	}
+
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+
+		lastUsed := time.Time{}
+		if record.LastUsedAt != nil {
+			lastUsed = *record.LastUsedAt
+		}
+
+		summary.Cache = append(summary.Cache, BuildCacheInfo{
+			ID:          record.ID,
+			Type:        record.Type,
+			Description: record.Description,
+			Size:        record.Size,
+			Created:     record.CreatedAt,
+			LastUsed:    lastUsed,
+			UsageCount:  record.UsageCount,
+			InUse:       record.InUse,
+			Shared:      record.Shared,
+			Removal:     buildCacheRemoval(record),
+		})
+
+		summary.Total.Count++
+		summary.Total.Size += record.Size
+	}
+
+	sort.Slice(summary.Cache, func(i, j int) bool {
+		return summary.Cache[i].Size > summary.Cache[j].Size
+	})
+
+	return summary
+}
+
+var systemCleanupCovers = []string{"images", "containers", "networks", "build_cache"}
 
 func (s *Service) PruneDocker(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
 	switch req.Type {
 	case "images":
-		return s.pruneImages(ctx, req)
+		return s.pruneImages(ctx, req.All)
 	case "containers":
-		return s.pruneContainers(ctx, req)
+		return s.pruneContainers(ctx)
 	case "volumes":
-		return s.pruneVolumes(ctx, req)
+		return s.pruneVolumes(ctx, req.All)
 	case "networks":
-		return s.pruneNetworks(ctx, req)
+		return s.pruneNetworks(ctx)
 	case "build-cache":
-		return s.pruneBuildCache(ctx, req)
+		return s.pruneBuildCache(ctx, req.All)
 	case "system":
-		return s.pruneSystem(ctx, req)
+		return s.pruneSystem(ctx, req.All)
 	default:
 		return nil, fmt.Errorf("unsupported prune type: %s", req.Type)
 	}
@@ -224,584 +568,168 @@ func (s *Service) deleteNetwork(ctx context.Context, networkID string) (*DeleteR
 	}, nil
 }
 
-func (s *Service) getSystemInfo(ctx context.Context) (*SystemInfo, error) {
-	info, err := s.dockerClient.SystemInfo(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	version, err := s.dockerClient.SystemVersion(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &SystemInfo{
-		Version:       version.Version,
-		APIVersion:    version.APIVersion,
-		Architecture:  info.Architecture,
-		OS:            info.OperatingSystem,
-		KernelVersion: info.KernelVersion,
-		TotalMemory:   info.MemTotal,
-		NCPU:          info.NCPU,
-		StorageDriver: info.Driver,
-		DockerRootDir: info.DockerRootDir,
-		ServerVersion: version.Version,
-	}, nil
-}
-
-func (s *Service) getDiskUsage(ctx context.Context) (*DiskUsage, error) {
-	diskUsage, err := s.dockerClient.SystemDiskUsage(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var imagesSize int64
-	if diskUsage.Images != nil {
-		for _, img := range diskUsage.Images {
-			imagesSize += img.Size
-		}
-	}
-
-	var containersSize int64
-	if diskUsage.Containers != nil {
-		for _, container := range diskUsage.Containers {
-			containersSize += container.SizeRw
-		}
-	}
-
-	var volumesSize int64
-	if diskUsage.Volumes != nil {
-		for _, vol := range diskUsage.Volumes {
-			if vol.UsageData != nil {
-				volumesSize += vol.UsageData.Size
-			}
-		}
-	}
-
-	var buildCacheSize int64
-	if diskUsage.BuildCache != nil {
-		for _, cache := range diskUsage.BuildCache {
-			buildCacheSize += cache.Size
-		}
-	}
-
-	return &DiskUsage{
-		LayersSize:     diskUsage.LayersSize,
-		ImagesSize:     imagesSize,
-		ContainersSize: containersSize,
-		VolumesSize:    volumesSize,
-		BuildCacheSize: buildCacheSize,
-		TotalSize:      diskUsage.LayersSize + imagesSize + containersSize + volumesSize + buildCacheSize,
-	}, nil
-}
-
-func (s *Service) getImageSummary(ctx context.Context) (*ImageSummary, error) {
-	images, err := s.dockerClient.ImageList(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	containers, err := s.dockerClient.ContainerListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	usedImages := make(map[string]bool)
-	for _, container := range containers {
-		usedImages[container.ImageID] = true
-	}
-
-	summary := &ImageSummary{
-		Images: make([]ImageInfo, 0),
-	}
-
-	var totalSize, danglingSize, unusedSize int64
-	var danglingCount, unusedCount int
-
-	for _, img := range images {
-		repository := "<none>"
-		tag := "<none>"
-		dangling := true
-
-		if len(img.RepoTags) > 0 && img.RepoTags[0] != "<none>:<none>" {
-			parts := strings.Split(img.RepoTags[0], ":")
-			if len(parts) == 2 {
-				repository = parts[0]
-				tag = parts[1]
-				dangling = false
-			}
-		}
-
-		unused := !usedImages[img.ID]
-
-		imageInfo := ImageInfo{
-			Repository: repository,
-			Tag:        tag,
-			ID:         img.ID[:12],
-			Size:       img.Size,
-			Created:    time.Unix(img.Created, 0),
-			Dangling:   dangling,
-			Unused:     unused,
-		}
-
-		summary.Images = append(summary.Images, imageInfo)
-		totalSize += img.Size
-
-		if dangling {
-			danglingCount++
-			danglingSize += img.Size
-		}
-
-		if unused {
-			unusedCount++
-			unusedSize += img.Size
-		}
-	}
-
-	summary.TotalCount = len(images)
-	summary.DanglingCount = danglingCount
-	summary.UnusedCount = unusedCount
-	summary.TotalSize = totalSize
-	summary.DanglingSize = danglingSize
-	summary.UnusedSize = unusedSize
-
-	return summary, nil
-}
-
-func (s *Service) getContainerSummary(ctx context.Context) (*ContainerSummary, error) {
-	containers, err := s.dockerClient.ContainerListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var runningCount, stoppedCount int
-	var totalSize int64
-	containerInfos := make([]ContainerInfo, 0, len(containers))
-
-	for _, container := range containers {
-		if container.State == "running" {
-			runningCount++
-		} else {
-			stoppedCount++
-		}
-		totalSize += container.SizeRw
-
-		name := ""
-		if len(container.Names) > 0 {
-			name = strings.TrimPrefix(container.Names[0], "/")
-		}
-
-		containerInfo := ContainerInfo{
-			ID:      container.ID[:12],
-			Name:    name,
-			Image:   container.Image,
-			State:   container.State,
-			Status:  container.Status,
-			Created: time.Unix(container.Created, 0),
-			Size:    container.SizeRw,
-			Labels:  container.Labels,
-		}
-		containerInfos = append(containerInfos, containerInfo)
-	}
-
-	return &ContainerSummary{
-		RunningCount: runningCount,
-		StoppedCount: stoppedCount,
-		TotalCount:   len(containers),
-		TotalSize:    totalSize,
-		Containers:   containerInfos,
-	}, nil
-}
-
-func (s *Service) getVolumeSummary(ctx context.Context) (*VolumeSummary, error) {
-	volumes, err := s.dockerClient.ListVolumes(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	containers, err := s.dockerClient.ContainerListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	usedVolumes := make(map[string]bool)
-	for _, container := range containers {
-		for _, mount := range container.Mounts {
-			if mount.Type == "volume" {
-				usedVolumes[mount.Name] = true
-			}
-		}
-	}
-
-	var unusedCount int
-	var totalSize, unusedSize int64
-	volumeInfos := make([]VolumeInfo, 0, len(volumes.Volumes))
-
-	for _, volume := range volumes.Volumes {
-		size := int64(0)
-		if volume.UsageData != nil {
-			size = volume.UsageData.Size
-			totalSize += size
-			if !usedVolumes[volume.Name] {
-				unusedSize += size
-			}
-		}
-
-		unused := !usedVolumes[volume.Name]
-		if unused {
-			unusedCount++
-		}
-
-		created, _ := time.Parse(time.RFC3339, volume.CreatedAt)
-
-		volumeInfo := VolumeInfo{
-			Name:       volume.Name,
-			Driver:     volume.Driver,
-			Mountpoint: volume.Mountpoint,
-			Created:    created,
-			Size:       size,
-			Labels:     volume.Labels,
-			Unused:     unused,
-		}
-		volumeInfos = append(volumeInfos, volumeInfo)
-	}
-
-	return &VolumeSummary{
-		TotalCount:  len(volumes.Volumes),
-		UnusedCount: unusedCount,
-		TotalSize:   totalSize,
-		UnusedSize:  unusedSize,
-		Volumes:     volumeInfos,
-	}, nil
-}
-
-func (s *Service) getNetworkSummary(ctx context.Context) (*NetworkSummary, error) {
-	networks, err := s.dockerClient.ListNetworks(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	containers, err := s.dockerClient.ContainerListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	usedNetworks := make(map[string]bool)
-	for _, container := range containers {
-		for networkName := range container.NetworkSettings.Networks {
-			usedNetworks[networkName] = true
-		}
-	}
-
-	var unusedCount int
-	networkInfos := make([]NetworkInfo, 0, len(networks))
-
-	for _, network := range networks {
-		unused := !usedNetworks[network.Name] && network.Name != "bridge" && network.Name != "host" && network.Name != "none"
-		if unused {
-			unusedCount++
-		}
-
-		created := network.Created
-
-		subnet := ""
-		if len(network.IPAM.Config) > 0 && network.IPAM.Config[0].Subnet != "" {
-			subnet = network.IPAM.Config[0].Subnet
-		}
-
-		networkInfo := NetworkInfo{
-			ID:       network.ID[:12],
-			Name:     network.Name,
-			Driver:   network.Driver,
-			Scope:    network.Scope,
-			Created:  created,
-			Internal: network.Internal,
-			Labels:   network.Labels,
-			Unused:   unused,
-			Subnet:   subnet,
-		}
-		networkInfos = append(networkInfos, networkInfo)
-	}
-
-	return &NetworkSummary{
-		TotalCount:  len(networks),
-		UnusedCount: unusedCount,
-		Networks:    networkInfos,
-	}, nil
-}
-
-func (s *Service) getBuildCacheSummary(ctx context.Context) (*BuildCacheSummary, error) {
-	diskUsage, err := s.dockerClient.SystemDiskUsage(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var buildCacheSize int64
-	for _, cache := range diskUsage.BuildCache {
-		buildCacheSize += cache.Size
-	}
-
-	cacheCount := len(diskUsage.BuildCache)
-
-	return &BuildCacheSummary{
-		TotalCount: cacheCount,
-		TotalSize:  buildCacheSize,
-		Cache:      make([]BuildCacheInfo, 0), // Empty array since we can't list individual entries
-	}, nil
-}
-
-func (s *Service) pruneImages(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
-	s.logger.Debug("pruning images",
-		zap.Bool("all", req.All),
-		zap.String("filters", req.Filters),
-	)
-
-	filters := s.parseFilters(req.Filters)
-
-	report, err := s.dockerClient.ImagePrune(ctx, req.All, filters)
-	if err != nil {
-		s.logger.Error("failed to prune images",
-			zap.Bool("all", req.All),
-			zap.Error(err),
-		)
-		return &PruneResult{
-			Type:  "images",
-			Error: err.Error(),
-		}, nil
-	}
-
-	deletedItems := make([]string, 0)
-	for _, img := range report.ImagesDeleted {
+func imagePruneItems(deleted []image.DeleteResponse) []string {
+	items := make([]string, 0, len(deleted))
+	for _, img := range deleted {
 		if img.Deleted != "" {
-			deletedItems = append(deletedItems, img.Deleted)
+			items = append(items, img.Deleted)
 		}
 		if img.Untagged != "" {
-			deletedItems = append(deletedItems, img.Untagged)
+			items = append(items, img.Untagged)
 		}
 	}
+	return items
+}
+
+func itemsOrEmpty(items []string) []string {
+	if items == nil {
+		return make([]string, 0)
+	}
+	return items
+}
+
+func (s *Service) pruneImages(ctx context.Context, all bool) (*PruneResult, error) {
+	s.logger.Debug("pruning images", zap.Bool("all", all))
+
+	report, err := s.dockerClient.ImagePrune(ctx, all)
+	if err != nil {
+		s.logger.Error("failed to prune images",
+			zap.Bool("all", all),
+			zap.Error(err),
+		)
+		return &PruneResult{Type: "images", Error: err.Error()}, nil
+	}
+
+	deleted := imagePruneItems(report.ImagesDeleted)
 
 	s.logger.Info("images pruned successfully",
-		zap.Int("items_deleted", len(deletedItems)),
-		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+		zap.Int("items_deleted", len(deleted)),
+		zap.Uint64("space_reclaimed_bytes", report.SpaceReclaimed),
 	)
 
 	return &PruneResult{
 		Type:           "images",
-		ItemsDeleted:   deletedItems,
+		ItemsDeleted:   deleted,
 		SpaceReclaimed: int64(report.SpaceReclaimed),
 	}, nil
 }
 
-func (s *Service) pruneContainers(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
-	s.logger.Debug("pruning containers", zap.String("filters", req.Filters))
+func (s *Service) pruneContainers(ctx context.Context) (*PruneResult, error) {
+	s.logger.Debug("pruning containers")
 
-	filters := s.parseFilters(req.Filters)
-
-	report, err := s.dockerClient.ContainerPrune(ctx, filters)
+	report, err := s.dockerClient.ContainerPrune(ctx)
 	if err != nil {
 		s.logger.Error("failed to prune containers", zap.Error(err))
-		return &PruneResult{
-			Type:  "containers",
-			Error: err.Error(),
-		}, nil
-	}
-
-	itemsDeleted := report.ContainersDeleted
-	if itemsDeleted == nil {
-		itemsDeleted = make([]string, 0)
+		return &PruneResult{Type: "containers", Error: err.Error()}, nil
 	}
 
 	s.logger.Info("containers pruned successfully",
-		zap.Int("items_deleted", len(itemsDeleted)),
-		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+		zap.Int("items_deleted", len(report.ContainersDeleted)),
+		zap.Uint64("space_reclaimed_bytes", report.SpaceReclaimed),
 	)
 
 	return &PruneResult{
 		Type:           "containers",
-		ItemsDeleted:   itemsDeleted,
+		ItemsDeleted:   itemsOrEmpty(report.ContainersDeleted),
 		SpaceReclaimed: int64(report.SpaceReclaimed),
 	}, nil
 }
 
-func (s *Service) pruneVolumes(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
-	s.logger.Debug("pruning volumes",
-		zap.Bool("all", req.All),
-		zap.String("filters", req.Filters),
-	)
+func (s *Service) pruneVolumes(ctx context.Context, all bool) (*PruneResult, error) {
+	s.logger.Debug("pruning volumes", zap.Bool("all", all))
 
-	filters := s.parseFilters(req.Filters)
-
-	if req.All {
-		filters["all"] = []string{"1"}
-	}
-
-	report, err := s.dockerClient.VolumePrune(ctx, filters)
+	report, err := s.dockerClient.VolumePrune(ctx, all)
 	if err != nil {
 		s.logger.Error("failed to prune volumes",
-			zap.Bool("all", req.All),
+			zap.Bool("all", all),
 			zap.Error(err),
 		)
-		return &PruneResult{
-			Type:  "volumes",
-			Error: err.Error(),
-		}, nil
-	}
-
-	itemsDeleted := report.VolumesDeleted
-	if itemsDeleted == nil {
-		itemsDeleted = make([]string, 0)
+		return &PruneResult{Type: "volumes", Error: err.Error()}, nil
 	}
 
 	s.logger.Info("volumes pruned successfully",
-		zap.Int("items_deleted", len(itemsDeleted)),
-		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+		zap.Int("items_deleted", len(report.VolumesDeleted)),
+		zap.Uint64("space_reclaimed_bytes", report.SpaceReclaimed),
 	)
 
 	return &PruneResult{
 		Type:           "volumes",
-		ItemsDeleted:   itemsDeleted,
+		ItemsDeleted:   itemsOrEmpty(report.VolumesDeleted),
 		SpaceReclaimed: int64(report.SpaceReclaimed),
 	}, nil
 }
 
-func (s *Service) pruneNetworks(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
-	s.logger.Debug("pruning networks", zap.String("filters", req.Filters))
+func (s *Service) pruneNetworks(ctx context.Context) (*PruneResult, error) {
+	s.logger.Debug("pruning networks")
 
-	filters := s.parseFilters(req.Filters)
-
-	report, err := s.dockerClient.NetworkPrune(ctx, filters)
+	report, err := s.dockerClient.NetworkPrune(ctx)
 	if err != nil {
 		s.logger.Error("failed to prune networks", zap.Error(err))
-		return &PruneResult{
-			Type:  "networks",
-			Error: err.Error(),
-		}, nil
+		return &PruneResult{Type: "networks", Error: err.Error()}, nil
 	}
 
-	itemsDeleted := report.NetworksDeleted
-	if itemsDeleted == nil {
-		itemsDeleted = make([]string, 0)
-	}
-
-	s.logger.Info("networks pruned successfully",
-		zap.Int("items_deleted", len(itemsDeleted)),
-	)
+	s.logger.Info("networks pruned successfully", zap.Int("items_deleted", len(report.NetworksDeleted)))
 
 	return &PruneResult{
-		Type:           "networks",
-		ItemsDeleted:   itemsDeleted,
-		SpaceReclaimed: 0,
+		Type:         "networks",
+		ItemsDeleted: itemsOrEmpty(report.NetworksDeleted),
 	}, nil
 }
 
-func (s *Service) pruneBuildCache(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
-	s.logger.Debug("pruning build cache",
-		zap.Bool("all", req.All),
-		zap.String("filters", req.Filters),
-	)
+func (s *Service) pruneBuildCache(ctx context.Context, all bool) (*PruneResult, error) {
+	s.logger.Debug("pruning build cache", zap.Bool("all", all))
 
-	filters := s.parseFilters(req.Filters)
-
-	report, err := s.dockerClient.BuildCachePrune(ctx, req.All, filters)
+	report, err := s.dockerClient.BuildCachePrune(ctx, all)
 	if err != nil {
 		s.logger.Error("failed to prune build cache",
-			zap.Bool("all", req.All),
+			zap.Bool("all", all),
 			zap.Error(err),
 		)
-		return &PruneResult{
-			Type:  "build-cache",
-			Error: err.Error(),
-		}, nil
-	}
-
-	itemsDeleted := report.CachesDeleted
-	if itemsDeleted == nil {
-		itemsDeleted = make([]string, 0)
+		return &PruneResult{Type: "build-cache", Error: err.Error()}, nil
 	}
 
 	s.logger.Info("build cache pruned successfully",
-		zap.Int("items_deleted", len(itemsDeleted)),
-		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+		zap.Int("items_deleted", len(report.CachesDeleted)),
+		zap.Uint64("space_reclaimed_bytes", report.SpaceReclaimed),
 	)
 
 	return &PruneResult{
 		Type:           "build-cache",
-		ItemsDeleted:   itemsDeleted,
+		ItemsDeleted:   itemsOrEmpty(report.CachesDeleted),
 		SpaceReclaimed: int64(report.SpaceReclaimed),
 	}, nil
 }
 
-func (s *Service) pruneSystem(ctx context.Context, req *PruneRequest) (*PruneResult, error) {
-	s.logger.Debug("pruning system",
-		zap.Bool("all", req.All),
-		zap.String("filters", req.Filters),
-	)
+func (s *Service) pruneSystem(ctx context.Context, all bool) (*PruneResult, error) {
+	s.logger.Debug("pruning system", zap.Bool("all", all))
 
-	filters := s.parseFilters(req.Filters)
-
-	report, err := s.dockerClient.SystemPrune(ctx, req.All, filters)
+	report, err := s.dockerClient.SystemPrune(ctx, all)
 	if err != nil {
 		s.logger.Error("failed to prune system",
-			zap.Bool("all", req.All),
+			zap.Bool("all", all),
 			zap.Error(err),
 		)
-		return &PruneResult{
-			Type:  "system",
-			Error: err.Error(),
-		}, nil
+		return &PruneResult{Type: "system", Error: err.Error()}, nil
 	}
 
-	allDeleted := make([]string, 0)
-	if report.ContainersDeleted != nil {
-		allDeleted = append(allDeleted, report.ContainersDeleted...)
-	}
-	if report.NetworksDeleted != nil {
-		allDeleted = append(allDeleted, report.NetworksDeleted...)
-	}
-	if report.VolumesDeleted != nil {
-		allDeleted = append(allDeleted, report.VolumesDeleted...)
-	}
-
-	for _, img := range report.ImagesDeleted {
-		if img.Deleted != "" {
-			allDeleted = append(allDeleted, img.Deleted)
-		}
-		if img.Untagged != "" {
-			allDeleted = append(allDeleted, img.Untagged)
-		}
-	}
+	deleted := make([]string, 0)
+	deleted = append(deleted, report.ContainersDeleted...)
+	deleted = append(deleted, report.NetworksDeleted...)
+	deleted = append(deleted, report.CachesDeleted...)
+	deleted = append(deleted, imagePruneItems(report.ImagesDeleted)...)
 
 	s.logger.Info("system pruned successfully",
-		zap.Int("items_deleted", len(allDeleted)),
-		zap.Int64("space_reclaimed_bytes", int64(report.SpaceReclaimed)),
+		zap.Int("items_deleted", len(deleted)),
+		zap.Uint64("space_reclaimed_bytes", report.SpaceReclaimed),
 		zap.Int("containers_deleted", len(report.ContainersDeleted)),
 		zap.Int("networks_deleted", len(report.NetworksDeleted)),
-		zap.Int("volumes_deleted", len(report.VolumesDeleted)),
 		zap.Int("images_deleted", len(report.ImagesDeleted)),
+		zap.Int("build_cache_deleted", len(report.CachesDeleted)),
 	)
 
 	return &PruneResult{
 		Type:           "system",
-		ItemsDeleted:   allDeleted,
+		ItemsDeleted:   deleted,
 		SpaceReclaimed: int64(report.SpaceReclaimed),
 	}, nil
-}
-
-func (s *Service) parseFilters(filtersStr string) map[string][]string {
-	filters := make(map[string][]string)
-
-	if filtersStr == "" {
-		return filters
-	}
-
-	for filter := range strings.SplitSeq(filtersStr, ",") {
-		parts := strings.SplitN(strings.TrimSpace(filter), "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			filters[key] = append(filters[key], value)
-		}
-	}
-
-	return filters
 }

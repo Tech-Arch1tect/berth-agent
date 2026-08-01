@@ -179,14 +179,6 @@ func (c *Client) SystemDiskUsage(ctx context.Context) (types.DiskUsage, error) {
 	return diskUsage, nil
 }
 
-func (c *Client) ImageList(ctx context.Context) ([]image.Summary, error) {
-	images, err := c.cli.ImageList(ctx, image.ListOptions{All: true})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list images: %w", err)
-	}
-	return images, nil
-}
-
 func (c *Client) ImageInspect(ctx context.Context, imageID string) (image.InspectResponse, error) {
 	imageInfo, _, err := c.cli.ImageInspectWithRaw(ctx, imageID)
 	if err != nil {
@@ -203,54 +195,34 @@ func (c *Client) ImageHistory(ctx context.Context, imageID string) ([]image.Hist
 	return history, nil
 }
 
-func (c *Client) ContainerListAll(ctx context.Context) ([]container.Summary, error) {
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list all containers: %w", err)
-	}
-	return containers, nil
-}
-
-func (c *Client) ImagePrune(ctx context.Context, all bool, filterMap map[string][]string) (image.PruneReport, error) {
+func imagePruneArgs(all bool) filters.Args {
 	args := filters.NewArgs()
-	for key, values := range filterMap {
-		for _, value := range values {
-			args.Add(key, value)
-		}
-	}
-
 	if all {
 		args.Add("dangling", "false")
 	}
+	return args
+}
 
-	report, err := c.cli.ImagesPrune(ctx, args)
+func (c *Client) ImagePrune(ctx context.Context, all bool) (image.PruneReport, error) {
+	report, err := c.cli.ImagesPrune(ctx, imagePruneArgs(all))
 	if err != nil {
 		return image.PruneReport{}, fmt.Errorf("failed to prune images: %w", err)
 	}
 	return report, nil
 }
 
-func (c *Client) ContainerPrune(ctx context.Context, filterMap map[string][]string) (container.PruneReport, error) {
-	args := filters.NewArgs()
-	for key, values := range filterMap {
-		for _, value := range values {
-			args.Add(key, value)
-		}
-	}
-
-	report, err := c.cli.ContainersPrune(ctx, args)
+func (c *Client) ContainerPrune(ctx context.Context) (container.PruneReport, error) {
+	report, err := c.cli.ContainersPrune(ctx, filters.NewArgs())
 	if err != nil {
 		return container.PruneReport{}, fmt.Errorf("failed to prune containers: %w", err)
 	}
 	return report, nil
 }
 
-func (c *Client) VolumePrune(ctx context.Context, filterMap map[string][]string) (volume.PruneReport, error) {
+func (c *Client) VolumePrune(ctx context.Context, all bool) (volume.PruneReport, error) {
 	args := filters.NewArgs()
-	for key, values := range filterMap {
-		for _, value := range values {
-			args.Add(key, value)
-		}
+	if all {
+		args.Add("all", "1")
 	}
 
 	report, err := c.cli.VolumesPrune(ctx, args)
@@ -260,35 +232,19 @@ func (c *Client) VolumePrune(ctx context.Context, filterMap map[string][]string)
 	return report, nil
 }
 
-func (c *Client) NetworkPrune(ctx context.Context, filterMap map[string][]string) (network.PruneReport, error) {
-	args := filters.NewArgs()
-	for key, values := range filterMap {
-		for _, value := range values {
-			args.Add(key, value)
-		}
-	}
-
-	report, err := c.cli.NetworksPrune(ctx, args)
+func (c *Client) NetworkPrune(ctx context.Context) (network.PruneReport, error) {
+	report, err := c.cli.NetworksPrune(ctx, filters.NewArgs())
 	if err != nil {
 		return network.PruneReport{}, fmt.Errorf("failed to prune networks: %w", err)
 	}
 	return report, nil
 }
 
-func (c *Client) BuildCachePrune(ctx context.Context, all bool, filterMap map[string][]string) (build.CachePruneReport, error) {
-	args := filters.NewArgs()
-	for key, values := range filterMap {
-		for _, value := range values {
-			args.Add(key, value)
-		}
-	}
-
-	opts := build.CachePruneOptions{
+func (c *Client) BuildCachePrune(ctx context.Context, all bool) (build.CachePruneReport, error) {
+	report, err := c.cli.BuildCachePrune(ctx, build.CachePruneOptions{
 		All:     all,
-		Filters: args,
-	}
-
-	report, err := c.cli.BuildCachePrune(ctx, opts)
+		Filters: filters.NewArgs(),
+	})
 	if err != nil {
 		return build.CachePruneReport{}, fmt.Errorf("failed to prune build cache: %w", err)
 	}
@@ -297,62 +253,55 @@ func (c *Client) BuildCachePrune(ctx context.Context, all bool, filterMap map[st
 
 type SystemPruneReport struct {
 	ContainersDeleted []string
-	VolumesDeleted    []string
 	NetworksDeleted   []string
+	CachesDeleted     []string
 	ImagesDeleted     []image.DeleteResponse
 	SpaceReclaimed    uint64
 }
 
-func (c *Client) SystemPrune(ctx context.Context, all bool, filterMap map[string][]string) (SystemPruneReport, error) {
+func (c *Client) SystemPrune(ctx context.Context, all bool) (SystemPruneReport, error) {
 	c.logger.Info("starting system prune", zap.Bool("all", all))
-	args := filters.NewArgs()
-	for key, values := range filterMap {
-		for _, value := range values {
-			args.Add(key, value)
-		}
-	}
 
-	containerReport, err := c.cli.ContainersPrune(ctx, args)
+	containerReport, err := c.cli.ContainersPrune(ctx, filters.NewArgs())
 	if err != nil {
 		c.logger.Error("failed to prune containers", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune containers: %w", err)
 	}
-	c.logger.Debug("containers pruned", zap.Int("deleted", len(containerReport.ContainersDeleted)))
 
-	imageReport, err := c.cli.ImagesPrune(ctx, args)
+	imageReport, err := c.cli.ImagesPrune(ctx, imagePruneArgs(all))
 	if err != nil {
 		c.logger.Error("failed to prune images", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune images: %w", err)
 	}
-	c.logger.Debug("images pruned", zap.Int("deleted", len(imageReport.ImagesDeleted)))
 
-	volumeReport, err := c.cli.VolumesPrune(ctx, args)
-	if err != nil {
-		c.logger.Error("failed to prune volumes", zap.Error(err))
-		return SystemPruneReport{}, fmt.Errorf("failed to prune volumes: %w", err)
-	}
-	c.logger.Debug("volumes pruned", zap.Int("deleted", len(volumeReport.VolumesDeleted)))
-
-	networkReport, err := c.cli.NetworksPrune(ctx, args)
+	networkReport, err := c.cli.NetworksPrune(ctx, filters.NewArgs())
 	if err != nil {
 		c.logger.Error("failed to prune networks", zap.Error(err))
 		return SystemPruneReport{}, fmt.Errorf("failed to prune networks: %w", err)
 	}
-	c.logger.Debug("networks pruned", zap.Int("deleted", len(networkReport.NetworksDeleted)))
 
-	totalSpace := containerReport.SpaceReclaimed + imageReport.SpaceReclaimed + volumeReport.SpaceReclaimed
+	cacheReport, err := c.cli.BuildCachePrune(ctx, build.CachePruneOptions{
+		All:     all,
+		Filters: filters.NewArgs(),
+	})
+	if err != nil {
+		c.logger.Error("failed to prune build cache", zap.Error(err))
+		return SystemPruneReport{}, fmt.Errorf("failed to prune build cache: %w", err)
+	}
+
+	totalSpace := containerReport.SpaceReclaimed + imageReport.SpaceReclaimed + cacheReport.SpaceReclaimed
 	c.logger.Info("system prune completed",
 		zap.Uint64("space_reclaimed_bytes", totalSpace),
 		zap.Int("containers_deleted", len(containerReport.ContainersDeleted)),
 		zap.Int("images_deleted", len(imageReport.ImagesDeleted)),
-		zap.Int("volumes_deleted", len(volumeReport.VolumesDeleted)),
 		zap.Int("networks_deleted", len(networkReport.NetworksDeleted)),
+		zap.Int("build_cache_deleted", len(cacheReport.CachesDeleted)),
 	)
 
 	return SystemPruneReport{
 		ContainersDeleted: containerReport.ContainersDeleted,
-		VolumesDeleted:    volumeReport.VolumesDeleted,
 		NetworksDeleted:   networkReport.NetworksDeleted,
+		CachesDeleted:     cacheReport.CachesDeleted,
 		ImagesDeleted:     imageReport.ImagesDeleted,
 		SpaceReclaimed:    totalSpace,
 	}, nil

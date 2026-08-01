@@ -48,17 +48,17 @@ func (h *Handler) PruneDocker(c echo.Context) error {
 	result, err := h.maintenanceService.PruneDocker(ctx, &req)
 	if err != nil {
 		h.auditService.LogMaintenanceEvent(audit.EventMaintenancePrune, c.RealIP(), false, err.Error(), map[string]any{
-			"type":  req.Type,
-			"force": req.Force,
-			"all":   req.All,
+			"type": req.Type,
+			"all":  req.All,
 		})
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	h.auditService.LogMaintenanceEvent(audit.EventMaintenancePrune, c.RealIP(), true, "", map[string]any{
-		"type":  req.Type,
-		"force": req.Force,
-		"all":   req.All,
+	h.auditService.LogMaintenanceEvent(audit.EventMaintenancePrune, c.RealIP(), result.Error == "", result.Error, map[string]any{
+		"type":                   req.Type,
+		"all":                    req.All,
+		"docker_delete_records":  len(result.ItemsDeleted),
+		"docker_space_reclaimed": result.SpaceReclaimed,
 	})
 
 	return c.JSON(http.StatusOK, result)
@@ -89,7 +89,7 @@ func (h *Handler) DeleteResource(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	h.auditService.LogMaintenanceEvent(audit.EventMaintenanceDeleteResource, c.RealIP(), true, "", map[string]any{
+	h.auditService.LogMaintenanceEvent(audit.EventMaintenanceDeleteResource, c.RealIP(), result.Success, result.Error, map[string]any{
 		"resource_type": req.Type,
 		"resource_id":   req.ID,
 	})
