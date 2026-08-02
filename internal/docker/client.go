@@ -307,10 +307,9 @@ func (c *Client) SystemPrune(ctx context.Context, all bool) (SystemPruneReport, 
 	}, nil
 }
 
-func (c *Client) ImageRemove(ctx context.Context, imageID string, force, noPrune bool) ([]image.DeleteResponse, error) {
+func (c *Client) ImageRemove(ctx context.Context, imageID string) ([]image.DeleteResponse, error) {
 	responses, err := c.cli.ImageRemove(ctx, imageID, image.RemoveOptions{
-		Force:         force,
-		PruneChildren: !noPrune,
+		PruneChildren: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to remove image %s: %w", imageID, err)
@@ -344,8 +343,8 @@ func (c *Client) ContainerRemove(ctx context.Context, containerID string, remove
 	return nil
 }
 
-func (c *Client) VolumeRemove(ctx context.Context, volumeID string, force bool) error {
-	err := c.cli.VolumeRemove(ctx, volumeID, force)
+func (c *Client) VolumeRemove(ctx context.Context, volumeID string) error {
+	err := c.cli.VolumeRemove(ctx, volumeID, false)
 	if err != nil {
 		return fmt.Errorf("failed to remove volume %s: %w", volumeID, err)
 	}

@@ -467,7 +467,7 @@ func (s *Service) DeleteResource(ctx context.Context, req *DeleteRequest) (*Dele
 func (s *Service) deleteImage(ctx context.Context, imageID string) (*DeleteResult, error) {
 	s.logger.Debug("deleting image", zap.String("image_id", imageID))
 
-	_, err := s.dockerClient.ImageRemove(ctx, imageID, true, false)
+	_, err := s.dockerClient.ImageRemove(ctx, imageID)
 	if err != nil {
 		s.logger.Error("failed to delete image",
 			zap.String("image_id", imageID),
@@ -493,7 +493,7 @@ func (s *Service) deleteImage(ctx context.Context, imageID string) (*DeleteResul
 func (s *Service) deleteContainer(ctx context.Context, containerID string) (*DeleteResult, error) {
 	s.logger.Debug("deleting container", zap.String("container_id", containerID))
 
-	err := s.dockerClient.ContainerRemove(ctx, containerID, true, true, true)
+	err := s.dockerClient.ContainerRemove(ctx, containerID, false, false, false)
 	if err != nil {
 		s.logger.Error("failed to delete container",
 			zap.String("container_id", containerID),
@@ -519,7 +519,7 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) (*Del
 func (s *Service) deleteVolume(ctx context.Context, volumeName string) (*DeleteResult, error) {
 	s.logger.Debug("deleting volume", zap.String("volume_name", volumeName))
 
-	err := s.dockerClient.VolumeRemove(ctx, volumeName, true)
+	err := s.dockerClient.VolumeRemove(ctx, volumeName)
 	if err != nil {
 		s.logger.Error("failed to delete volume",
 			zap.String("volume_name", volumeName),
