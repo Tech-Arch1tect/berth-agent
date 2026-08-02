@@ -394,18 +394,13 @@ func buildCacheSummaryFrom(records []*build.CacheRecord) BuildCacheSummary {
 			continue
 		}
 
-		lastUsed := time.Time{}
-		if record.LastUsedAt != nil {
-			lastUsed = *record.LastUsedAt
-		}
-
 		summary.Cache = append(summary.Cache, BuildCacheInfo{
 			ID:          record.ID,
 			Type:        record.Type,
 			Description: record.Description,
 			Size:        record.Size,
 			Created:     record.CreatedAt,
-			LastUsed:    lastUsed,
+			LastUsed:    record.LastUsedAt,
 			UsageCount:  record.UsageCount,
 			InUse:       record.InUse,
 			Shared:      record.Shared,
