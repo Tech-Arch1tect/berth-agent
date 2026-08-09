@@ -6,6 +6,7 @@ import (
 	"github.com/tech-arch1tect/berth-agent/config"
 	"github.com/tech-arch1tect/berth-agent/internal/docker"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/stack"
 
 	"go.uber.org/fx"
 )
@@ -16,8 +17,8 @@ var Module = fx.Options(
 	fx.Invoke(RunStartupHygiene),
 )
 
-func NewServiceWithConfig(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client) (*Service, error) {
-	return NewService(cfg, logger, dockerClient, docker.NewCommandExecutor(cfg.StackLocation))
+func NewServiceWithConfig(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client, stacks *stack.Service) (*Service, error) {
+	return NewService(cfg, logger, dockerClient, docker.NewCommandExecutor(cfg.StackLocation), stacks)
 }
 
 func RunStartupHygiene(lc fx.Lifecycle, service *Service) {

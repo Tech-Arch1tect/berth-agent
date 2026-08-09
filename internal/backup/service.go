@@ -14,19 +14,25 @@ import (
 	"github.com/tech-arch1tect/berth-agent/config"
 	"github.com/tech-arch1tect/berth-agent/internal/docker"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/stack"
 	"go.uber.org/zap"
 )
+
+type stackLister interface {
+	ListStacks() ([]stack.Stack, error)
+}
 
 type Service struct {
 	cfg          *config.Config
 	logger       *logging.Logger
 	dockerClient *docker.Client
 	commandExec  *docker.CommandExecutor
+	stacks       stackLister
 	persistence  *RunPersistence
 	repoLocks    *repoLockTable
 }
 
-func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client, commandExec *docker.CommandExecutor) (*Service, error) {
+func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client, commandExec *docker.CommandExecutor, stacks stackLister) (*Service, error) {
 	persistence, err := NewRunPersistence(cfg.BackupPersistenceDir, logger)
 	if err != nil {
 		return nil, err
@@ -36,6 +42,7 @@ func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker
 		logger:       logger,
 		dockerClient: dockerClient,
 		commandExec:  commandExec,
+		stacks:       stacks,
 		persistence:  persistence,
 		repoLocks:    newRepoLockTable(),
 	}, nil

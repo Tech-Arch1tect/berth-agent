@@ -150,6 +150,7 @@ func RegisterRoutes(
 	api.GET("/stacks/:stackName/logs", logsHandler.GetStackLogs)
 	api.GET("/stacks/:stackName/containers/:containerName/logs", logsHandler.GetContainerLogs)
 
+	api.GET("/backups", backupHandler.GetBackupsOverview)
 	api.GET("/stacks/:stackName/backups", backupHandler.ListStackBackups)
 	api.GET("/stacks/:stackName/backups/:backupId", backupHandler.GetStackBackup)
 	api.DELETE("/stacks/:stackName/backups/:backupId", backupHandler.DeleteStackBackup)

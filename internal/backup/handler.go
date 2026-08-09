@@ -66,6 +66,14 @@ func (h *Handler) ListStackBackups(c echo.Context) error {
 	})
 }
 
+func (h *Handler) GetBackupsOverview(c echo.Context) error {
+	overview, err := h.service.BuildOverview()
+	if err != nil {
+		return common.SendInternalError(c, err.Error())
+	}
+	return common.SendSuccess(c, overview)
+}
+
 func (h *Handler) GetStackBackup(c echo.Context) error {
 	stackName := c.Param("stackName")
 	if err := validation.ValidateStackName(stackName); err != nil {
