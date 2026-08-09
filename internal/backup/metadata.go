@@ -145,11 +145,34 @@ func (p *RunPersistence) DeleteRun(stackName, runID string) error {
 		return kept
 	})
 
+	p.discardStackIfEmpty(stackName)
+
 	p.logger.Debug("deleted backup run metadata",
 		zap.String("run_id", runID),
 		zap.String("stack_name", stackName),
 	)
 	return nil
+}
+
+func (p *RunPersistence) discardStackIfEmpty(stackName string) {
+	dir := filepath.Join(p.persistenceDir, stackName)
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) > 0 {
+		return
+	}
+	if err := os.Remove(dir); err != nil {
+		p.logger.Warn("failed to remove the empty metadata directory of a stack with no backups left",
+			zap.String("stack_name", stackName),
+			zap.Error(err),
+		)
+		return
+	}
+	if err := os.Remove(p.indexFilename(stackName)); err != nil && !os.IsNotExist(err) {
+		p.logger.Warn("failed to remove the summary index of a stack with no backups left",
+			zap.String("stack_name", stackName),
+			zap.Error(err),
+		)
+	}
 }
 
 func (p *RunPersistence) indexFilename(stackName string) string {
