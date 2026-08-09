@@ -17,12 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	composeProjectLabel         = "com.docker.compose.project"
-	composeServiceLabel         = "com.docker.compose.service"
-	composeContainerNumberLabel = "com.docker.compose.container-number"
-)
-
 type Service struct {
 	cfg          *config.Config
 	logger       *logging.Logger
@@ -360,10 +354,16 @@ func (s *Service) forgetPartialSnapshot(ctx context.Context, image, password str
 	}
 }
 
-func (s *Service) composeComponents(stackName, stackPath string) ([]Component, []SkippedMount, error) {
+type composeEnumeration struct {
+	projectName string
+	components  []Component
+	skipped     []SkippedMount
+}
+
+func (s *Service) composeComponents(stackName, stackPath string) (composeEnumeration, error) {
 	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
 	if err != nil {
-		return nil, nil, err
+		return composeEnumeration{}, err
 	}
 	output, err := cmd.Output()
 	if err != nil {
@@ -371,24 +371,34 @@ func (s *Service) composeComponents(stackName, stackPath string) ([]Component, [
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			detail = ": " + strings.TrimSpace(string(exitErr.Stderr))
 		}
-		return nil, nil, fmt.Errorf("failed to read the stack's compose configuration: %w%s", err, detail)
+		return composeEnumeration{}, fmt.Errorf("failed to read the stack's compose configuration: %w%s", err, detail)
 	}
 
 	project, err := parseComposeProject(output)
 	if err != nil {
-		return nil, nil, err
+		return composeEnumeration{}, err
 	}
 
-	return BuildComponents(project, stackPath, s.cfg.BackupLocation)
+	components, skipped, err := BuildComponents(project, stackPath, s.cfg.BackupLocation)
+	if err != nil {
+		return composeEnumeration{}, err
+	}
+	return composeEnumeration{projectName: project.Name, components: components, skipped: skipped}, nil
 }
 
 func (s *Service) enumerateComponents(ctx context.Context, stackName, stackPath string) ([]Component, []SkippedMount, error) {
-	components, skipped, err := s.composeComponents(stackName, stackPath)
+	enumeration, err := s.composeComponents(stackName, stackPath)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	components, skipped, err = s.resolveAnonymousVolumes(ctx, stackName, components, skipped)
+	identity := stackIdentity{
+		ProjectName: enumeration.projectName,
+		StackPath:   filepath.Clean(stackPath),
+		Identified:  enumeration.projectName != "",
+	}
+
+	components, skipped, err := s.resolveAnonymousVolumes(ctx, identity, enumeration.components, enumeration.skipped)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -419,7 +429,16 @@ func (s *Service) enrichVolumeDefinitions(ctx context.Context, components []Comp
 	}
 }
 
-func (s *Service) resolveAnonymousVolumes(ctx context.Context, stackName string, components []Component, skipped []SkippedMount) ([]Component, []SkippedMount, error) {
+func (s *Service) resolveAnonymousVolumes(ctx context.Context, identity stackIdentity, components []Component, skipped []SkippedMount) ([]Component, []SkippedMount, error) {
+	if !anyAnonymousVolumes(components) {
+		return components, skipped, nil
+	}
+
+	stackContainers, err := s.listStackContainers(ctx, identity)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var resolved []Component
 	for _, component := range components {
 		if component.Kind != KindAnonymousVolume {
@@ -427,15 +446,7 @@ func (s *Service) resolveAnonymousVolumes(ctx context.Context, stackName string,
 			continue
 		}
 
-		containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-			"label": {
-				composeProjectLabel + "=" + stackName,
-				composeServiceLabel + "=" + component.Service,
-			},
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to list containers for service %q while resolving anonymous volumes: %w", component.Service, err)
-		}
+		containers := containersForService(stackContainers, component.Service)
 
 		found := false
 		for _, summary := range containers {
@@ -449,7 +460,7 @@ func (s *Service) resolveAnonymousVolumes(ctx context.Context, stackName string,
 				}
 				instance := component
 				instance.VolumeName = containerMount.Name
-				if number := info.Config.Labels[composeContainerNumberLabel]; number != "" && len(containers) > 1 {
+				if number := info.Config.Labels[docker.LabelComposeContainerNumber]; number != "" && len(containers) > 1 {
 					instance.ID = component.ID + ":" + number
 					instance.ContainerNumber = number
 				}

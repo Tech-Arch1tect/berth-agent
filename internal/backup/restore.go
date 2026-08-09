@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/mount"
+
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/tech-arch1tect/berth-agent/internal/docker"
 )
 
@@ -56,9 +58,20 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		return err
 	}
 
-	projectName := s.resolveComposeProjectName(stackName)
+	identity, err := s.resolveStackIdentity(ctx, stackName, stackPath)
+	if err != nil {
+		return err
+	}
+	if !identity.Identified {
+		return fmt.Errorf("cannot tell which containers belong to stack %q: its compose configuration could not be read and no container carries this stack's directory as its compose working directory. Refusing to restore, because a restore that cannot see the stack's containers can overwrite data underneath a running application. Stop the stack yourself, then retry", stackName)
+	}
 
-	components, err = s.resolveRestoreTargets(ctx, projectName, components)
+	stackContainers, err := s.listStackContainers(ctx, identity)
+	if err != nil {
+		return err
+	}
+
+	components, err = s.resolveRestoreTargets(ctx, stackContainers, components)
 	if err != nil {
 		return err
 	}
@@ -71,11 +84,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 	}
 
 	if opts.StopMode == "" {
-		active, err := s.activeContainerCount(ctx, projectName)
-		if err != nil {
-			return fmt.Errorf("failed to check for running containers before restore: %w", err)
-		}
-		if active > 0 {
+		if active := len(activeContainers(stackContainers)); active > 0 {
 			return fmt.Errorf("refusing to restore while %d container(s) of stack %s are running, paused or restarting: restoring under a live application corrupts data; stop the stack or request the restore with --stop", active, stackName)
 		}
 	}
@@ -95,7 +104,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 
 	var stopped []string
 	if opts.StopMode == "stop" {
-		stopped, err = s.stopStackContainers(ctx, projectName, writer)
+		stopped, err = s.stopStackContainers(ctx, stackContainers, writer)
 		if err != nil {
 			return fmt.Errorf("failed to stop the stack before restore: %w", err)
 		}
@@ -231,13 +240,13 @@ func driftError(components []Component, currentBinds, currentVolumes map[string]
 }
 
 func (s *Service) currentComposeTargets(stackName, stackPath string) (binds, volumes map[string]bool, err error) {
-	current, _, err := s.composeComponents(stackName, stackPath)
+	enumeration, err := s.composeComponents(stackName, stackPath)
 	if err != nil {
 		return nil, nil, err
 	}
 	binds = map[string]bool{}
 	volumes = map[string]bool{}
-	for _, component := range current {
+	for _, component := range enumeration.components {
 		switch component.Kind {
 		case KindBindMount:
 			binds[component.SourcePath] = true
@@ -302,26 +311,6 @@ func (s *Service) validateRestoreTargets(ctx context.Context, stackName, stackPa
 	return s.planMissingVolumes(ctx, components)
 }
 
-func (s *Service) resolveComposeProjectName(stackName string) string {
-	cmd, err := s.commandExec.ExecuteComposeCommand(stackName, "config", "--format", "json")
-	if err != nil {
-		return stackName
-	}
-	output, err := cmd.Output()
-	if err != nil {
-		return stackName
-	}
-	project, err := parseComposeProject(output)
-	if err != nil || project.Name == "" {
-		return stackName
-	}
-	return project.Name
-}
-
-func activeContainerStates() []string {
-	return []string{"running", "paused", "restarting"}
-}
-
 type anonVolumeMatch struct {
 	number     string
 	volumeName string
@@ -365,16 +354,8 @@ func onlyKey(m map[string]bool) string {
 	return ""
 }
 
-func (s *Service) resolveAnonymousVolumeName(ctx context.Context, projectName string, component Component) (string, error) {
-	containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-		"label": {
-			composeProjectLabel + "=" + projectName,
-			composeServiceLabel + "=" + component.Service,
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers while resolving the anonymous volume for %s: %w", component.ID, err)
-	}
+func (s *Service) resolveAnonymousVolumeName(ctx context.Context, stackContainers []dockercontainer.Summary, component Component) (string, error) {
+	containers := containersForService(stackContainers, component.Service)
 
 	var matches []anonVolumeMatch
 	for _, summary := range containers {
@@ -385,7 +366,7 @@ func (s *Service) resolveAnonymousVolumeName(ctx context.Context, projectName st
 		for _, containerMount := range info.Mounts {
 			if string(containerMount.Type) == "volume" && containerMount.Destination == component.Target && containerMount.Name != "" {
 				matches = append(matches, anonVolumeMatch{
-					number:     info.Config.Labels[composeContainerNumberLabel],
+					number:     info.Config.Labels[docker.LabelComposeContainerNumber],
 					volumeName: containerMount.Name,
 				})
 			}
@@ -395,7 +376,7 @@ func (s *Service) resolveAnonymousVolumeName(ctx context.Context, projectName st
 	return resolveAnonVolumeName(component, matches)
 }
 
-func (s *Service) resolveRestoreTargets(ctx context.Context, projectName string, components []Component) ([]Component, error) {
+func (s *Service) resolveRestoreTargets(ctx context.Context, stackContainers []dockercontainer.Summary, components []Component) ([]Component, error) {
 	resolved := make([]Component, 0, len(components))
 	for _, component := range components {
 		if component.Kind != KindAnonymousVolume {
@@ -403,7 +384,7 @@ func (s *Service) resolveRestoreTargets(ctx context.Context, projectName string,
 			continue
 		}
 
-		name, err := s.resolveAnonymousVolumeName(ctx, projectName, component)
+		name, err := s.resolveAnonymousVolumeName(ctx, stackContainers, component)
 		if err != nil {
 			return nil, err
 		}
@@ -413,14 +394,8 @@ func (s *Service) resolveRestoreTargets(ctx context.Context, projectName string,
 	return resolved, nil
 }
 
-func (s *Service) stopStackContainers(ctx context.Context, projectName string, writer ProgressWriter) ([]string, error) {
-	active, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-		"label":  {composeProjectLabel + "=" + projectName},
-		"status": activeContainerStates(),
-	})
-	if err != nil {
-		return nil, err
-	}
+func (s *Service) stopStackContainers(ctx context.Context, stackContainers []dockercontainer.Summary, writer ProgressWriter) ([]string, error) {
+	active := activeContainers(stackContainers)
 
 	var stopped []string
 	for _, summary := range active {
@@ -460,17 +435,6 @@ func containerDisplayName(names []string, id string) string {
 		return id[:12]
 	}
 	return id
-}
-
-func (s *Service) activeContainerCount(ctx context.Context, projectName string) (int, error) {
-	containers, err := s.dockerClient.ContainerList(ctx, map[string][]string{
-		"label":  {composeProjectLabel + "=" + projectName},
-		"status": activeContainerStates(),
-	})
-	if err != nil {
-		return 0, err
-	}
-	return len(containers), nil
 }
 
 func (s *Service) openRepositoryForRestore(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {

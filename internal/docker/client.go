@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	LabelComposeProject = "com.docker.compose.project"
-	LabelComposeService = "com.docker.compose.service"
+	LabelComposeProject         = "com.docker.compose.project"
+	LabelComposeService         = "com.docker.compose.service"
+	LabelComposeContainerNumber = "com.docker.compose.container-number"
+	LabelComposeWorkingDir      = "com.docker.compose.project.working_dir"
 )
 
 type Client struct {
