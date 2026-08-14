@@ -61,6 +61,7 @@ type Run struct {
 	StartedAt     time.Time      `json:"started_at"`
 	FinishedAt    *time.Time     `json:"finished_at,omitempty"`
 	Status        RunStatus      `json:"status"`
+	Label         string         `json:"label,omitempty"`
 	StopMode      string         `json:"stop_mode,omitempty"`
 	ResticVersion string         `json:"restic_version,omitempty"`
 	Verified      *bool          `json:"verified,omitempty"`
@@ -77,6 +78,7 @@ type RunSummary struct {
 	StartedAt            time.Time  `json:"started_at"`
 	FinishedAt           *time.Time `json:"finished_at,omitempty"`
 	Status               RunStatus  `json:"status"`
+	Label                string     `json:"label,omitempty"`
 	StopMode             string     `json:"stop_mode,omitempty"`
 	Verified             *bool      `json:"verified,omitempty"`
 	RepoSizeBytes        uint64     `json:"repo_size_bytes,omitempty"`
@@ -93,6 +95,7 @@ func SummariseRun(run *Run) RunSummary {
 		StartedAt:      run.StartedAt,
 		FinishedAt:     run.FinishedAt,
 		Status:         run.Status,
+		Label:          run.Label,
 		StopMode:       run.StopMode,
 		Verified:       run.Verified,
 		RepoSizeBytes:  run.RepoSizeBytes,
@@ -110,6 +113,7 @@ func SummariseRun(run *Run) RunSummary {
 
 type CreateOptions struct {
 	StopMode string
+	Label    string
 	Password string
 }
 

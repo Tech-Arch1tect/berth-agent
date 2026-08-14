@@ -151,20 +151,40 @@ func ValidateOperationRequest(req OperationRequest) error {
 	return nil
 }
 
+const maxBackupLabelLength = 100
+
+var backupLabelRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 .,_+()/:'-]*$`)
+
+func validBackupLabel(label string) bool {
+	if label == "" || len(label) > maxBackupLabelLength {
+		return false
+	}
+	return backupLabelRegex.MatchString(label)
+}
+
 func validateCreateBackupRequest(req OperationRequest) error {
 	if len(req.Services) > 0 {
 		return fmt.Errorf("%w: create-backup applies to the whole stack and accepts no service arguments", ErrInvalidOption)
 	}
 
 	stop, pause := false, false
-	for _, option := range req.Options {
-		switch option {
+	options := req.Options
+	for i := 0; i < len(options); i++ {
+		switch options[i] {
 		case "--stop":
 			stop = true
 		case "--pause":
 			pause = true
+		case "--label":
+			if i+1 >= len(options) {
+				return fmt.Errorf("%w: --label requires a value", ErrInvalidOption)
+			}
+			i++
+			if !validBackupLabel(strings.TrimSpace(options[i])) {
+				return fmt.Errorf("%w: --label must be at most %d characters of letters, numbers, spaces and . , _ - + ( ) / : ' only", ErrInvalidOption, maxBackupLabelLength)
+			}
 		default:
-			return fmt.Errorf("%w: %s", ErrInvalidOption, option)
+			return fmt.Errorf("%w: %s", ErrInvalidOption, options[i])
 		}
 	}
 	if stop && pause {

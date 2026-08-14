@@ -482,12 +482,17 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 	switch operation.Request.Command {
 	case "create-backup":
 		opts := backup.CreateOptions{Password: operation.Request.BackupPassword}
-		for _, option := range operation.Request.Options {
-			switch option {
+		for i := 0; i < len(operation.Request.Options); i++ {
+			switch operation.Request.Options[i] {
 			case "--stop":
 				opts.StopMode = "stop"
 			case "--pause":
 				opts.StopMode = "pause"
+			case "--label":
+				if i+1 < len(operation.Request.Options) {
+					i++
+					opts.Label = strings.TrimSpace(operation.Request.Options[i])
+				}
 			}
 		}
 		err = s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
