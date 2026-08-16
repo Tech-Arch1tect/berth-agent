@@ -6,7 +6,7 @@ RUN chmod +x /usr/bin/docker-compose && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
     ln -sf /usr/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 
-ARG GO_VERSION=1.25.5
+ARG GO_VERSION=1.26.6
 RUN curl -sSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 
