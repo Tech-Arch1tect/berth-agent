@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,24 +16,34 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-type ServiceCountCache struct {
+type ComposeModel struct {
+	ProjectName     string
+	DefaultServices []string
+}
+
+type ComposeModelCache struct {
 	mu            sync.RWMutex
-	counts        map[string]int
+	models        map[string]ComposeModel
 	stackLocation string
 	watcher       *fsnotify.Watcher
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
 
-type ComposeConfig struct {
-	Services map[string]any `json:"services"`
+type composeFileModel struct {
+	Name     string                         `json:"name"`
+	Services map[string]composeServiceModel `json:"services"`
 }
 
-func NewServiceCountCache(stackLocation string) *ServiceCountCache {
+type composeServiceModel struct {
+	Profiles []string `json:"profiles"`
+}
+
+func NewComposeModelCache(stackLocation string) *ComposeModelCache {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cache := &ServiceCountCache{
-		counts:        make(map[string]int),
+	cache := &ComposeModelCache{
+		models:        make(map[string]ComposeModel),
 		stackLocation: stackLocation,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -41,15 +52,15 @@ func NewServiceCountCache(stackLocation string) *ServiceCountCache {
 	return cache
 }
 
-func (c *ServiceCountCache) Start() error {
+func (c *ComposeModelCache) Start() error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create file watcher: %w", err)
 	}
 	c.watcher = watcher
 
-	if err := c.loadAllStackCounts(); err != nil {
-		log.Printf("Warning: failed to load initial stack counts: %v", err)
+	if err := c.loadAllStackModels(); err != nil {
+		log.Printf("Warning: failed to load initial stack models: %v", err)
 	}
 
 	if err := c.setupWatchers(); err != nil {
@@ -61,7 +72,7 @@ func (c *ServiceCountCache) Start() error {
 	return nil
 }
 
-func (c *ServiceCountCache) Stop() {
+func (c *ComposeModelCache) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
@@ -70,14 +81,25 @@ func (c *ServiceCountCache) Stop() {
 	}
 }
 
-func (c *ServiceCountCache) GetServiceCount(stackName string) (int, bool) {
+func (c *ComposeModelCache) Get(stackName string) (ComposeModel, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	count, exists := c.counts[stackName]
-	return count, exists
+	model, exists := c.models[stackName]
+	return model, exists
 }
 
-func (c *ServiceCountCache) loadAllStackCounts() error {
+func (c *ComposeModelCache) StackForProject(projectName string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for stackName, model := range c.models {
+		if model.ProjectName == projectName {
+			return stackName, true
+		}
+	}
+	return "", false
+}
+
+func (c *ComposeModelCache) loadAllStackModels() error {
 	entries, err := os.ReadDir(c.stackLocation)
 	if err != nil {
 		return fmt.Errorf("failed to read stack location: %w", err)
@@ -89,15 +111,15 @@ func (c *ServiceCountCache) loadAllStackCounts() error {
 		}
 
 		stackName := entry.Name()
-		if err := c.loadStackCount(stackName); err != nil {
-			log.Printf("Warning: failed to load count for stack %s: %v", stackName, err)
+		if err := c.loadStackModel(stackName); err != nil {
+			log.Printf("Warning: failed to load compose model for stack %s: %v", stackName, err)
 		}
 	}
 
 	return nil
 }
 
-func (c *ServiceCountCache) loadStackCount(stackName string) error {
+func (c *ComposeModelCache) loadStackModel(stackName string) error {
 	stackPath := filepath.Join(c.stackLocation, stackName)
 
 	composeFiles := []string{
@@ -117,27 +139,26 @@ func (c *ServiceCountCache) loadStackCount(stackName string) error {
 	}
 
 	if !hasComposeFile {
-
 		c.mu.Lock()
-		delete(c.counts, stackName)
+		delete(c.models, stackName)
 		c.mu.Unlock()
 		return nil
 	}
 
-	count, err := c.getServiceCountFromCompose(stackPath)
+	model, err := loadComposeModel(stackPath)
 	if err != nil {
-		return fmt.Errorf("failed to get service count: %w", err)
+		return fmt.Errorf("failed to load compose model: %w", err)
 	}
 
 	c.mu.Lock()
-	c.counts[stackName] = count
+	c.models[stackName] = model
 	c.mu.Unlock()
 
-	log.Printf("Loaded service count for stack %s: %d services", stackName, count)
+	log.Printf("Loaded compose model for stack %s: project %q, %d default services", stackName, model.ProjectName, len(model.DefaultServices))
 	return nil
 }
 
-func (c *ServiceCountCache) getServiceCountFromCompose(stackPath string) (int, error) {
+func loadComposeModel(stackPath string) (ComposeModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -146,18 +167,33 @@ func (c *ServiceCountCache) getServiceCountFromCompose(stackPath string) (int, e
 
 	output, err := cmd.Output()
 	if err != nil {
-		return 0, fmt.Errorf("docker compose config failed: %w", err)
+		return ComposeModel{}, fmt.Errorf("docker compose config failed: %w", err)
 	}
 
-	var config ComposeConfig
-	if err := json.Unmarshal(output, &config); err != nil {
-		return 0, fmt.Errorf("failed to parse compose config: %w", err)
-	}
-
-	return len(config.Services), nil
+	return parseComposeModel(output)
 }
 
-func (c *ServiceCountCache) setupWatchers() error {
+func parseComposeModel(output []byte) (ComposeModel, error) {
+	var parsed composeFileModel
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		return ComposeModel{}, fmt.Errorf("failed to parse compose config: %w", err)
+	}
+
+	model := ComposeModel{
+		ProjectName:     parsed.Name,
+		DefaultServices: []string{},
+	}
+	for service, definition := range parsed.Services {
+		if len(definition.Profiles) == 0 {
+			model.DefaultServices = append(model.DefaultServices, service)
+		}
+	}
+	sort.Strings(model.DefaultServices)
+
+	return model, nil
+}
+
+func (c *ComposeModelCache) setupWatchers() error {
 	entries, err := os.ReadDir(c.stackLocation)
 	if err != nil {
 		return fmt.Errorf("failed to read stack location: %w", err)
@@ -177,7 +213,7 @@ func (c *ServiceCountCache) setupWatchers() error {
 	return c.watcher.Add(c.stackLocation)
 }
 
-func (c *ServiceCountCache) watchLoop() {
+func (c *ComposeModelCache) watchLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -196,7 +232,7 @@ func (c *ServiceCountCache) watchLoop() {
 	}
 }
 
-func (c *ServiceCountCache) handleFileEvent(event fsnotify.Event) {
+func (c *ComposeModelCache) handleFileEvent(event fsnotify.Event) {
 	if event.Op&fsnotify.Create == fsnotify.Create {
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 			if filepath.Dir(event.Name) == c.stackLocation {
@@ -209,8 +245,8 @@ func (c *ServiceCountCache) handleFileEvent(event fsnotify.Event) {
 
 				go func() {
 					time.Sleep(500 * time.Millisecond)
-					if err := c.loadStackCount(stackName); err != nil {
-						log.Printf("Failed to load count for new stack %s: %v", stackName, err)
+					if err := c.loadStackModel(stackName); err != nil {
+						log.Printf("Failed to load compose model for new stack %s: %v", stackName, err)
 					}
 				}()
 				return
@@ -234,8 +270,8 @@ func (c *ServiceCountCache) handleFileEvent(event fsnotify.Event) {
 
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		if err := c.loadStackCount(stackName); err != nil {
-			log.Printf("Failed to reload stack count for %s: %v", stackName, err)
+		if err := c.loadStackModel(stackName); err != nil {
+			log.Printf("Failed to reload compose model for %s: %v", stackName, err)
 		}
 	}()
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +15,7 @@ import (
 	"github.com/tech-arch1tect/berth-agent/config"
 	"github.com/tech-arch1tect/berth-agent/internal/docker"
 	"github.com/tech-arch1tect/berth-agent/internal/logging"
+	"github.com/tech-arch1tect/berth-agent/internal/stackstate"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -279,12 +279,12 @@ type Service struct {
 	stackLocation string
 	commandExec   *docker.CommandExecutor
 	dockerClient  *docker.Client
-	serviceCache  *ServiceCountCache
+	serviceCache  *ComposeModelCache
 	logger        *logging.Logger
 }
 
 func NewService(cfg *config.Config, dockerClient *docker.Client, logger *logging.Logger) *Service {
-	cache := NewServiceCountCache(cfg.StackLocation)
+	cache := NewComposeModelCache(cfg.StackLocation)
 
 	service := &Service{
 		stackLocation: cfg.StackLocation,
@@ -295,7 +295,7 @@ func NewService(cfg *config.Config, dockerClient *docker.Client, logger *logging
 	}
 
 	if err := cache.Start(); err != nil {
-		logger.Warn("Failed to start service count cache", zap.Error(err))
+		logger.Warn("Failed to start compose model cache", zap.Error(err))
 	}
 
 	return service
@@ -330,26 +330,24 @@ func (s *Service) ListStacks() ([]Stack, error) {
 			composePath := filepath.Join(stackPath, filename)
 			if _, err := os.Stat(composePath); err == nil {
 				stackName := entry.Name()
-				isHealthy := s.isStackHealthy(stackName)
-
-				totalContainers, runningContainers := s.getStackContainerCounts(stackName)
-				healthDetails := s.getStackHealthDetails(stackName)
+				model, _ := s.serviceCache.Get(stackName)
+				state := s.evaluateStack(stackName)
 
 				s.logger.Debug("Discovered stack",
 					zap.String("stack", stackName),
 					zap.String("compose_file", filename),
-					zap.Bool("is_healthy", isHealthy),
-					zap.Int("total_containers", totalContainers),
-					zap.Int("running_containers", runningContainers))
+					zap.Bool("is_healthy", state.Healthy),
+					zap.Int("total_containers", len(model.DefaultServices)),
+					zap.Int("running_containers", state.RunningContainers))
 
 				stack := Stack{
 					Name:              stackName,
 					Path:              stackPath,
 					ComposeFile:       filename,
-					IsHealthy:         isHealthy,
-					TotalContainers:   totalContainers,
-					RunningContainers: runningContainers,
-					HealthDetails:     healthDetails,
+					IsHealthy:         state.Healthy,
+					TotalContainers:   len(model.DefaultServices),
+					RunningContainers: state.RunningContainers,
+					HealthDetails:     healthDetailsFrom(state),
 				}
 				stacks = append(stacks, stack)
 				break
@@ -720,11 +718,10 @@ func (s *Service) getContainerInfoViaAPI(stackName string) (map[string][]Contain
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	filters := map[string][]string{
-		"label": {fmt.Sprintf("com.docker.compose.project=%s", stackName)},
-	}
+	model, _ := s.serviceCache.Get(stackName)
+	stackPath := filepath.Join(s.stackLocation, stackName)
 
-	apiContainers, err := s.dockerClient.ContainerList(ctx, filters)
+	apiContainers, err := s.listStackSummaries(ctx, stackPath, model.ProjectName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers via Docker API: %w", err)
 	}
@@ -1817,8 +1814,8 @@ func (s *Service) GetStacksSummary(patterns []string) (*StackStatistics, error) 
 
 		summary.TotalStacks++
 
-		isHealthy := s.isStackHealthy(stackName)
-		if isHealthy {
+		state := s.evaluateStack(stackName)
+		if state.Healthy {
 			summary.HealthyStacks++
 		} else {
 			summary.UnhealthyStacks++
@@ -1828,200 +1825,73 @@ func (s *Service) GetStacksSummary(patterns []string) (*StackStatistics, error) 
 	return summary, nil
 }
 
-func (s *Service) isStackHealthy(stackName string) bool {
+func (s *Service) evaluateStack(stackName string) stackstate.State {
+	model, _ := s.serviceCache.Get(stackName)
 
-	expectedCount, exists := s.serviceCache.GetServiceCount(stackName)
-	if !exists || expectedCount == 0 {
-		s.logger.Debug("Cache miss for stack service count", zap.String("stack", stackName))
-		return false
-	}
+	stackPath := filepath.Join(s.stackLocation, stackName)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	s.logger.Debug("Cache hit for stack service count",
-		zap.String("stack", stackName),
-		zap.Int("expected_count", expectedCount))
-
-	containers, err := s.getContainerInfoViaAPI(stackName)
+	summaries, err := s.listStackSummaries(ctx, stackPath, model.ProjectName)
 	if err != nil {
-		s.logger.Debug("Failed to get container info for health check",
+		s.logger.Debug("Failed to list containers for stack state",
 			zap.String("stack", stackName),
 			zap.Error(err))
-		return false
+		return stackstate.Evaluate(model.DefaultServices, nil)
 	}
 
-	servicesWithHealthChecks := 0
-	healthyServices := 0
-	runningServices := 0
-
-	for _, containerList := range containers {
-		hasRunningContainer := false
-		hasHealthCheck := false
-		serviceHealthy := false
-
-		for _, container := range containerList {
-			if container.State == "running" {
-				hasRunningContainer = true
-
-				if container.Health != nil {
-					hasHealthCheck = true
-
-					if container.Health.Status == "unhealthy" {
-						serviceHealthy = false
-						s.logger.Debug("Container is unhealthy",
-							zap.String("container", container.Name),
-							zap.String("health_status", container.Health.Status))
-						break
-					}
-
-					if container.Health.Status == "starting" {
-						serviceHealthy = false
-						s.logger.Debug("Container health check starting",
-							zap.String("container", container.Name))
-					}
-
-					if container.Health.Status == "healthy" {
-						serviceHealthy = true
-					}
-				} else {
-					serviceHealthy = true
-				}
-			}
-		}
-
-		if hasRunningContainer {
-			runningServices++
-			if hasHealthCheck {
-				servicesWithHealthChecks++
-				if serviceHealthy {
-					healthyServices++
-				}
-			}
-		}
+	facts := make([]stackstate.ContainerFacts, 0, len(summaries))
+	for _, summary := range summaries {
+		facts = append(facts, stackstate.ContainerFacts{
+			Service: summary.Labels[docker.LabelComposeService],
+			State:   string(summary.State),
+			Health:  stackstate.HealthFromStatus(summary.Status),
+		})
 	}
 
-	if servicesWithHealthChecks == 0 {
-		isHealthy := runningServices == expectedCount
-		s.logger.Debug("Stack health check (no health checks)",
-			zap.String("stack", stackName), zap.Bool("is_healthy", isHealthy),
-			zap.Int("running_services", runningServices), zap.Int("expected_services", expectedCount))
-		return isHealthy
-	}
+	state := stackstate.Evaluate(model.DefaultServices, facts)
+	s.logger.Debug("Stack state evaluated",
+		zap.String("stack", stackName),
+		zap.String("status", state.Status),
+		zap.Bool("healthy", state.Healthy),
+		zap.Int("running_containers", state.RunningContainers),
+		zap.Strings("reasons", state.Reasons))
 
-	isHealthy := healthyServices == servicesWithHealthChecks && runningServices == expectedCount
-
-	s.logger.Debug("Stack health check (with health checks)",
-		zap.String("stack", stackName), zap.Bool("is_healthy", isHealthy),
-		zap.Int("running_services", runningServices), zap.Int("expected_services", expectedCount),
-		zap.Int("services_with_health_checks", servicesWithHealthChecks),
-		zap.Int("healthy_services", healthyServices))
-
-	return isHealthy
+	return state
 }
 
-func (s *Service) getStackContainerCounts(stackName string) (total int, running int) {
-
-	expectedCount, exists := s.serviceCache.GetServiceCount(stackName)
-	if !exists {
-		s.logger.Debug("Cache miss for stack container counts", zap.String("stack", stackName))
-		return 0, 0
+func (s *Service) listStackSummaries(ctx context.Context, stackPath, projectName string) ([]dockercontainer.Summary, error) {
+	queries := [][]string{{docker.LabelComposeWorkingDir + "=" + stackPath}}
+	if projectName != "" {
+		queries = append(queries, []string{docker.LabelComposeProject + "=" + projectName})
 	}
 
-	s.logger.Debug("Cache hit for stack container counts",
-		zap.String("stack", stackName),
-		zap.Int("expected_count", expectedCount))
-
-	containers, err := s.getContainerInfoViaAPI(stackName)
-	if err != nil {
-		s.logger.Debug("Failed to get container info for count",
-			zap.String("stack", stackName),
-			zap.Error(err))
-		return expectedCount, 0
-	}
-
-	runningCount := 0
-	for _, containerList := range containers {
-		for _, container := range containerList {
-			if container.State == "running" {
-				runningCount++
-			}
+	byID := map[string]dockercontainer.Summary{}
+	for _, labels := range queries {
+		found, err := s.dockerClient.ContainerList(ctx, map[string][]string{"label": labels})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list the containers of stack at %s: %w", stackPath, err)
+		}
+		for _, summary := range found {
+			byID[summary.ID] = summary
 		}
 	}
 
-	s.logger.Debug("Container counts retrieved",
-		zap.String("stack", stackName),
-		zap.Int("total", expectedCount),
-		zap.Int("running", runningCount))
-
-	return expectedCount, runningCount
+	summaries := make([]dockercontainer.Summary, 0, len(byID))
+	for _, summary := range byID {
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
 }
 
-func (s *Service) getStackHealthDetails(stackName string) *StackHealthDetails {
-	containers, err := s.getContainerInfoViaAPI(stackName)
-	if err != nil {
-		s.logger.Debug("Failed to get container info for health details",
-			zap.String("stack", stackName), zap.Error(err))
-		return nil
+func healthDetailsFrom(state stackstate.State) *StackHealthDetails {
+	return &StackHealthDetails{
+		Percentage:     state.Percentage,
+		HealthyCount:   state.HealthyContainers,
+		UnhealthyCount: state.UnhealthyContainers,
+		StoppedCount:   state.StoppedContainers,
+		Reasons:        state.Reasons,
 	}
-
-	total := 0
-	running := 0
-	stopped := 0
-	healthy := 0
-	unhealthy := 0
-
-	for _, containerList := range containers {
-		for _, container := range containerList {
-			total++
-
-			if container.State == "running" {
-				running++
-
-				if container.Health == nil {
-					healthy++
-				} else {
-					switch container.Health.Status {
-					case "healthy":
-						healthy++
-					case "unhealthy":
-						unhealthy++
-					default:
-					}
-				}
-			} else {
-				stopped++
-			}
-		}
-	}
-
-	var percentage int
-	if total > 0 {
-		percentage = int(math.Round(float64(healthy) / float64(total) * 100))
-	}
-
-	reasons := []string{}
-	if stopped > 0 {
-		reasons = append(reasons, fmt.Sprintf("%d container(s) stopped", stopped))
-	}
-	if unhealthy > 0 {
-		reasons = append(reasons, fmt.Sprintf("%d container(s) failing health check", unhealthy))
-	}
-
-	healthDetails := &StackHealthDetails{
-		Percentage:     percentage,
-		HealthyCount:   healthy,
-		UnhealthyCount: unhealthy,
-		StoppedCount:   stopped,
-		Reasons:        reasons,
-	}
-
-	s.logger.Debug("Stack health details calculated",
-		zap.String("stack", stackName),
-		zap.Int("percentage", percentage),
-		zap.Int("healthy", healthy),
-		zap.Int("unhealthy", unhealthy),
-		zap.Int("stopped", stopped),
-		zap.Any("reasons", reasons))
-
-	return healthDetails
 }
 
 func (s *Service) GetContainerImageDetails(stackName string) ([]ContainerImageDetails, error) {

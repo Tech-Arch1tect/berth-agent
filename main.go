@@ -74,7 +74,6 @@ func runAgent() {
 		vulnscan.Module,
 		fx.Provide(NewEcho),
 		fx.Provide(NewWebSocketHandler),
-		fx.Provide(NewEventMonitorWithConfig),
 		fx.Invoke(RegisterRoutes),
 		fx.Invoke(StartServer),
 		fx.Invoke(StartWebSocketHub),
@@ -196,10 +195,6 @@ func NewWebSocketHandler(hub *websocket.Hub) *websocket.Handler {
 	return websocket.NewHandler(hub)
 }
 
-func NewEventMonitorWithConfig(hub *websocket.Hub, cfg *config.Config, logger *logging.Logger) *docker.EventMonitor {
-	return docker.NewEventMonitor(hub, cfg.StackLocation, logger)
-}
-
 func LogAgentStartup(logger *logging.Logger, cfg *config.Config) {
 	logger.Info("berth-agent starting in agent mode",
 		zap.String("port", cfg.Port),
@@ -230,7 +225,7 @@ func StartWebSocketHub(lc fx.Lifecycle, hub *websocket.Hub, logger *logging.Logg
 	})
 }
 
-func StartEventMonitor(lc fx.Lifecycle, monitor *docker.EventMonitor, logger *logging.Logger) {
+func StartEventMonitor(lc fx.Lifecycle, monitor *stack.EventMonitor, logger *logging.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			logger.Info("starting docker event monitor")
