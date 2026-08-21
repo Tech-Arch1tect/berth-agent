@@ -33,25 +33,31 @@ var validCommands = map[string]bool{
 
 var validOptions = map[string]map[string]bool{
 	"up": {
-		"-d":                           true,
-		"--detach":                     true,
-		"--build":                      true,
-		"--force-recreate":             true,
-		"--no-recreate":                true,
-		"--remove-orphans":             true,
-		"--pull":                       true,
-		"--scale":                      true,
-		"-t":                           true,
-		"--timeout":                    true,
-		"--wait":                       true,
-		"--wait-timeout":               true,
-		"-V":                           true,
-		"--renew-anon-volumes":         true,
-		"--no-deps":                    true,
-		"--abort-on-container-exit":    true,
-		"--abort-on-container-failure": true,
+		"-d":                     true,
+		"--detach":               true,
+		"--always-recreate-deps": true,
+		"--build":                true,
+		"--dry-run":              true,
+		"--force-recreate":       true,
+		"--no-build":             true,
+		"--no-deps":              true,
+		"--no-recreate":          true,
+		"--no-start":             true,
+		"--pull":                 true,
+		"--quiet-build":          true,
+		"--quiet-pull":           true,
+		"--remove-orphans":       true,
+		"-V":                     true,
+		"--renew-anon-volumes":   true,
+		"--scale":                true,
+		"-t":                     true,
+		"--timeout":              true,
+		"--wait":                 true,
+		"--wait-timeout":         true,
+		"--yes":                  true,
 	},
 	"down": {
+		"--dry-run":        true,
 		"--remove-orphans": true,
 		"--rmi":            true,
 		"-v":               true,
@@ -60,7 +66,9 @@ var validOptions = map[string]map[string]bool{
 		"--timeout":        true,
 	},
 	"start": {
-		"--dry-run": true,
+		"--dry-run":      true,
+		"--wait":         true,
+		"--wait-timeout": true,
 	},
 	"stop": {
 		"-t":        true,
@@ -80,6 +88,7 @@ var validOptions = map[string]map[string]bool{
 		"--ignore-pull-failures": true,
 		"--include-deps":         true,
 		"--policy":               true,
+		"--dry-run":              true,
 	},
 }
 
@@ -261,7 +270,10 @@ func validateOptions(options []string, validOpts map[string]bool) error {
 			}
 		} else if validOpts[option] {
 
-			if requiresValue(option) && i+1 < len(options) {
+			if requiresValue(option) {
+				if i+1 >= len(options) {
+					return fmt.Errorf("%w: %s requires a value", ErrInvalidOption, option)
+				}
 				i++
 				value := options[i]
 				if err := validateOptionValue(option, value); err != nil {
