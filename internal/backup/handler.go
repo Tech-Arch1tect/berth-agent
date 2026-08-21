@@ -98,6 +98,10 @@ type DeleteBackupRequest struct {
 	BackupPassword string `json:"backup_password"`
 }
 
+type RebuildRequest struct {
+	BackupPassword string `json:"backup_password"`
+}
+
 const backupPasswordHeader = "X-Backup-Password"
 
 func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, componentID, password string, err error) {
@@ -223,6 +227,29 @@ func (h *Handler) DeleteStackBackup(c echo.Context) error {
 	default:
 		return common.SendInternalError(c, err.Error())
 	}
+}
+
+func (h *Handler) RebuildStackIndex(c echo.Context) error {
+	stackName := c.Param("stackName")
+	if err := validation.ValidateStackName(stackName); err != nil {
+		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
+	}
+
+	var req RebuildRequest
+	if err := c.Bind(&req); err != nil {
+		return common.SendBadRequest(c, "Invalid request body")
+	}
+	if req.BackupPassword == "" {
+		return common.SendBadRequest(c, "A backup password is required to rebuild the backup history")
+	}
+
+	writer := &bufferedProgressWriter{}
+	result, err := h.service.RebuildIndex(c.Request().Context(), stackName, req.BackupPassword, writer)
+	if err != nil {
+		return common.SendInternalError(c, err.Error())
+	}
+	result.Output = writer.lines
+	return common.SendSuccess(c, result)
 }
 
 func (s *Service) ListRunSummaries(stackName string, limit, offset int) (int, []RunSummary, error) {

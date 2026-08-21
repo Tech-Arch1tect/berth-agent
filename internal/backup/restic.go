@@ -34,7 +34,7 @@ func componentSourceMountPath(c Component) string {
 	return helperSourceRoot + "/" + componentMountName(c)
 }
 
-func backupArgs(c Component, stackName, runID string) []string {
+func backupArgs(c Component, stackName, runID, label string) []string {
 	sourcePath := componentSourceMountPath(c)
 	args := []string{
 		"backup",
@@ -43,6 +43,9 @@ func backupArgs(c Component, stackName, runID string) []string {
 		"--host", stackName,
 		"--tag", "run:" + runID,
 		"--tag", "component:" + c.ID,
+	}
+	if label != "" {
+		args = append(args, "--tag", "label:"+label)
 	}
 	for _, exclude := range c.Excludes {
 		args = append(args, "--exclude", sourcePath+"/"+escapeResticPattern(exclude))

@@ -155,6 +155,7 @@ func RegisterRoutes(
 	api.DELETE("/stacks/:stackName/backups/:backupId", backupHandler.DeleteStackBackup)
 	api.GET("/stacks/:stackName/backups/:backupId/files", backupHandler.ListBackupFiles)
 	api.GET("/stacks/:stackName/backups/:backupId/download", backupHandler.DownloadBackupFiles)
+	api.POST("/stacks/:stackName/backups/rebuild", backupHandler.RebuildStackIndex)
 
 	api.POST("/stacks/:stackName/operations", operationsHandler.StartOperation)
 	api.GET("/operations/:operationId/stream", operationsHandler.StreamOperation)

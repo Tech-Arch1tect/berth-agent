@@ -306,7 +306,7 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 	mounts := []mount.Mount{repoMount(s.repoHostPath(run.StackName), false), sourceMount}
 
 	parser := newResticOutputParser(component.ID, writer)
-	args := backupArgs(*component, run.StackName, run.ID)
+	args := backupArgs(*component, run.StackName, run.ID, run.Label)
 	writer.WriteStdout(commandEcho("restic", args))
 
 	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, args, mounts,
