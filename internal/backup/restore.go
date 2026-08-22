@@ -22,6 +22,7 @@ type RestoreOptions struct {
 	KeepExtraFiles bool
 	Sparse         bool
 	Password       string
+	Repository     *S3Repository
 }
 
 func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string, opts RestoreOptions, writer ProgressWriter) error {
@@ -98,7 +99,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 		writer.WriteStdout("Files created after the backup will be removed (exact snapshot state)")
 	}
 
-	if err := s.openRepositoryForRestore(ctx, image, opts.Password, run, writer); err != nil {
+	if err := s.openRepositoryForRestore(ctx, image, opts.Password, opts.Repository, run, writer); err != nil {
 		return err
 	}
 
@@ -437,11 +438,11 @@ func containerDisplayName(names []string, id string) string {
 	return id
 }
 
-func (s *Service) openRepositoryForRestore(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
+func (s *Service) openRepositoryForRestore(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, writer ProgressWriter) error {
 	repoPath := s.repoHostPath(run.StackName)
 
 	writer.WriteStdout(commandEcho("restic", []string{"cat", "config"}))
-	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
+	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to probe the backup repository: %w", err)
 	}
@@ -456,7 +457,7 @@ func (s *Service) openRepositoryForRestore(ctx context.Context, image, password 
 	}
 
 	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
-	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
+	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
 	}
@@ -535,7 +536,7 @@ func (s *Service) restoreComponent(ctx context.Context, image string, opts Resto
 	writer.WriteProgress("Restoring " + component.ID + "...")
 
 	if component.Kind == KindBindMount && component.IsFile {
-		return s.restoreFileComponent(ctx, image, opts.Password, run, component, writer)
+		return s.restoreFileComponent(ctx, image, opts.Password, opts.Repository, run, component, writer)
 	}
 
 	targetMount, err := restoreTargetMount(component)
@@ -547,7 +548,7 @@ func (s *Service) restoreComponent(ctx context.Context, image string, opts Resto
 	parser := newResticOutputParser(component.ID, writer)
 	args := restoreArgs(component, opts.KeepExtraFiles, opts.Sparse)
 	writer.WriteStdout(commandEcho("restic", args))
-	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, opts.Password, args, mounts,
+	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, opts.Password, opts.Repository, args, mounts,
 		parser.handleLine,
 		writer.WriteStderr,
 	)
@@ -562,7 +563,7 @@ func (s *Service) restoreComponent(ctx context.Context, image string, opts Resto
 		return fmt.Errorf("%s", message)
 	}
 
-	if err := s.applyRootMetadata(ctx, image, opts.Password, run, component, targetMount, componentSourceMountPath(component), writer); err != nil {
+	if err := s.applyRootMetadata(ctx, image, opts.Password, opts.Repository, run, component, targetMount, componentSourceMountPath(component), writer); err != nil {
 		return err
 	}
 
@@ -570,9 +571,9 @@ func (s *Service) restoreComponent(ctx context.Context, image string, opts Resto
 	return nil
 }
 
-func (s *Service) applyRootMetadata(ctx context.Context, image, password string, run *Run, component Component, target mount.Mount, targetPath string, writer ProgressWriter) error {
+func (s *Service) applyRootMetadata(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, component Component, target mount.Mount, targetPath string, writer ProgressWriter) error {
 	root := componentSourceMountPath(component)
-	ls, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password,
+	ls, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo,
 		[]string{"ls", "--no-lock", component.SnapshotID, root, "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {
@@ -587,7 +588,7 @@ func (s *Service) applyRootMetadata(ctx context.Context, image, password string,
 			continue
 		}
 		writer.WriteStdout(commandEcho("chown", []string{fmt.Sprintf("%d:%d", node.UID, node.GID), targetPath}) + " && " + "chmod " + fmt.Sprintf("%o", node.permissionBits()) + " " + targetPath)
-		spec := docker.ContainerRunSpec{
+		s3Repo := docker.ContainerRunSpec{
 			Image: image,
 			Entrypoint: []string{"/bin/sh", "-c", `chown "$1:$2" "$4" && chmod "$3" "$4"`, "sh",
 				fmt.Sprintf("%d", node.UID),
@@ -600,7 +601,7 @@ func (s *Service) applyRootMetadata(ctx context.Context, image, password string,
 			Labels: s.helperLabels(run.StackName, run.ID),
 		}
 		var output bytes.Buffer
-		exitCode, err := s.dockerClient.RunContainer(ctx, spec, &output, &output)
+		exitCode, err := s.dockerClient.RunContainer(ctx, s3Repo, &output, &output)
 		if err != nil {
 			return fmt.Errorf("failed to apply the recorded ownership of %s: %w", component.ID, err)
 		}
@@ -613,7 +614,7 @@ func (s *Service) applyRootMetadata(ctx context.Context, image, password string,
 	return fmt.Errorf("the snapshot for %s does not record its root entry; its ownership cannot be restored", component.ID)
 }
 
-func (s *Service) restoreFileComponent(ctx context.Context, image, password string, run *Run, component Component, writer ProgressWriter) error {
+func (s *Service) restoreFileComponent(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, component Component, writer ProgressWriter) error {
 	parentDir := filepath.Dir(component.SourcePath)
 	fileName := filepath.Base(component.SourcePath)
 	snapshotFilePath := componentSourceMountPath(component)
@@ -621,11 +622,11 @@ func (s *Service) restoreFileComponent(ctx context.Context, image, password stri
 	writer.WriteStdout(commandEcho("restic", []string{"dump", component.SnapshotID, snapshotFilePath}))
 	script := `set -e
 restic dump "$1" "$2" > "$3"`
-	spec := docker.ContainerRunSpec{
+	container := docker.ContainerRunSpec{
 		Image:      image,
 		Entrypoint: []string{"/bin/sh", "-c", script, "sh", component.SnapshotID, snapshotFilePath, helperRestoreParent + "/" + fileName},
-		Env:        resticEnv(password),
-		Mounts: []mount.Mount{
+		Env:        resticEnv(password, s3Repo),
+		Mounts: mountsForRepository([]mount.Mount{
 			repoMount(s.repoHostPath(run.StackName), false),
 			{
 				Type:        mount.TypeBind,
@@ -633,12 +634,12 @@ restic dump "$1" "$2" > "$3"`
 				Target:      helperRestoreParent,
 				BindOptions: &mount.BindOptions{CreateMountpoint: true},
 			},
-		},
+		}, s3Repo),
 		Labels: s.helperLabels(run.StackName, run.ID),
 	}
 
 	var stderr bytes.Buffer
-	exitCode, err := s.dockerClient.RunContainer(ctx, spec, io.Discard, &stderr)
+	exitCode, err := s.dockerClient.RunContainer(ctx, container, io.Discard, &stderr)
 	if err != nil {
 		return fmt.Errorf("restore of %s failed: %w", component.ID, err)
 	}
@@ -651,7 +652,7 @@ restic dump "$1" "$2" > "$3"`
 		Source: parentDir,
 		Target: helperRestoreParent,
 	}
-	if err := s.applyRootMetadata(ctx, image, password, run, component, parentMount, helperRestoreParent+"/"+fileName, writer); err != nil {
+	if err := s.applyRootMetadata(ctx, image, password, s3Repo, run, component, parentMount, helperRestoreParent+"/"+fileName, writer); err != nil {
 		return err
 	}
 

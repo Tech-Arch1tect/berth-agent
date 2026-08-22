@@ -54,7 +54,7 @@ type RebuildResult struct {
 	Output           []string `json:"output"`
 }
 
-func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, writer ProgressWriter) (RebuildResult, error) {
+func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, s3Repo *S3Repository, writer ProgressWriter) (RebuildResult, error) {
 	result := RebuildResult{Output: []string{}}
 
 	stackPath, err := validation.SanitizeStackPath(s.cfg.StackLocation, stackName)
@@ -68,7 +68,7 @@ func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, 
 	}
 
 	writer.WriteStdout(commandEcho("restic", []string{"snapshots", "--json"}))
-	snapshots, err := s.runResticBuffered(ctx, image, stackName, rebuildRunID, password,
+	snapshots, err := s.runResticBuffered(ctx, image, stackName, rebuildRunID, password, s3Repo,
 		[]string{"snapshots", "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(stackName), false)})
 	if err != nil {
@@ -98,15 +98,15 @@ func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, 
 	result.RunsAdded = added
 
 	if newest := newestRun(rebuilt); newest != nil {
-		s.refreshRebuiltRepoSize(ctx, image, newest, password, writer)
+		s.refreshRebuiltRepoSize(ctx, image, newest, password, s3Repo, writer)
 	}
 
 	writer.WriteStdout(fmt.Sprintf("The repository holds %d backup runs; %d were missing from the local metadata and have been rebuilt", result.RunsInRepository, result.RunsAdded))
 	return result, nil
 }
 
-func (s *Service) refreshRebuiltRepoSize(ctx context.Context, image string, run *Run, password string, writer ProgressWriter) {
-	stats, err := s.runResticBuffered(ctx, image, run.StackName, rebuildRunID, password,
+func (s *Service) refreshRebuiltRepoSize(ctx context.Context, image string, run *Run, password string, s3Repo *S3Repository, writer ProgressWriter) {
+	stats, err := s.runResticBuffered(ctx, image, run.StackName, rebuildRunID, password, s3Repo,
 		[]string{"stats", "--mode", "raw-data", "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil || stats.exitCode != 0 {

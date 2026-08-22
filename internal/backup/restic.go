@@ -17,11 +17,20 @@ const (
 	resticExitWrongPassword    = 12
 )
 
-func resticEnv(password string) []string {
-	return []string{
-		"RESTIC_REPOSITORY=" + helperRepoPath,
-		"RESTIC_PASSWORD=" + password,
+func resticEnv(password string, s3Repo *S3Repository) []string {
+	env := []string{"RESTIC_PASSWORD=" + password}
+	if s3Repo != nil {
+		env = append(env,
+			"RESTIC_REPOSITORY="+s3Repo.URL,
+			"AWS_ACCESS_KEY_ID="+s3Repo.AccessKeyID,
+			"AWS_SECRET_ACCESS_KEY="+s3Repo.SecretKey,
+		)
+		if s3Repo.Region != "" {
+			env = append(env, "AWS_DEFAULT_REGION="+s3Repo.Region)
+		}
+		return env
 	}
+	return append(env, "RESTIC_REPOSITORY="+helperRepoPath)
 }
 
 var resticPatternEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`)

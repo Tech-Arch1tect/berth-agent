@@ -1,6 +1,11 @@
 package backup
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
 
 type ComponentKind string
 
@@ -111,10 +116,43 @@ func SummariseRun(run *Run) RunSummary {
 	return summary
 }
 
+type S3Repository struct {
+	URL         string `json:"url"`
+	AccessKeyID string `json:"access_key_id"`
+	SecretKey   string `json:"secret_access_key"`
+	Region      string `json:"region,omitempty"`
+}
+
+var ErrInvalidS3Repository = errors.New("invalid s3 repository")
+
+func (r *S3Repository) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if !strings.HasPrefix(r.URL, "s3:https://") && !strings.HasPrefix(r.URL, "s3:http://") {
+		return fmt.Errorf("%w: the repository must be an s3 https or http URL", ErrInvalidS3Repository)
+	}
+	if strings.TrimSpace(r.AccessKeyID) == "" || r.SecretKey == "" {
+		return fmt.Errorf("%w: an access key id and secret access key are required", ErrInvalidS3Repository)
+	}
+	for _, field := range []struct{ name, value string }{
+		{"repository url", r.URL},
+		{"access key id", r.AccessKeyID},
+		{"secret access key", r.SecretKey},
+		{"region", r.Region},
+	} {
+		if strings.ContainsAny(field.value, "\n\r\x00") {
+			return fmt.Errorf("%w: the %s must not contain control characters", ErrInvalidS3Repository, field.name)
+		}
+	}
+	return nil
+}
+
 type CreateOptions struct {
-	StopMode string
-	Label    string
-	Password string
+	StopMode   string
+	Label      string
+	Password   string
+	Repository *S3Repository
 }
 
 type ProgressWriter interface {

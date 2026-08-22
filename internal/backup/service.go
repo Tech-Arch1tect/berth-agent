@@ -118,9 +118,9 @@ func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string,
 		return err
 	}
 
-	runErr := s.executeRun(ctx, image, stackPath, opts.Password, run, writer)
+	runErr := s.executeRun(ctx, image, stackPath, opts.Password, opts.Repository, run, writer)
 	if runErr == nil {
-		runErr = s.verifyRepository(ctx, image, opts.Password, run, writer)
+		runErr = s.verifyRepository(ctx, image, opts.Password, opts.Repository, run, writer)
 	}
 
 	now := time.Now()
@@ -148,7 +148,7 @@ func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string,
 	return runErr
 }
 
-func (s *Service) executeRun(ctx context.Context, image, stackPath, password string, run *Run, writer ProgressWriter) error {
+func (s *Service) executeRun(ctx context.Context, image, stackPath, password string, s3Repo *S3Repository, run *Run, writer ProgressWriter) error {
 	if run.StopMode != "" {
 		stopCommand, startCommand := "stop", "start"
 		if run.StopMode == "pause" {
@@ -172,12 +172,12 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath, password str
 		}()
 	}
 
-	if err := s.prepareRepository(ctx, image, password, run, writer); err != nil {
+	if err := s.prepareRepository(ctx, image, password, s3Repo, run, writer); err != nil {
 		return err
 	}
 
 	for i := range run.Components {
-		if err := s.backupComponent(ctx, image, password, run, &run.Components[i], writer); err != nil {
+		if err := s.backupComponent(ctx, image, password, s3Repo, run, &run.Components[i], writer); err != nil {
 			return err
 		}
 		if err := s.persistence.PersistRun(run); err != nil {
@@ -188,10 +188,10 @@ func (s *Service) executeRun(ctx context.Context, image, stackPath, password str
 	return nil
 }
 
-func (s *Service) verifyRepository(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
+func (s *Service) verifyRepository(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, writer ProgressWriter) error {
 	writer.WriteProgress("Verifying repository integrity...")
 	writer.WriteStdout(commandEcho("restic", []string{"check"}))
-	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {
 		return fmt.Errorf("failed to verify the backup repository: %w", err)
 	}
@@ -204,7 +204,7 @@ func (s *Service) verifyRepository(ctx context.Context, image, password string, 
 	writer.WriteStdout("Repository integrity verified")
 
 	writer.WriteStdout(commandEcho("restic", []string{"stats", "--mode", "raw-data", "--json"}))
-	stats, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"stats", "--mode", "raw-data", "--json"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
+	stats, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"stats", "--mode", "raw-data", "--json"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil || stats.exitCode != 0 {
 		s.logger.Warn("failed to measure repository size after backup",
 			zap.String("run_id", run.ID),
@@ -241,10 +241,10 @@ func lastLine(s string) string {
 	return lines[len(lines)-1]
 }
 
-func (s *Service) prepareRepository(ctx context.Context, image, password string, run *Run, writer ProgressWriter) error {
+func (s *Service) prepareRepository(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, writer ProgressWriter) error {
 	repoPath := s.repoHostPath(run.StackName)
 
-	version, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"version"}, nil)
+	version, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"version"}, nil)
 	if err != nil {
 		return fmt.Errorf("failed to run restic in a helper container: %w", err)
 	}
@@ -255,7 +255,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 	writer.WriteStdout("Backup engine: " + run.ResticVersion)
 
 	writer.WriteStdout(commandEcho("restic", []string{"cat", "config"}))
-	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
+	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to probe the backup repository: %w", err)
 	}
@@ -271,7 +271,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 		}
 		writer.WriteProgress("Initialising new backup repository for this stack...")
 		writer.WriteStdout(commandEcho("restic", []string{"init"}))
-		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
+		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
 		if err != nil {
 			return fmt.Errorf("failed to initialise the backup repository: %w", err)
 		}
@@ -285,7 +285,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 	}
 
 	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
-	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
+	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
 	}
@@ -295,7 +295,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 	return nil
 }
 
-func (s *Service) backupComponent(ctx context.Context, image, password string, run *Run, component *Component, writer ProgressWriter) error {
+func (s *Service) backupComponent(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, component *Component, writer ProgressWriter) error {
 	writer.WriteProgress("Backing up " + component.ID + "...")
 
 	sourceMount, err := componentSourceMount(*component)
@@ -309,7 +309,7 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 	args := backupArgs(*component, run.StackName, run.ID, run.Label)
 	writer.WriteStdout(commandEcho("restic", args))
 
-	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, args, mounts,
+	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, s3Repo, args, mounts,
 		parser.handleLine,
 		writer.WriteStderr,
 	)
@@ -324,7 +324,7 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 		}
 		component.Error = message
 		if parser.summary != nil && parser.summary.SnapshotID != "" {
-			s.forgetPartialSnapshot(ctx, image, password, run, parser.summary.SnapshotID, writer)
+			s.forgetPartialSnapshot(ctx, image, password, s3Repo, run, parser.summary.SnapshotID, writer)
 		}
 		return fmt.Errorf("%s", message)
 	}
@@ -347,10 +347,10 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, r
 	return nil
 }
 
-func (s *Service) forgetPartialSnapshot(ctx context.Context, image, password string, run *Run, snapshotID string, writer ProgressWriter) {
+func (s *Service) forgetPartialSnapshot(ctx context.Context, image, password string, s3Repo *S3Repository, run *Run, snapshotID string, writer ProgressWriter) {
 	writer.WriteProgress("Removing partial snapshot " + snapshotID + " left by the failed component...")
 	writer.WriteStdout(commandEcho("restic", []string{"forget", "--prune", snapshotID}))
-	result, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password,
+	result, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo,
 		[]string{"forget", "--prune", snapshotID},
 		[]mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {

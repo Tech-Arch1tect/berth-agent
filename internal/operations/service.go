@@ -481,7 +481,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 	var err error
 	switch operation.Request.Command {
 	case "create-backup":
-		opts := backup.CreateOptions{Password: operation.Request.BackupPassword}
+		opts := backup.CreateOptions{Password: operation.Request.BackupPassword, Repository: operation.Request.S3Repository}
 		for i := 0; i < len(operation.Request.Options); i++ {
 			switch operation.Request.Options[i] {
 			case "--stop":
@@ -497,7 +497,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 		}
 		err = s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
 	case "restore-backup":
-		opts := backup.RestoreOptions{Password: operation.Request.BackupPassword}
+		opts := backup.RestoreOptions{Password: operation.Request.BackupPassword, Repository: operation.Request.S3Repository}
 		options := operation.Request.Options
 		for i := 0; i < len(options); i++ {
 			switch options[i] {
@@ -681,6 +681,7 @@ func (s *Service) updateOperationStatus(operationID, status string, exitCode *in
 		if status == "completed" || status == "failed" {
 			op.Request.BackupPassword = ""
 			op.Request.RegistryCredentials = nil
+			op.Request.S3Repository = nil
 			time.AfterFunc(completedOperationRetention, func() {
 				s.removeOperation(operationID)
 			})

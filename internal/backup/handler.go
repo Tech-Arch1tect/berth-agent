@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -95,33 +96,65 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 }
 
 type DeleteBackupRequest struct {
-	BackupPassword string `json:"backup_password"`
+	BackupPassword string        `json:"backup_password"`
+	Repository     *S3Repository `json:"s3_repository,omitempty"`
 }
 
 type RebuildRequest struct {
-	BackupPassword string `json:"backup_password"`
+	BackupPassword string        `json:"backup_password"`
+	Repository     *S3Repository `json:"s3_repository,omitempty"`
 }
 
 const backupPasswordHeader = "X-Backup-Password"
+const backupS3RepositoryHeader = "X-Backup-S3-Repository"
 
-func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, componentID, password string, err error) {
+func s3RepositoryFromHeader(c echo.Context) (*S3Repository, error) {
+	raw := c.Request().Header.Get(backupS3RepositoryHeader)
+	if raw == "" {
+		return nil, nil
+	}
+	var s3Repo S3Repository
+	if err := json.Unmarshal([]byte(raw), &s3Repo); err != nil {
+		return nil, common.SendBadRequest(c, "The X-Backup-S3-Repository header could not be read")
+	}
+	if err := s3Repo.Validate(); err != nil {
+		return nil, common.SendBadRequest(c, err.Error())
+	}
+	return &s3Repo, nil
+}
+
+func s3RepositoryFromBody(c echo.Context, s3Repo *S3Repository) (*S3Repository, error) {
+	if s3Repo == nil {
+		return nil, nil
+	}
+	if err := s3Repo.Validate(); err != nil {
+		return nil, common.SendBadRequest(c, err.Error())
+	}
+	return s3Repo, nil
+}
+
+func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, componentID, password string, s3Repo *S3Repository, err error) {
 	stackName = c.Param("stackName")
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return "", "", "", "", common.SendBadRequest(c, "Invalid stack name: "+err.Error())
+		return "", "", "", "", nil, common.SendBadRequest(c, "Invalid stack name: "+err.Error())
 	}
 	backupID = c.Param("backupId")
 	if _, err := uuid.Parse(backupID); err != nil {
-		return "", "", "", "", common.SendBadRequest(c, "Invalid backup id")
+		return "", "", "", "", nil, common.SendBadRequest(c, "Invalid backup id")
 	}
 	componentID = c.QueryParam("component")
 	if componentID == "" {
-		return "", "", "", "", common.SendBadRequest(c, "A component id is required")
+		return "", "", "", "", nil, common.SendBadRequest(c, "A component id is required")
 	}
 	password = c.Request().Header.Get(backupPasswordHeader)
 	if password == "" {
-		return "", "", "", "", common.SendBadRequest(c, "A backup password is required")
+		return "", "", "", "", nil, common.SendBadRequest(c, "A backup password is required")
 	}
-	return stackName, backupID, componentID, password, nil
+	s3Repo, err = s3RepositoryFromHeader(c)
+	if err != nil {
+		return "", "", "", "", nil, err
+	}
+	return stackName, backupID, componentID, password, s3Repo, nil
 }
 
 func (h *Handler) sendBrowseError(c echo.Context, err error) error {
@@ -138,12 +171,12 @@ func (h *Handler) sendBrowseError(c echo.Context, err error) error {
 }
 
 func (h *Handler) ListBackupFiles(c echo.Context) error {
-	stackName, backupID, componentID, password, err := h.bindBrowseParams(c)
+	stackName, backupID, componentID, password, s3Repo, err := h.bindBrowseParams(c)
 	if err != nil {
 		return err
 	}
 
-	listing, svcErr := h.service.ListBackupFiles(c.Request().Context(), stackName, backupID, componentID, c.QueryParam("path"), password)
+	listing, svcErr := h.service.ListBackupFiles(c.Request().Context(), stackName, backupID, componentID, c.QueryParam("path"), password, s3Repo)
 	if svcErr != nil {
 		return h.sendBrowseError(c, svcErr)
 	}
@@ -151,7 +184,7 @@ func (h *Handler) ListBackupFiles(c echo.Context) error {
 }
 
 func (h *Handler) DownloadBackupFiles(c echo.Context) error {
-	stackName, backupID, componentID, password, err := h.bindBrowseParams(c)
+	stackName, backupID, componentID, password, s3Repo, err := h.bindBrowseParams(c)
 	if err != nil {
 		return err
 	}
@@ -163,7 +196,7 @@ func (h *Handler) DownloadBackupFiles(c echo.Context) error {
 	ctx := c.Request().Context()
 	response := c.Response()
 
-	entries, statErr := h.service.StatBackupFiles(ctx, stackName, backupID, componentID, paths, password)
+	entries, statErr := h.service.StatBackupFiles(ctx, stackName, backupID, componentID, paths, password, s3Repo)
 	if statErr != nil {
 		return h.sendBrowseError(c, statErr)
 	}
@@ -173,13 +206,13 @@ func (h *Handler) DownloadBackupFiles(c echo.Context) error {
 		response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", entries[0].Name))
 		response.Header().Set(echo.HeaderContentLength, strconv.FormatUint(entries[0].Size, 10))
 		response.WriteHeader(http.StatusOK)
-		return h.service.DumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, response.Writer)
+		return h.service.DumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, s3Repo, response.Writer)
 	}
 
 	response.Header().Set(echo.HeaderContentType, "application/gzip")
 	response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", archiveFileName(stackName, backupID, componentID)))
 	response.WriteHeader(http.StatusOK)
-	return h.service.ArchiveBackupFiles(ctx, stackName, backupID, componentID, paths, password, response.Writer)
+	return h.service.ArchiveBackupFiles(ctx, stackName, backupID, componentID, paths, password, s3Repo, response.Writer)
 }
 
 func archiveFileName(stackName, backupID, componentID string) string {
@@ -216,7 +249,12 @@ func (h *Handler) DeleteStackBackup(c echo.Context) error {
 		return common.SendBadRequest(c, "A backup password is required to delete a backup")
 	}
 
-	err := h.service.DeleteBackup(c.Request().Context(), stackName, backupID, req.BackupPassword)
+	s3Repo, err := s3RepositoryFromBody(c, req.Repository)
+	if err != nil {
+		return err
+	}
+
+	err = h.service.DeleteBackup(c.Request().Context(), stackName, backupID, req.BackupPassword, s3Repo)
 	switch {
 	case err == nil:
 		return common.SendMessage(c, "backup deleted")
@@ -243,8 +281,13 @@ func (h *Handler) RebuildStackIndex(c echo.Context) error {
 		return common.SendBadRequest(c, "A backup password is required to rebuild the backup history")
 	}
 
+	s3Repo, err := s3RepositoryFromBody(c, req.Repository)
+	if err != nil {
+		return err
+	}
+
 	writer := &bufferedProgressWriter{}
-	result, err := h.service.RebuildIndex(c.Request().Context(), stackName, req.BackupPassword, writer)
+	result, err := h.service.RebuildIndex(c.Request().Context(), stackName, req.BackupPassword, s3Repo, writer)
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
 	}

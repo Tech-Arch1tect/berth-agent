@@ -62,7 +62,7 @@ func componentSnapshotPath(component Component, relPath string) string {
 	return root + cleaned
 }
 
-func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, componentID, relPath, password string) (*FileListing, error) {
+func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, componentID, relPath, password string, s3Repo *S3Repository) (*FileListing, error) {
 	if err := s.validateConfiguration(); err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 	}
 
 	if component.IsFile {
-		entry, err := s.statFileComponent(ctx, stackName, run, component, password)
+		entry, err := s.statFileComponent(ctx, stackName, run, component, password, s3Repo)
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +95,7 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 	}
 
 	fullPath := componentSnapshotPath(*component, relPath)
-	result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password,
+	result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password, s3Repo,
 		[]string{"ls", "--no-lock", component.SnapshotID, fullPath, "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
 	if err != nil {
@@ -111,14 +111,14 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 	}, nil
 }
 
-func (s *Service) statFileComponent(ctx context.Context, stackName string, run *Run, component *Component, password string) (*FileEntry, error) {
+func (s *Service) statFileComponent(ctx context.Context, stackName string, run *Run, component *Component, password string, s3Repo *S3Repository) (*FileEntry, error) {
 	image, err := s.helperImage(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	root := componentSourceMountPath(*component)
-	result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password,
+	result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password, s3Repo,
 		[]string{"ls", "--no-lock", component.SnapshotID, root, "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
 	if err != nil {
@@ -141,7 +141,7 @@ func (s *Service) statFileComponent(ctx context.Context, stackName string, run *
 	return nil, ErrPathNotFound
 }
 
-func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string) ([]FileEntry, error) {
+func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, s3Repo *S3Repository) ([]FileEntry, error) {
 	if err := s.validateConfiguration(); err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, comp
 			return nil, err
 		}
 		for parent := range parents {
-			result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password,
+			result, err := s.runResticBuffered(ctx, image, stackName, run.ID, password, s3Repo,
 				[]string{"ls", "--no-lock", component.SnapshotID, parent, "--json"},
 				[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
 			if err != nil {
@@ -198,7 +198,7 @@ func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, comp
 		fullPath := componentSnapshotPath(*component, relPath)
 		if fullPath == root {
 			if component.IsFile {
-				entry, err := s.statFileComponent(ctx, stackName, run, component, password)
+				entry, err := s.statFileComponent(ctx, stackName, run, component, password, s3Repo)
 				if err != nil {
 					return nil, err
 				}
@@ -217,7 +217,7 @@ func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, comp
 	return entries, nil
 }
 
-func (s *Service) DumpBackupFile(ctx context.Context, stackName, backupID, componentID, relPath, password string, out io.Writer) error {
+func (s *Service) DumpBackupFile(ctx context.Context, stackName, backupID, componentID, relPath, password string, s3Repo *S3Repository, out io.Writer) error {
 	if err := s.validateConfiguration(); err != nil {
 		return err
 	}
@@ -241,17 +241,17 @@ func (s *Service) DumpBackupFile(ctx context.Context, stackName, backupID, compo
 		return err
 	}
 
-	spec := docker.ContainerRunSpec{
+	container := docker.ContainerRunSpec{
 		Image:      image,
 		Entrypoint: []string{"restic"},
 		Cmd:        []string{"dump", "--no-lock", component.SnapshotID, componentSnapshotPath(*component, relPath)},
-		Env:        resticEnv(password),
-		Mounts:     []mount.Mount{repoMount(s.repoHostPath(stackName), true)},
+		Env:        resticEnv(password, s3Repo),
+		Mounts:     mountsForRepository([]mount.Mount{repoMount(s.repoHostPath(stackName), true)}, s3Repo),
 		Labels:     s.helperLabels(stackName, run.ID),
 	}
 
 	var stderr bytes.Buffer
-	exitCode, err := s.dockerClient.RunContainer(ctx, spec, out, &stderr)
+	exitCode, err := s.dockerClient.RunContainer(ctx, container, out, &stderr)
 	if err != nil {
 		return fmt.Errorf("failed to stream the file from the backup: %w", err)
 	}
@@ -277,7 +277,7 @@ restic -q restore --no-lock --sparse "$snap" --target ` + restoreScratchDir + ` 
 cd "` + restoreScratchDir + `$sub"
 tar czf - .`
 
-func (s *Service) ArchiveBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, out io.Writer) error {
+func (s *Service) ArchiveBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, s3Repo *S3Repository, out io.Writer) error {
 	if err := s.validateConfiguration(); err != nil {
 		return err
 	}
@@ -307,16 +307,16 @@ func (s *Service) ArchiveBackupFiles(ctx context.Context, stackName, backupID, c
 		entrypoint = append(entrypoint, escapeResticPattern(componentSnapshotPath(*component, relPath)))
 	}
 
-	spec := docker.ContainerRunSpec{
+	container := docker.ContainerRunSpec{
 		Image:      image,
 		Entrypoint: entrypoint,
-		Env:        resticEnv(password),
-		Mounts:     []mount.Mount{repoMount(s.repoHostPath(stackName), true)},
+		Env:        resticEnv(password, s3Repo),
+		Mounts:     mountsForRepository([]mount.Mount{repoMount(s.repoHostPath(stackName), true)}, s3Repo),
 		Labels:     s.helperLabels(stackName, run.ID),
 	}
 
 	var stderr bytes.Buffer
-	exitCode, err := s.dockerClient.RunContainer(ctx, spec, out, &stderr)
+	exitCode, err := s.dockerClient.RunContainer(ctx, container, out, &stderr)
 	if err != nil {
 		return fmt.Errorf("failed to stream the archive from the backup: %w", err)
 	}

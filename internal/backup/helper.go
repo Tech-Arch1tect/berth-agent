@@ -70,17 +70,17 @@ func (s *Service) helperLabels(stackName, runID string) map[string]string {
 	}
 }
 
-func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runID, password string, args []string, mounts []mount.Mount, stdoutLine, stderrLine func(string)) (int, error) {
+func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runID, password string, spec *S3Repository, args []string, mounts []mount.Mount, stdoutLine, stderrLine func(string)) (int, error) {
 	if password == "" {
 		return 0, fmt.Errorf("no backup password was provided for this operation; backups must be enabled and given an encryption password in this server's settings in berth")
 	}
 
-	spec := docker.ContainerRunSpec{
+	container := docker.ContainerRunSpec{
 		Image:      image,
 		Entrypoint: []string{"restic"},
 		Cmd:        args,
-		Env:        resticEnv(password),
-		Mounts:     mounts,
+		Env:        resticEnv(password, spec),
+		Mounts:     mountsForRepository(mounts, spec),
 		Labels:     s.helperLabels(stackName, runID),
 	}
 
@@ -97,7 +97,7 @@ func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runI
 		done <- struct{}{}
 	}()
 
-	exitCode, err := s.dockerClient.RunContainer(ctx, spec, stdoutWriter, stderrWriter)
+	exitCode, err := s.dockerClient.RunContainer(ctx, container, stdoutWriter, stderrWriter)
 	stdoutWriter.Close()
 	stderrWriter.Close()
 	<-done
@@ -111,14 +111,28 @@ type bufferedResticResult struct {
 	output   string
 }
 
-func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID, password string, args []string, mounts []mount.Mount) (bufferedResticResult, error) {
+func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID, password string, spec *S3Repository, args []string, mounts []mount.Mount) (bufferedResticResult, error) {
 	var buffer bytes.Buffer
 	appendLine := func(line string) {
 		buffer.WriteString(line)
 		buffer.WriteByte('\n')
 	}
-	exitCode, err := s.runResticStreaming(ctx, image, stackName, runID, password, args, mounts, appendLine, appendLine)
+	exitCode, err := s.runResticStreaming(ctx, image, stackName, runID, password, spec, args, mounts, appendLine, appendLine)
 	return bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(buffer.String())}, err
+}
+
+func mountsForRepository(mounts []mount.Mount, spec *S3Repository) []mount.Mount {
+	if spec == nil {
+		return mounts
+	}
+	kept := make([]mount.Mount, 0, len(mounts))
+	for _, m := range mounts {
+		if m.Target == helperRepoPath {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept
 }
 
 type hostPathProbe struct {

@@ -1,6 +1,10 @@
 package operations
 
-import "time"
+import (
+	"time"
+
+	"github.com/tech-arch1tect/berth-agent/internal/backup"
+)
 
 type RegistryCredential struct {
 	Registry string `json:"registry"`
@@ -14,6 +18,7 @@ type OperationRequest struct {
 	Services            []string             `json:"services"`
 	RegistryCredentials []RegistryCredential `json:"registry_credentials,omitempty"`
 	BackupPassword      string               `json:"backup_password,omitempty"`
+	S3Repository        *backup.S3Repository `json:"s3_repository,omitempty"`
 }
 
 type OperationResponse struct {

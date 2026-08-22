@@ -126,6 +126,12 @@ func ValidateOperationRequest(req OperationRequest) error {
 	if !isBackupCommand && req.BackupPassword != "" {
 		return fmt.Errorf("%w: %s does not accept a backup password", ErrInvalidOption, req.Command)
 	}
+	if !isBackupCommand && req.S3Repository != nil {
+		return fmt.Errorf("%w: %s does not accept a backup repository", ErrInvalidOption, req.Command)
+	}
+	if err := req.S3Repository.Validate(); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidOption, err)
+	}
 
 	// Handle archive commands separately
 	if req.Command == "create-archive" {
