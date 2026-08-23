@@ -26,6 +26,15 @@ type RestoreOptions struct {
 }
 
 func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string, opts RestoreOptions, writer ProgressWriter) error {
+	reservation, err := s.ReserveOperation()
+	if err != nil {
+		return err
+	}
+	defer reservation.Release()
+	return reservation.RestoreBackup(ctx, stackName, stackPath, opts, writer)
+}
+
+func (s *Service) restoreBackup(ctx context.Context, stackName, stackPath string, opts RestoreOptions, writer ProgressWriter) error {
 	ctx = context.WithoutCancel(ctx)
 
 	if err := s.validateConfiguration(); err != nil {
@@ -38,7 +47,7 @@ func (s *Service) RestoreBackup(ctx context.Context, stackName, stackPath string
 	}
 	defer lock.RUnlock()
 
-	run, err := s.GetRun(stackName, opts.BackupID)
+	run, err := s.getRun(stackName, opts.BackupID)
 	if err != nil {
 		return err
 	}

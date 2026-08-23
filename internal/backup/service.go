@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/mount"
@@ -30,6 +31,7 @@ type Service struct {
 	stacks       stackLister
 	persistence  *RunPersistence
 	repoLocks    *repoLockTable
+	historyGate  sync.RWMutex
 }
 
 func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client, commandExec *docker.CommandExecutor, stacks stackLister) (*Service, error) {
@@ -66,6 +68,15 @@ func (s *Service) validateConfiguration() error {
 }
 
 func (s *Service) CreateBackup(ctx context.Context, stackName, stackPath string, opts CreateOptions, writer ProgressWriter) error {
+	reservation, err := s.ReserveOperation()
+	if err != nil {
+		return err
+	}
+	defer reservation.Release()
+	return reservation.CreateBackup(ctx, stackName, stackPath, opts, writer)
+}
+
+func (s *Service) createBackup(ctx context.Context, stackName, stackPath string, opts CreateOptions, writer ProgressWriter) error {
 	ctx = context.WithoutCancel(ctx)
 
 	if err := s.validateConfiguration(); err != nil {

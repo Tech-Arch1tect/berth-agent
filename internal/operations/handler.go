@@ -1,8 +1,11 @@
 package operations
 
 import (
+	"errors"
+
 	"github.com/tech-arch1tect/berth-agent/internal/agentsign"
 	"github.com/tech-arch1tect/berth-agent/internal/audit"
+	"github.com/tech-arch1tect/berth-agent/internal/backup"
 	"github.com/tech-arch1tect/berth-agent/internal/common"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"net/http"
@@ -56,6 +59,9 @@ func (h *Handler) StartOperation(c echo.Context) error {
 			"services": req.Services,
 			"options":  req.Options,
 		})
+		if errors.Is(err, backup.ErrRepositoryBusy) {
+			return common.SendConflict(c, err.Error())
+		}
 		return common.SendInternalError(c, err.Error())
 	}
 

@@ -56,6 +56,9 @@ func (h *Handler) ListStackBackups(c echo.Context) error {
 
 	limit, offset := parseListPagination(c)
 	total, summaries, err := h.service.ListRunSummaries(stackName, limit, offset)
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
 	}
@@ -69,10 +72,24 @@ func (h *Handler) ListStackBackups(c echo.Context) error {
 
 func (h *Handler) GetBackupsOverview(c echo.Context) error {
 	overview, err := h.service.BuildOverview()
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
 	}
 	return common.SendSuccess(c, overview)
+}
+
+func (h *Handler) GetBackupHistory(c echo.Context) error {
+	state, err := h.service.BackupHistory()
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
+	if err != nil {
+		return common.SendInternalError(c, err.Error())
+	}
+	return common.SendSuccess(c, state)
 }
 
 func (h *Handler) GetStackBackup(c echo.Context) error {
@@ -86,6 +103,9 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 	}
 
 	run, err := h.service.GetRun(stackName, backupID)
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
 	}
@@ -193,10 +213,21 @@ func (h *Handler) DownloadBackupFiles(c echo.Context) error {
 		return common.SendBadRequest(c, "At least one path is required")
 	}
 
+	releaseHistory, reserveErr := h.service.reserveHistoryRead()
+	if reserveErr != nil {
+		return h.sendBrowseError(c, reserveErr)
+	}
+	defer releaseHistory()
+	releaseRepository, reserveErr := h.service.reserveRepositoryRead(stackName)
+	if reserveErr != nil {
+		return h.sendBrowseError(c, reserveErr)
+	}
+	defer releaseRepository()
+
 	ctx := c.Request().Context()
 	response := c.Response()
 
-	entries, statErr := h.service.StatBackupFiles(ctx, stackName, backupID, componentID, paths, password, s3Repo)
+	entries, statErr := h.service.statBackupFiles(ctx, stackName, backupID, componentID, paths, password, s3Repo)
 	if statErr != nil {
 		return h.sendBrowseError(c, statErr)
 	}
@@ -206,13 +237,13 @@ func (h *Handler) DownloadBackupFiles(c echo.Context) error {
 		response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", entries[0].Name))
 		response.Header().Set(echo.HeaderContentLength, strconv.FormatUint(entries[0].Size, 10))
 		response.WriteHeader(http.StatusOK)
-		return h.service.DumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, s3Repo, response.Writer)
+		return h.service.dumpBackupFile(ctx, stackName, backupID, componentID, paths[0], password, s3Repo, response.Writer)
 	}
 
 	response.Header().Set(echo.HeaderContentType, "application/gzip")
 	response.Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", archiveFileName(stackName, backupID, componentID)))
 	response.WriteHeader(http.StatusOK)
-	return h.service.ArchiveBackupFiles(ctx, stackName, backupID, componentID, paths, password, s3Repo, response.Writer)
+	return h.service.archiveBackupFiles(ctx, stackName, backupID, componentID, paths, password, s3Repo, response.Writer)
 }
 
 func archiveFileName(stackName, backupID, componentID string) string {
@@ -288,6 +319,9 @@ func (h *Handler) RebuildStackIndex(c echo.Context) error {
 
 	writer := &bufferedProgressWriter{}
 	result, err := h.service.RebuildIndex(c.Request().Context(), stackName, req.BackupPassword, s3Repo, writer)
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
 	if err != nil {
 		return common.SendInternalError(c, err.Error())
 	}
@@ -296,6 +330,12 @@ func (h *Handler) RebuildStackIndex(c echo.Context) error {
 }
 
 func (s *Service) ListRunSummaries(stackName string, limit, offset int) (int, []RunSummary, error) {
+	release, err := s.reserveHistoryRead()
+	if err != nil {
+		return 0, nil, err
+	}
+	defer release()
+
 	if err := validation.ValidateStackName(stackName); err != nil {
 		return 0, nil, err
 	}
@@ -313,6 +353,15 @@ func (s *Service) ListRunSummaries(stackName string, limit, offset int) (int, []
 }
 
 func (s *Service) GetRun(stackName, runID string) (*Run, error) {
+	release, err := s.reserveHistoryRead()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return s.getRun(stackName, runID)
+}
+
+func (s *Service) getRun(stackName, runID string) (*Run, error) {
 	if err := validation.ValidateStackName(stackName); err != nil {
 		return nil, err
 	}

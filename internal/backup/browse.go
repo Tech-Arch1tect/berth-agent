@@ -35,7 +35,7 @@ type FileListing struct {
 }
 
 func (s *Service) findSnapshotComponent(stackName, backupID, componentID string) (*Run, *Component, error) {
-	run, err := s.GetRun(stackName, backupID)
+	run, err := s.getRun(stackName, backupID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -63,6 +63,12 @@ func componentSnapshotPath(component Component, relPath string) string {
 }
 
 func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, componentID, relPath, password string, s3Repo *S3Repository) (*FileListing, error) {
+	release, err := s.reserveHistoryRead()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if err := s.validateConfiguration(); err != nil {
 		return nil, err
 	}
@@ -142,18 +148,26 @@ func (s *Service) statFileComponent(ctx context.Context, stackName string, run *
 }
 
 func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, s3Repo *S3Repository) ([]FileEntry, error) {
+	releaseHistory, err := s.reserveHistoryRead()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHistory()
+	releaseRepository, err := s.reserveRepositoryRead(stackName)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRepository()
+	return s.statBackupFiles(ctx, stackName, backupID, componentID, relPaths, password, s3Repo)
+}
+
+func (s *Service) statBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, s3Repo *S3Repository) ([]FileEntry, error) {
 	if err := s.validateConfiguration(); err != nil {
 		return nil, err
 	}
 	if password == "" {
 		return nil, errNoPassword
 	}
-
-	lock := s.repoLocks.get(stackName)
-	if !lock.TryRLock() {
-		return nil, ErrRepositoryBusy
-	}
-	defer lock.RUnlock()
 
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {
@@ -218,18 +232,26 @@ func (s *Service) StatBackupFiles(ctx context.Context, stackName, backupID, comp
 }
 
 func (s *Service) DumpBackupFile(ctx context.Context, stackName, backupID, componentID, relPath, password string, s3Repo *S3Repository, out io.Writer) error {
+	releaseHistory, err := s.reserveHistoryRead()
+	if err != nil {
+		return err
+	}
+	defer releaseHistory()
+	releaseRepository, err := s.reserveRepositoryRead(stackName)
+	if err != nil {
+		return err
+	}
+	defer releaseRepository()
+	return s.dumpBackupFile(ctx, stackName, backupID, componentID, relPath, password, s3Repo, out)
+}
+
+func (s *Service) dumpBackupFile(ctx context.Context, stackName, backupID, componentID, relPath, password string, s3Repo *S3Repository, out io.Writer) error {
 	if err := s.validateConfiguration(); err != nil {
 		return err
 	}
 	if password == "" {
 		return errNoPassword
 	}
-
-	lock := s.repoLocks.get(stackName)
-	if !lock.TryRLock() {
-		return ErrRepositoryBusy
-	}
-	defer lock.RUnlock()
 
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {
@@ -278,18 +300,26 @@ cd "` + restoreScratchDir + `$sub"
 tar czf - .`
 
 func (s *Service) ArchiveBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, s3Repo *S3Repository, out io.Writer) error {
+	releaseHistory, err := s.reserveHistoryRead()
+	if err != nil {
+		return err
+	}
+	defer releaseHistory()
+	releaseRepository, err := s.reserveRepositoryRead(stackName)
+	if err != nil {
+		return err
+	}
+	defer releaseRepository()
+	return s.archiveBackupFiles(ctx, stackName, backupID, componentID, relPaths, password, s3Repo, out)
+}
+
+func (s *Service) archiveBackupFiles(ctx context.Context, stackName, backupID, componentID string, relPaths []string, password string, s3Repo *S3Repository, out io.Writer) error {
 	if err := s.validateConfiguration(); err != nil {
 		return err
 	}
 	if password == "" {
 		return errNoPassword
 	}
-
-	lock := s.repoLocks.get(stackName)
-	if !lock.TryRLock() {
-		return ErrRepositoryBusy
-	}
-	defer lock.RUnlock()
 
 	run, component, err := s.findSnapshotComponent(stackName, backupID, componentID)
 	if err != nil {

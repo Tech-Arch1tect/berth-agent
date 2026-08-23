@@ -14,6 +14,12 @@ var ErrRunNotFound = errors.New("backup run not found")
 var ErrRepositoryBusy = errors.New("the backup repository is in use by another operation; try again once it finishes")
 
 func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID, password string, s3Repo *S3Repository) error {
+	release, err := s.reserveHistoryRead()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	ctx = context.WithoutCancel(ctx)
 
 	if err := s.validateConfiguration(); err != nil {
@@ -26,7 +32,7 @@ func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID, passwor
 	}
 	defer lock.Unlock()
 
-	run, err := s.GetRun(stackName, backupID)
+	run, err := s.getRun(stackName, backupID)
 	if err != nil {
 		return err
 	}

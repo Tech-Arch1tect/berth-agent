@@ -56,6 +56,17 @@ type RebuildResult struct {
 
 func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, s3Repo *S3Repository, writer ProgressWriter) (RebuildResult, error) {
 	result := RebuildResult{Output: []string{}}
+	release, err := s.reserveHistoryRead()
+	if err != nil {
+		return result, err
+	}
+	defer release()
+
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryLock() {
+		return result, ErrRepositoryBusy
+	}
+	defer lock.Unlock()
 
 	stackPath, err := validation.SanitizeStackPath(s.cfg.StackLocation, stackName)
 	if err != nil {

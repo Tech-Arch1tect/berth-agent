@@ -21,3 +21,11 @@ func (t *repoLockTable) get(stackName string) *sync.RWMutex {
 	}
 	return lock
 }
+
+func (s *Service) reserveRepositoryRead(stackName string) (func(), error) {
+	lock := s.repoLocks.get(stackName)
+	if !lock.TryRLock() {
+		return nil, ErrRepositoryBusy
+	}
+	return lock.RUnlock, nil
+}

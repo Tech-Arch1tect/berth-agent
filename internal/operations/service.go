@@ -26,6 +26,10 @@ import (
 	"go.uber.org/zap"
 )
 
+type backupOperationService interface {
+	ReserveOperation() (backup.OperationReservation, error)
+}
+
 type Service struct {
 	stackLocation    string
 	accessToken      string
@@ -33,12 +37,12 @@ type Service struct {
 	activeOperations map[string]string
 	mutex            sync.RWMutex
 	archiveService   *archive.Service
-	backupService    *backup.Service
+	backupService    backupOperationService
 	logger           *logging.Logger
 	auditService     *audit.Service
 }
 
-func NewService(stackLocation, accessToken string, logger *logging.Logger, auditService *audit.Service, backupService *backup.Service) *Service {
+func NewService(stackLocation, accessToken string, logger *logging.Logger, auditService *audit.Service, backupService backupOperationService) *Service {
 	logger.Debug("operations service initialized",
 		zap.String("stack_location", stackLocation),
 	)
@@ -96,19 +100,33 @@ func (s *Service) StartOperation(ctx context.Context, stackName string, req Oper
 		return "", fmt.Errorf("another operation (%s) is already running on stack '%s'", existingOpID, stackName)
 	}
 
+	var backupReservation backup.OperationReservation
+	if req.Command == "create-backup" || req.Command == "restore-backup" {
+		if s.backupService == nil {
+			s.mutex.Unlock()
+			return "", fmt.Errorf("backup service is unavailable")
+		}
+		backupReservation, err = s.backupService.ReserveOperation()
+		if err != nil {
+			s.mutex.Unlock()
+			return "", err
+		}
+	}
+
 	operationID := uuid.New().String()
 	isSelfOp := s.isSelfOperation(stackName, req)
 
 	broadcaster := NewBroadcaster()
 
 	operation := &Operation{
-		ID:          operationID,
-		StackName:   stackName,
-		Request:     req,
-		StartTime:   time.Now(),
-		Status:      "running",
-		IsSelfOp:    isSelfOp,
-		Broadcaster: broadcaster,
+		ID:                operationID,
+		StackName:         stackName,
+		Request:           req,
+		StartTime:         time.Now(),
+		Status:            "running",
+		IsSelfOp:          isSelfOp,
+		Broadcaster:       broadcaster,
+		backupReservation: backupReservation,
 	}
 
 	s.operations[operationID] = operation
@@ -167,7 +185,12 @@ func (s *Service) StreamOperation(ctx context.Context, operationID string, write
 
 func (s *Service) runOperation(operation *Operation) {
 	ctx := context.Background()
-	defer s.unlockStack(operation.StackName, operation.ID)
+	defer func() {
+		if operation.backupReservation != nil {
+			operation.backupReservation.Release()
+		}
+		s.unlockStack(operation.StackName, operation.ID)
+	}()
 
 	if operation.IsSelfOp {
 		s.handleSelfOperationWithBroadcast(ctx, operation)
@@ -478,6 +501,14 @@ func (s *Service) handleArchiveOperationWithBroadcast(ctx context.Context, opera
 func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operation *Operation, stackPath string) error {
 	progressWriter := NewBroadcasterProgressWriter(operation.Broadcaster)
 
+	if operation.backupReservation == nil {
+		err := fmt.Errorf("backup operation has no history reservation")
+		s.updateOperationStatus(operation.ID, "failed", nil)
+		operation.Broadcaster.BroadcastError(fmt.Sprintf("Backup operation failed: %v", err))
+		operation.Broadcaster.BroadcastComplete(false, 1)
+		return err
+	}
+
 	var err error
 	switch operation.Request.Command {
 	case "create-backup":
@@ -495,7 +526,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 				}
 			}
 		}
-		err = s.backupService.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
+		err = operation.backupReservation.CreateBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
 	case "restore-backup":
 		opts := backup.RestoreOptions{Password: operation.Request.BackupPassword, Repository: operation.Request.S3Repository}
 		options := operation.Request.Options
@@ -519,7 +550,7 @@ func (s *Service) handleBackupOperationWithBroadcast(ctx context.Context, operat
 				opts.Sparse = true
 			}
 		}
-		err = s.backupService.RestoreBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
+		err = operation.backupReservation.RestoreBackup(ctx, operation.StackName, stackPath, opts, progressWriter)
 	default:
 		err = fmt.Errorf("unknown backup command: %s", operation.Request.Command)
 	}

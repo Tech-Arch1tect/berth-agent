@@ -51,6 +51,12 @@ func summariseStack(name string, exists bool, runs []RunSummary) StackBackupSumm
 }
 
 func (s *Service) BuildOverview() (*Overview, error) {
+	release, err := s.reserveHistoryRead()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	stacks, err := s.stacks.ListStacks()
 	if err != nil {
 		return nil, err
