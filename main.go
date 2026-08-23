@@ -151,6 +151,7 @@ func RegisterRoutes(
 
 	api.GET("/backups", backupHandler.GetBackupsOverview)
 	api.DELETE("/backups", backupHandler.DeleteAllBackups)
+	api.POST("/backups/abandon", backupHandler.AbandonBackupStorage)
 	api.GET("/backups/history", backupHandler.GetBackupHistory)
 	api.GET("/stacks/:stackName/backups", backupHandler.ListStackBackups)
 	api.GET("/stacks/:stackName/backups/:backupId", backupHandler.GetStackBackup)

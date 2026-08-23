@@ -14,18 +14,48 @@ import (
 )
 
 type RunPersistence struct {
-	persistenceDir string
-	logger         *logging.Logger
-	indexMu        sync.Mutex
+	persistenceDir      string
+	persistenceIdentity os.FileInfo
+	logger              *logging.Logger
+	indexMu             sync.Mutex
 }
 
 func NewRunPersistence(persistenceDir string, logger *logging.Logger) (*RunPersistence, error) {
-	if err := os.MkdirAll(persistenceDir, 0755); err != nil {
+	if persistenceDir == "" {
+		return nil, fmt.Errorf("backup persistence directory is not configured")
+	}
+	absolute, err := filepath.Abs(persistenceDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve backup persistence directory: %w", err)
+	}
+	if err := os.MkdirAll(absolute, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create backup persistence directory: %w", err)
 	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve backup persistence directory: %w", err)
+	}
+	if filepath.Dir(resolved) == resolved {
+		return nil, fmt.Errorf("backup persistence directory must not be the filesystem root")
+	}
+	identity, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect backup persistence directory: %w", err)
+	}
+	if !identity.IsDir() {
+		return nil, fmt.Errorf("backup persistence path is not a directory")
+	}
+	filesystemRoot, err := os.Stat(string(filepath.Separator))
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect filesystem root: %w", err)
+	}
+	if os.SameFile(filesystemRoot, identity) {
+		return nil, fmt.Errorf("backup persistence directory must not be the filesystem root")
+	}
 	return &RunPersistence{
-		persistenceDir: persistenceDir,
-		logger:         logger,
+		persistenceDir:      resolved,
+		persistenceIdentity: identity,
+		logger:              logger,
 	}, nil
 }
 

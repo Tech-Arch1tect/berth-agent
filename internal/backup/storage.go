@@ -3,10 +3,12 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
-	"sort"
+	"path"
 	"strings"
 	"sync"
 
@@ -23,7 +25,6 @@ type HistoryState struct {
 
 type historyRecord struct {
 	stackName string
-	name      string
 	path      string
 	run       *Run
 	err       error
@@ -53,7 +54,16 @@ func (i historyInventory) State() HistoryState {
 }
 
 func (p *RunPersistence) historyInventory() (historyInventory, error) {
-	entries, err := os.ReadDir(p.persistenceDir)
+	root, err := p.openVerifiedHistoryRoot()
+	if err != nil {
+		return historyInventory{}, err
+	}
+	defer root.Close()
+	return readHistoryInventory(root.FS())
+}
+
+func readHistoryInventory(source fs.FS) (historyInventory, error) {
+	entries, err := fs.ReadDir(source, ".")
 	if err != nil {
 		return historyInventory{}, fmt.Errorf("failed to read backup history: %w", err)
 	}
@@ -61,7 +71,7 @@ func (p *RunPersistence) historyInventory() (historyInventory, error) {
 	inventory := historyInventory{records: []historyRecord{}}
 	for _, entry := range entries {
 		if entry.IsDir() {
-			records := p.stackHistoryRecords(entry.Name())
+			records := readStackHistoryRecords(source, entry.Name())
 			inventory.records = append(inventory.records, records...)
 			continue
 		}
@@ -69,17 +79,10 @@ func (p *RunPersistence) historyInventory() (historyInventory, error) {
 			continue
 		}
 		inventory.records = append(inventory.records, historyRecord{
-			name: entry.Name(),
-			path: filepath.Join(p.persistenceDir, entry.Name()),
+			path: entry.Name(),
 			err:  fmt.Errorf("unexpected entry in the backup history root"),
 		})
 	}
-	sort.Slice(inventory.records, func(i, j int) bool {
-		if inventory.records[i].stackName == inventory.records[j].stackName {
-			return inventory.records[i].name < inventory.records[j].name
-		}
-		return inventory.records[i].stackName < inventory.records[j].stackName
-	})
 	return inventory, nil
 }
 
@@ -100,14 +103,12 @@ func derivedHistoryIndex(entry os.DirEntry) bool {
 	return stackName != "" && validation.ValidateStackName(stackName) == nil
 }
 
-func (p *RunPersistence) stackHistoryRecords(stackName string) []historyRecord {
-	stackDir := filepath.Join(p.persistenceDir, stackName)
-	entries, err := os.ReadDir(stackDir)
+func readStackHistoryRecords(source fs.FS, stackName string) []historyRecord {
+	entries, err := fs.ReadDir(source, stackName)
 	if err != nil {
 		return []historyRecord{{
 			stackName: stackName,
-			name:      stackName,
-			path:      stackDir,
+			path:      stackName,
 			err:       fmt.Errorf("failed to read backup history for stack %s: %w", stackName, err),
 		}}
 	}
@@ -117,8 +118,7 @@ func (p *RunPersistence) stackHistoryRecords(stackName string) []historyRecord {
 	for _, entry := range entries {
 		record := historyRecord{
 			stackName: stackName,
-			name:      entry.Name(),
-			path:      filepath.Join(stackDir, entry.Name()),
+			path:      path.Join(stackName, entry.Name()),
 		}
 		switch {
 		case stackErr != nil:
@@ -128,24 +128,29 @@ func (p *RunPersistence) stackHistoryRecords(stackName string) []historyRecord {
 		case !strings.HasSuffix(entry.Name(), ".json"):
 			record.err = fmt.Errorf("unexpected file in the stack backup history")
 		default:
-			record.run, record.err = readHistoryRun(record.path, stackName, strings.TrimSuffix(entry.Name(), ".json"))
+			record.run, record.err = readHistoryRun(source, record.path, stackName, strings.TrimSuffix(entry.Name(), ".json"))
 		}
 		records = append(records, record)
 	}
 	return records
 }
 
-func readHistoryRun(filename, stackName, runID string) (*Run, error) {
+func readHistoryRun(source fs.FS, filename, stackName, runID string) (*Run, error) {
 	if _, err := uuid.Parse(runID); err != nil {
 		return nil, fmt.Errorf("invalid backup run filename: %w", err)
 	}
-	data, err := os.ReadFile(filename)
+	file, err := source.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read backup run: %w", err)
+		return nil, fmt.Errorf("failed to open backup run: %w", err)
 	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
 	var run Run
-	if err := json.Unmarshal(data, &run); err != nil {
+	if err := decoder.Decode(&run); err != nil {
 		return nil, fmt.Errorf("failed to decode backup run: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("backup run contains trailing data")
 	}
 	if run.ID != runID {
 		return nil, fmt.Errorf("backup run id %q does not match filename %q", run.ID, runID)

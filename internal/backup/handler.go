@@ -268,6 +268,23 @@ func archiveFileName(stackName, backupID, componentID string) string {
 	return sanitise(stackName) + "-" + sanitise(shortID) + "-" + sanitise(componentID) + ".tar.gz"
 }
 
+func (h *Handler) AbandonBackupStorage(c echo.Context) error {
+	var body [1]byte
+	read, err := c.Request().Body.Read(body[:])
+	if read != 0 || (err != nil && !errors.Is(err, io.EOF)) {
+		return common.SendBadRequest(c, "Request body must be empty")
+	}
+
+	result, err := h.service.AbandonBackupStorage(c.Request().Context())
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
+	if err != nil {
+		return common.SendInternalError(c, "backup metadata could not be abandoned")
+	}
+	return common.SendSuccess(c, result)
+}
+
 func (h *Handler) DeleteAllBackups(c echo.Context) error {
 	var req DeleteAllBackupsRequest
 	decoder := json.NewDecoder(c.Request().Body)
