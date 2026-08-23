@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -118,6 +119,11 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 type DeleteBackupRequest struct {
 	BackupPassword string        `json:"backup_password"`
 	Repository     *S3Repository `json:"s3_repository,omitempty"`
+}
+
+type DeleteAllBackupsRequest struct {
+	BackupPassword   string        `json:"backup_password"`
+	S3RepositoryBase *S3Repository `json:"s3_repository_base,omitempty"`
 }
 
 type RebuildRequest struct {
@@ -260,6 +266,33 @@ func archiveFileName(stackName, backupID, componentID string) string {
 		shortID = shortID[:8]
 	}
 	return sanitise(stackName) + "-" + sanitise(shortID) + "-" + sanitise(componentID) + ".tar.gz"
+}
+
+func (h *Handler) DeleteAllBackups(c echo.Context) error {
+	var req DeleteAllBackupsRequest
+	decoder := json.NewDecoder(c.Request().Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return common.SendBadRequest(c, "Invalid request body")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return common.SendBadRequest(c, "Invalid request body")
+	}
+	if req.BackupPassword == "" {
+		return common.SendBadRequest(c, "A backup password is required to delete all backups")
+	}
+	if err := validateS3RepositoryBase(req.S3RepositoryBase); err != nil {
+		return common.SendBadRequest(c, err.Error())
+	}
+
+	result, err := h.service.DeleteAllBackups(c.Request().Context(), req.BackupPassword, req.S3RepositoryBase)
+	if errors.Is(err, ErrRepositoryBusy) {
+		return common.SendConflict(c, err.Error())
+	}
+	if err != nil {
+		return common.SendInternalError(c, err.Error())
+	}
+	return common.SendSuccess(c, result)
 }
 
 func (h *Handler) DeleteStackBackup(c echo.Context) error {
