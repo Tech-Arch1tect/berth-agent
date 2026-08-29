@@ -102,13 +102,13 @@ func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, 
 	}
 	result.RunsInRepository = len(rebuilt)
 
-	added, err := mergeRebuiltRuns(s.persistence, rebuilt)
+	added, newest, err := mergeRebuiltRuns(s.persistence, rebuilt)
 	if err != nil {
 		return result, err
 	}
 	result.RunsAdded = added
 
-	if newest := newestRun(rebuilt); newest != nil {
+	if newest != nil {
 		s.refreshRebuiltRepoSize(ctx, image, newest, password, s3Repo, writer)
 	}
 
@@ -140,32 +140,33 @@ func (s *Service) refreshRebuiltRepoSize(ctx context.Context, image string, run 
 	}
 }
 
-func mergeRebuiltRuns(p *RunPersistence, rebuilt []*Run) (int, error) {
+func mergeRebuiltRuns(p *RunPersistence, rebuilt []*Run) (int, *Run, error) {
 	if len(rebuilt) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 
 	existing, err := p.LoadStackRuns(rebuilt[0].StackName)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 
-	known := make(map[string]bool, len(existing))
+	known := make(map[string]*Run, len(existing)+len(rebuilt))
 	for _, run := range existing {
-		known[run.ID] = true
+		known[run.ID] = run
 	}
 
 	added := 0
 	for _, run := range rebuilt {
-		if known[run.ID] {
+		if known[run.ID] != nil {
 			continue
 		}
 		if err := p.PersistRun(run); err != nil {
-			return added, err
+			return added, nil, err
 		}
+		known[run.ID] = run
 		added++
 	}
-	return added, nil
+	return added, known[newestRun(rebuilt).ID], nil
 }
 
 func newestRun(runs []*Run) *Run {
