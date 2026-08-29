@@ -190,8 +190,11 @@ func runsFromSnapshots(output, stackName, stackPath string) ([]*Run, error) {
 	byRunID := map[string]*Run{}
 	order := []string{}
 	for _, snapshot := range snapshots {
-		runID, label, componentID, ok := splitSnapshotTags(snapshot.Tags)
-		if !ok {
+		runID, label, componentID, claimed, err := splitSnapshotTags(snapshot.Tags)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot %q has invalid berth tags: %w", snapshot.ID, err)
+		}
+		if !claimed {
 			continue
 		}
 		run, exists := byRunID[runID]
@@ -243,18 +246,40 @@ func parseSnapshotTime(primary, fallback string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func splitSnapshotTags(tags []string) (runID, label, componentID string, ok bool) {
+func splitSnapshotTags(tags []string) (runID, label, componentID string, claimed bool, err error) {
+	var runIDs []string
+	hasComponent := false
 	for _, tag := range tags {
 		switch {
 		case strings.HasPrefix(tag, "run:"):
-			runID = strings.TrimPrefix(tag, "run:")
+			runIDs = append(runIDs, strings.TrimPrefix(tag, "run:"))
 		case strings.HasPrefix(tag, "label:"):
 			label = strings.TrimPrefix(tag, "label:")
 		case strings.HasPrefix(tag, "component:"):
+			hasComponent = true
 			componentID = strings.TrimPrefix(tag, "component:")
 		}
 	}
-	return runID, label, componentID, runID != "" && componentID != ""
+	claimed = len(runIDs) > 0 || hasComponent
+	if !claimed {
+		return "", label, "", false, nil
+	}
+	if len(runIDs) == 0 || !hasComponent || componentID == "" {
+		return "", "", "", true, fmt.Errorf("run and component markers are both required")
+	}
+	if len(runIDs) > 1 {
+		for _, candidate := range runIDs[1:] {
+			if candidate != runIDs[0] {
+				return "", "", "", true, fmt.Errorf("run markers are ambiguous")
+			}
+		}
+		return "", "", "", true, fmt.Errorf("run marker is duplicated")
+	}
+	runID = runIDs[0]
+	if err := validateRunID(runID); err != nil {
+		return "", "", "", true, err
+	}
+	return runID, label, componentID, true, nil
 }
 
 func componentFromSnapshot(snapshot snapshotJSON, componentID, stackPath string) Component {

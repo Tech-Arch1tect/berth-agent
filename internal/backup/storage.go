@@ -2,17 +2,13 @@ package backup
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
 	"strings"
 	"sync"
 
-	"github.com/google/uuid"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
 )
 
@@ -136,32 +132,12 @@ func readStackHistoryRecords(source fs.FS, stackName string) []historyRecord {
 }
 
 func readHistoryRun(source fs.FS, filename, stackName, runID string) (*Run, error) {
-	if _, err := uuid.Parse(runID); err != nil {
-		return nil, fmt.Errorf("invalid backup run filename: %w", err)
-	}
 	file, err := source.Open(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open backup run: %w", err)
 	}
 	defer file.Close()
-	decoder := json.NewDecoder(file)
-	var run Run
-	if err := decoder.Decode(&run); err != nil {
-		return nil, fmt.Errorf("failed to decode backup run: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("backup run contains trailing data")
-	}
-	if run.ID != runID {
-		return nil, fmt.Errorf("backup run id %q does not match filename %q", run.ID, runID)
-	}
-	if run.StackName != stackName {
-		return nil, fmt.Errorf("backup run stack %q does not match directory %q", run.StackName, stackName)
-	}
-	if !knownRunStatus(run.Status) {
-		return nil, fmt.Errorf("backup run has unknown status %q", run.Status)
-	}
-	return &run, nil
+	return decodeRun(file, stackName, runID)
 }
 
 func knownRunStatus(status RunStatus) bool {

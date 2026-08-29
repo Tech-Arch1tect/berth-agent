@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/tech-arch1tect/berth-agent/internal/common"
 	"github.com/tech-arch1tect/berth-agent/internal/validation"
@@ -99,8 +98,8 @@ func (h *Handler) GetStackBackup(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
 	}
 	backupID := c.Param("backupId")
-	if backupID == "" {
-		return common.SendBadRequest(c, "Backup id is required")
+	if err := validateRunID(backupID); err != nil {
+		return common.SendBadRequest(c, "Invalid backup id")
 	}
 
 	run, err := h.service.GetRun(stackName, backupID)
@@ -141,10 +140,10 @@ func s3RepositoryFromHeader(c echo.Context) (*S3Repository, error) {
 	}
 	var s3Repo S3Repository
 	if err := json.Unmarshal([]byte(raw), &s3Repo); err != nil {
-		return nil, common.SendBadRequest(c, "The X-Backup-S3-Repository header could not be read")
+		return nil, errors.New("The X-Backup-S3-Repository header could not be read")
 	}
 	if err := s3Repo.Validate(); err != nil {
-		return nil, common.SendBadRequest(c, err.Error())
+		return nil, err
 	}
 	return &s3Repo, nil
 }
@@ -162,19 +161,19 @@ func s3RepositoryFromBody(c echo.Context, s3Repo *S3Repository) (*S3Repository, 
 func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, componentID, password string, s3Repo *S3Repository, err error) {
 	stackName = c.Param("stackName")
 	if err := validation.ValidateStackName(stackName); err != nil {
-		return "", "", "", "", nil, common.SendBadRequest(c, "Invalid stack name: "+err.Error())
+		return "", "", "", "", nil, fmt.Errorf("Invalid stack name: %s", err)
 	}
 	backupID = c.Param("backupId")
-	if _, err := uuid.Parse(backupID); err != nil {
-		return "", "", "", "", nil, common.SendBadRequest(c, "Invalid backup id")
+	if err := validateRunID(backupID); err != nil {
+		return "", "", "", "", nil, errors.New("Invalid backup id")
 	}
 	componentID = c.QueryParam("component")
 	if componentID == "" {
-		return "", "", "", "", nil, common.SendBadRequest(c, "A component id is required")
+		return "", "", "", "", nil, errors.New("A component id is required")
 	}
 	password = c.Request().Header.Get(backupPasswordHeader)
 	if password == "" {
-		return "", "", "", "", nil, common.SendBadRequest(c, "A backup password is required")
+		return "", "", "", "", nil, errors.New("A backup password is required")
 	}
 	s3Repo, err = s3RepositoryFromHeader(c)
 	if err != nil {
@@ -199,7 +198,7 @@ func (h *Handler) sendBrowseError(c echo.Context, err error) error {
 func (h *Handler) ListBackupFiles(c echo.Context) error {
 	stackName, backupID, componentID, password, s3Repo, err := h.bindBrowseParams(c)
 	if err != nil {
-		return err
+		return common.SendBadRequest(c, err.Error())
 	}
 
 	listing, svcErr := h.service.ListBackupFiles(c.Request().Context(), stackName, backupID, componentID, c.QueryParam("path"), password, s3Repo)
@@ -212,7 +211,7 @@ func (h *Handler) ListBackupFiles(c echo.Context) error {
 func (h *Handler) DownloadBackupFiles(c echo.Context) error {
 	stackName, backupID, componentID, password, s3Repo, err := h.bindBrowseParams(c)
 	if err != nil {
-		return err
+		return common.SendBadRequest(c, err.Error())
 	}
 	paths := c.QueryParams()["path"]
 	if len(paths) == 0 {
@@ -318,7 +317,7 @@ func (h *Handler) DeleteStackBackup(c echo.Context) error {
 		return common.SendBadRequest(c, "Invalid stack name: "+err.Error())
 	}
 	backupID := c.Param("backupId")
-	if _, err := uuid.Parse(backupID); err != nil {
+	if err := validateRunID(backupID); err != nil {
 		return common.SendBadRequest(c, "Invalid backup id")
 	}
 
@@ -415,7 +414,7 @@ func (s *Service) getRun(stackName, runID string) (*Run, error) {
 	if err := validation.ValidateStackName(stackName); err != nil {
 		return nil, err
 	}
-	if _, err := uuid.Parse(runID); err != nil {
+	if err := validateRunID(runID); err != nil {
 		return nil, fmt.Errorf("invalid backup id %q", runID)
 	}
 	return s.persistence.LoadRun(stackName, runID)
