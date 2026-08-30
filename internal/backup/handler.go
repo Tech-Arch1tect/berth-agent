@@ -130,22 +130,9 @@ type RebuildRequest struct {
 	Repository     *S3Repository `json:"s3_repository,omitempty"`
 }
 
-const backupPasswordHeader = "X-Backup-Password"
-const backupS3RepositoryHeader = "X-Backup-S3-Repository"
-
-func s3RepositoryFromHeader(c echo.Context) (*S3Repository, error) {
-	raw := c.Request().Header.Get(backupS3RepositoryHeader)
-	if raw == "" {
-		return nil, nil
-	}
-	var s3Repo S3Repository
-	if err := json.Unmarshal([]byte(raw), &s3Repo); err != nil {
-		return nil, errors.New("The X-Backup-S3-Repository header could not be read")
-	}
-	if err := s3Repo.Validate(); err != nil {
-		return nil, err
-	}
-	return &s3Repo, nil
+type BrowseRequest struct {
+	BackupPassword string        `json:"backup_password"`
+	Repository     *S3Repository `json:"s3_repository,omitempty"`
 }
 
 func s3RepositoryFromBody(c echo.Context, s3Repo *S3Repository) (*S3Repository, error) {
@@ -156,6 +143,87 @@ func s3RepositoryFromBody(c echo.Context, s3Repo *S3Repository) (*S3Repository, 
 		return nil, common.SendBadRequest(c, err.Error())
 	}
 	return s3Repo, nil
+}
+
+func decodeBrowseRepository(decoder *json.Decoder) (*S3Repository, error) {
+	token, err := decoder.Token()
+	if err != nil || token == nil || token != json.Delim('{') {
+		return nil, errors.New("Invalid request body")
+	}
+
+	repository := &S3Repository{}
+	seen := map[string]bool{}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, errors.New("Invalid request body")
+		}
+		name, ok := key.(string)
+		if !ok || seen[name] {
+			return nil, errors.New("Invalid request body")
+		}
+		seen[name] = true
+		switch name {
+		case "url":
+			err = decoder.Decode(&repository.URL)
+		case "access_key_id":
+			err = decoder.Decode(&repository.AccessKeyID)
+		case "secret_access_key":
+			err = decoder.Decode(&repository.SecretKey)
+		case "region":
+			err = decoder.Decode(&repository.Region)
+		default:
+			return nil, errors.New("Invalid request body")
+		}
+		if err != nil {
+			return nil, errors.New("Invalid request body")
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, errors.New("Invalid request body")
+	}
+	return repository, nil
+}
+
+func decodeBrowseRequest(body io.Reader) (BrowseRequest, error) {
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return BrowseRequest{}, errors.New("Invalid request body")
+	}
+
+	var request BrowseRequest
+	seen := map[string]bool{}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return BrowseRequest{}, errors.New("Invalid request body")
+		}
+		name, ok := key.(string)
+		if !ok || seen[name] {
+			return BrowseRequest{}, errors.New("Invalid request body")
+		}
+		seen[name] = true
+		switch name {
+		case "backup_password":
+			err = decoder.Decode(&request.BackupPassword)
+		case "s3_repository":
+			request.Repository, err = decodeBrowseRepository(decoder)
+		default:
+			return BrowseRequest{}, errors.New("Invalid request body")
+		}
+		if err != nil {
+			return BrowseRequest{}, errors.New("Invalid request body")
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return BrowseRequest{}, errors.New("Invalid request body")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return BrowseRequest{}, errors.New("Invalid request body")
+	}
+	return request, nil
 }
 
 func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, componentID, password string, s3Repo *S3Repository, err error) {
@@ -171,15 +239,18 @@ func (h *Handler) bindBrowseParams(c echo.Context) (stackName, backupID, compone
 	if componentID == "" {
 		return "", "", "", "", nil, errors.New("A component id is required")
 	}
-	password = c.Request().Header.Get(backupPasswordHeader)
-	if password == "" {
-		return "", "", "", "", nil, errors.New("A backup password is required")
-	}
-	s3Repo, err = s3RepositoryFromHeader(c)
+
+	req, err := decodeBrowseRequest(c.Request().Body)
 	if err != nil {
 		return "", "", "", "", nil, err
 	}
-	return stackName, backupID, componentID, password, s3Repo, nil
+	if req.BackupPassword == "" {
+		return "", "", "", "", nil, errors.New("A backup password is required")
+	}
+	if err := req.Repository.Validate(); err != nil {
+		return "", "", "", "", nil, err
+	}
+	return stackName, backupID, componentID, req.BackupPassword, req.Repository, nil
 }
 
 func (h *Handler) sendBrowseError(c echo.Context, err error) error {
@@ -190,8 +261,10 @@ func (h *Handler) sendBrowseError(c echo.Context, err error) error {
 		return common.SendNotFound(c, err.Error())
 	case errors.Is(err, ErrRepositoryBusy):
 		return common.SendConflict(c, err.Error())
-	default:
+	case errors.Is(err, errBackupRepositoryMissing), errors.Is(err, errBackupPasswordRejected):
 		return common.SendInternalError(c, err.Error())
+	default:
+		return common.SendInternalError(c, "backup files could not be accessed")
 	}
 }
 

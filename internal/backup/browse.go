@@ -19,6 +19,8 @@ import (
 var ErrComponentNotFound = errors.New("the backup has no such component with a snapshot")
 var ErrPathNotFound = errors.New("the backup does not contain that path")
 var errNoPassword = errors.New("no backup password was provided for this operation; backups must be enabled and given an encryption password in this server's settings in berth")
+var errBackupRepositoryMissing = errors.New("no backup repository exists for this stack")
+var errBackupPasswordRejected = errors.New("the backup password configured for this server in berth does not open this stack's repository")
 
 const restoreScratchDir = "/berth-restore"
 
@@ -105,7 +107,7 @@ func (s *Service) ListBackupFiles(ctx context.Context, stackName, backupID, comp
 		[]string{"ls", "--no-lock", component.SnapshotID, fullPath, "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list files in the backup: %w", err)
+		return nil, errors.New("backup files could not be listed")
 	}
 	if result.exitCode != 0 {
 		return nil, resticReadError("listing files", result)
@@ -128,7 +130,7 @@ func (s *Service) statFileComponent(ctx context.Context, stackName string, run *
 		[]string{"ls", "--no-lock", component.SnapshotID, root, "--json"},
 		[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
 	if err != nil {
-		return nil, fmt.Errorf("failed to inspect the backup path: %w", err)
+		return nil, errors.New("backup paths could not be inspected")
 	}
 	if result.exitCode != 0 {
 		return nil, resticReadError("inspecting the path", result)
@@ -194,7 +196,7 @@ func (s *Service) statBackupFiles(ctx context.Context, stackName, backupID, comp
 				[]string{"ls", "--no-lock", component.SnapshotID, parent, "--json"},
 				[]mount.Mount{repoMount(s.repoHostPath(stackName), true)})
 			if err != nil {
-				return nil, fmt.Errorf("failed to inspect the backup path: %w", err)
+				return nil, errors.New("backup paths could not be inspected")
 			}
 			if result.exitCode != 0 {
 				return nil, resticReadError("inspecting the path", result)
@@ -275,7 +277,7 @@ func (s *Service) dumpBackupFile(ctx context.Context, stackName, backupID, compo
 	var stderr bytes.Buffer
 	exitCode, err := s.dockerClient.RunContainer(ctx, container, out, &stderr)
 	if err != nil {
-		return fmt.Errorf("failed to stream the file from the backup: %w", err)
+		return errors.New("backup file could not be downloaded")
 	}
 	if exitCode != 0 {
 		return resticReadError("downloading the file", bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(stderr.String())})
@@ -348,7 +350,7 @@ func (s *Service) archiveBackupFiles(ctx context.Context, stackName, backupID, c
 	var stderr bytes.Buffer
 	exitCode, err := s.dockerClient.RunContainer(ctx, container, out, &stderr)
 	if err != nil {
-		return fmt.Errorf("failed to stream the archive from the backup: %w", err)
+		return errors.New("backup archive could not be downloaded")
 	}
 	if exitCode != 0 {
 		return resticReadError("building the archive", bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(stderr.String())})
@@ -359,14 +361,14 @@ func (s *Service) archiveBackupFiles(ctx context.Context, stackName, backupID, c
 func resticReadError(action string, result bufferedResticResult) error {
 	switch result.exitCode {
 	case resticExitRepoDoesNotExist:
-		return fmt.Errorf("no backup repository exists for this stack")
+		return errBackupRepositoryMissing
 	case resticExitWrongPassword:
-		return fmt.Errorf("the backup password configured for this server in berth does not open this stack's repository")
+		return errBackupPasswordRejected
 	default:
 		if isRepositoryLockedOutput(result.output) {
 			return ErrRepositoryBusy
 		}
-		return fmt.Errorf("%s failed with restic exit code %d: %s", action, result.exitCode, lastLine(result.output))
+		return fmt.Errorf("%s failed", action)
 	}
 }
 
