@@ -25,12 +25,27 @@ type RunPersistence struct {
 }
 
 func NewRunPersistence(persistenceDir string, logger *logging.Logger) (*RunPersistence, error) {
+	return newRunPersistence(persistenceDir, nil, logger)
+}
+
+func newRunPersistence(persistenceDir string, configuredProtectedPaths []string, logger *logging.Logger) (*RunPersistence, error) {
 	if persistenceDir == "" {
 		return nil, fmt.Errorf("backup persistence directory is not configured")
 	}
 	absolute, err := filepath.Abs(persistenceDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve backup persistence directory: %w", err)
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve the process working directory: %w", err)
+	}
+	protectedPaths, err := normaliseProtectedPaths(append(configuredProtectedPaths, workingDirectory))
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePersistencePathRelations(absolute, protectedPaths); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(absolute, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create backup persistence directory: %w", err)
@@ -41,6 +56,9 @@ func NewRunPersistence(persistenceDir string, logger *logging.Logger) (*RunPersi
 	}
 	if filepath.Dir(resolved) == resolved {
 		return nil, fmt.Errorf("backup persistence directory must not be the filesystem root")
+	}
+	if err := validatePersistencePathRelations(resolved, protectedPaths); err != nil {
+		return nil, err
 	}
 	identity, err := os.Stat(resolved)
 	if err != nil {
@@ -61,6 +79,76 @@ func NewRunPersistence(persistenceDir string, logger *logging.Logger) (*RunPersi
 		persistenceIdentity: identity,
 		logger:              logger,
 	}, nil
+}
+
+func normaliseProtectedPaths(paths []string) ([]string, error) {
+	normalised := make([]string, 0, len(paths))
+	for _, protectedPath := range paths {
+		if protectedPath == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(protectedPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve a protected path: %w", err)
+		}
+		normalised = append(normalised, filepath.Clean(absolute))
+	}
+	return normalised, nil
+}
+
+func validatePersistencePathRelations(persistencePath string, protectedPaths []string) error {
+	persistenceVariants := pathVariants(persistencePath)
+	for _, protectedPath := range protectedPaths {
+		for _, persistenceVariant := range persistenceVariants {
+			for _, protectedVariant := range pathVariants(protectedPath) {
+				if pathsOverlap(persistenceVariant, protectedVariant) {
+					return fmt.Errorf("backup persistence directory must be separate from protected host paths")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func pathVariants(filename string) []string {
+	cleaned := filepath.Clean(filename)
+	resolved := resolvePathWherePossible(cleaned)
+	if resolved == cleaned {
+		return []string{cleaned}
+	}
+	return []string{cleaned, resolved}
+}
+
+func resolvePathWherePossible(filename string) string {
+	current := filepath.Clean(filename)
+	missing := []string{}
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Clean(filename)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathsOverlap(first, second string) bool {
+	return pathContains(first, second) || pathContains(second, first)
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func validateRunID(runID string) error {

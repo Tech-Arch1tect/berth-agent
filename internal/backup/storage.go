@@ -66,7 +66,7 @@ func readHistoryInventory(source fs.FS) (historyInventory, error) {
 
 	inventory := historyInventory{records: []historyRecord{}}
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() && validation.ValidateStackName(entry.Name()) == nil {
 			records := readStackHistoryRecords(source, entry.Name())
 			inventory.records = append(inventory.records, records...)
 			continue

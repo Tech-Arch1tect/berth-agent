@@ -35,7 +35,7 @@ type Service struct {
 }
 
 func NewService(cfg *config.Config, logger *logging.Logger, dockerClient *docker.Client, commandExec *docker.CommandExecutor, stacks stackLister) (*Service, error) {
-	persistence, err := NewRunPersistence(cfg.BackupPersistenceDir, logger)
+	persistence, err := newRunPersistence(cfg.BackupPersistenceDir, []string{cfg.StackLocation, cfg.BackupLocation}, logger)
 	if err != nil {
 		return nil, err
 	}
