@@ -1,10 +1,8 @@
 package backup
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 )
@@ -154,12 +152,6 @@ func (p *resticOutputParser) handleLine(line string) {
 	default:
 		p.writer.WriteStdout(line)
 	}
-}
-
-func newLargeScanner(reader io.Reader) *bufio.Scanner {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	return scanner
 }
 
 func formatBytes(n uint64) string {

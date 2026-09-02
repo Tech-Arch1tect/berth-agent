@@ -1,13 +1,16 @@
 package backup
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/docker/docker/api/types/mount"
 	"github.com/tech-arch1tect/berth-agent/internal/docker"
@@ -87,23 +90,23 @@ func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runI
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
 
-	done := make(chan struct{}, 2)
+	done := make(chan error, 2)
 	go func() {
-		streamLines(stdoutReader, stdoutLine)
-		done <- struct{}{}
+		done <- streamLines(stdoutReader, stdoutLine)
 	}()
 	go func() {
-		streamLines(stderrReader, stderrLine)
-		done <- struct{}{}
+		done <- streamLines(stderrReader, stderrLine)
 	}()
 
-	exitCode, err := s.dockerClient.RunContainer(ctx, container, stdoutWriter, stderrWriter)
+	exitCode, runErr := s.dockerClient.RunContainer(ctx, container, stdoutWriter, stderrWriter)
 	stdoutWriter.Close()
 	stderrWriter.Close()
-	<-done
-	<-done
-
-	return exitCode, err
+	firstReadErr := <-done
+	secondReadErr := <-done
+	if runErr != nil {
+		return exitCode, runErr
+	}
+	return exitCode, errors.Join(firstReadErr, secondReadErr)
 }
 
 type bufferedResticResult struct {
@@ -113,12 +116,19 @@ type bufferedResticResult struct {
 
 func (s *Service) runResticBuffered(ctx context.Context, image, stackName, runID, password string, spec *S3Repository, args []string, mounts []mount.Mount) (bufferedResticResult, error) {
 	var buffer bytes.Buffer
-	appendLine := func(line string) {
+	appendLine := bufferedLineAppender(&buffer)
+	exitCode, err := s.runResticStreaming(ctx, image, stackName, runID, password, spec, args, mounts, appendLine, appendLine)
+	return bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(buffer.String())}, err
+}
+
+func bufferedLineAppender(buffer *bytes.Buffer) func(string) {
+	var bufferMu sync.Mutex
+	return func(line string) {
+		bufferMu.Lock()
+		defer bufferMu.Unlock()
 		buffer.WriteString(line)
 		buffer.WriteByte('\n')
 	}
-	exitCode, err := s.runResticStreaming(ctx, image, stackName, runID, password, spec, args, mounts, appendLine, appendLine)
-	return bufferedResticResult{exitCode: exitCode, output: strings.TrimSpace(buffer.String())}, err
 }
 
 func mountsForRepository(mounts []mount.Mount, spec *S3Repository) []mount.Mount {
@@ -195,9 +205,25 @@ func commandEcho(name string, args []string) string {
 	return "Running: " + name + " " + strings.Join(args, " ")
 }
 
-func streamLines(reader io.Reader, handle func(string)) {
-	scanner := newLargeScanner(reader)
-	for scanner.Scan() {
-		handle(scanner.Text())
+func streamLines(reader io.ReadCloser, handle func(string)) error {
+	defer reader.Close()
+	buffered := bufio.NewReader(reader)
+	for {
+		line, err := buffered.ReadString('\n')
+		if len(line) > 0 {
+			if line[len(line)-1] == '\n' {
+				line = line[:len(line)-1]
+			}
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			handle(line)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
 }

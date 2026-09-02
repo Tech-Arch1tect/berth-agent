@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -580,19 +581,20 @@ func (s *Service) runComposeLifecycle(ctx context.Context, stackPath, command st
 		return err
 	}
 
-	done := make(chan struct{}, 2)
+	done := make(chan error, 2)
 	go func() {
-		streamLines(stdout, writer.WriteStdout)
-		done <- struct{}{}
+		done <- streamLines(stdout, writer.WriteStdout)
 	}()
 	go func() {
-		streamLines(stderr, writer.WriteStderr)
-		done <- struct{}{}
+		done <- streamLines(stderr, writer.WriteStderr)
 	}()
-	<-done
-	<-done
-
-	return cmd.Wait()
+	firstReadErr := <-done
+	secondReadErr := <-done
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return waitErr
+	}
+	return errors.Join(firstReadErr, secondReadErr)
 }
 
 func firstLine(s string) string {
