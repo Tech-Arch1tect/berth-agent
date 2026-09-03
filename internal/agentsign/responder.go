@@ -219,6 +219,10 @@ func (w *signingWriter) finish(handlerErr error) {
 	if w.committed {
 		return
 	}
+	if handlerErr != nil {
+		w.failed()
+		return
+	}
 	w.commit(BodyDigest(w.buffer.Bytes()))
 }
 
