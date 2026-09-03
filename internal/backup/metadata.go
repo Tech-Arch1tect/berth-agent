@@ -159,6 +159,21 @@ func validateRunID(runID string) error {
 	return nil
 }
 
+func validateSnapshotID(snapshotID string) error {
+	if snapshotID == "" {
+		return nil
+	}
+	if len(snapshotID) != 64 {
+		return fmt.Errorf("invalid backup snapshot id %q", snapshotID)
+	}
+	for _, character := range snapshotID {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return fmt.Errorf("invalid backup snapshot id %q", snapshotID)
+		}
+	}
+	return nil
+}
+
 func (p *RunPersistence) stackDirectory(stackName string) (string, error) {
 	if err := validation.ValidateStackName(stackName); err != nil {
 		return "", fmt.Errorf("invalid backup stack name: %w", err)
@@ -251,6 +266,11 @@ func decodeRun(source io.Reader, stackName, runID string) (*Run, error) {
 	}
 	if !knownRunStatus(run.Status) {
 		return nil, fmt.Errorf("backup run has unknown status %q", run.Status)
+	}
+	for index := range run.Components {
+		if err := validateSnapshotID(run.Components[index].SnapshotID); err != nil {
+			return nil, err
+		}
 	}
 	return &run, nil
 }
