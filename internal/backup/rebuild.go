@@ -93,7 +93,7 @@ func (s *Service) RebuildIndex(ctx context.Context, stackName, password string, 
 		return result, fmt.Errorf("the backup password did not unlock this stack's repository")
 	}
 	if snapshots.exitCode != 0 {
-		return result, fmt.Errorf("reading the repository's snapshots failed with exit code %d: %s", snapshots.exitCode, lastLine(snapshots.output))
+		return result, resticOperationError("reading the repository's snapshots", snapshots)
 	}
 
 	rebuilt, err := runsFromSnapshots(snapshots.output, stackName, stackPath)

@@ -276,21 +276,7 @@ func s3RepositoryForStack(base *S3Repository, stackName string) (*S3Repository, 
 }
 
 func safeDeleteError(err error, password string, repositories ...*S3Repository) string {
-	message := err.Error()
-	if password != "" {
-		message = strings.ReplaceAll(message, password, "[redacted]")
-	}
-	for _, repository := range repositories {
-		if repository == nil {
-			continue
-		}
-		for _, secret := range []string{repository.AccessKeyID, repository.SecretKey} {
-			if secret != "" {
-				message = strings.ReplaceAll(message, secret, "[redacted]")
-			}
-		}
-	}
-	return message
+	return newSecretRedactor(password, repositories...).apply(err.Error())
 }
 
 func (s *Service) DeleteBackup(ctx context.Context, stackName, backupID, password string, s3Repo *S3Repository) error {
@@ -370,7 +356,7 @@ func deleteSnapshots(ctx context.Context, runner deleteResticRunner, image, stac
 		return result, fmt.Errorf("the backup password configured for this server in berth does not open this stack's repository; if the password was changed, restore the previous one to manage existing backups")
 	}
 	if unlock.exitCode != 0 {
-		return result, fmt.Errorf("clearing stale repository locks failed with exit code %d: %s", unlock.exitCode, unlock.output)
+		return result, resticOperationError("clearing stale repository locks", unlock)
 	}
 
 	forgetArgs := append([]string{"forget"}, snapshotIDs...)
@@ -387,7 +373,7 @@ func deleteSnapshots(ctx context.Context, runner deleteResticRunner, image, stac
 		if isRepositoryLockedOutput(forget.output) {
 			return result, ErrRepositoryBusy
 		}
-		failure := fmt.Errorf("deleting the backup's snapshots failed with exit code %d: %s", forget.exitCode, lastLine(forget.output))
+		failure := resticOperationError("deleting the backup's snapshots", forget)
 		absent, reconciliationErr := reconcileDeleteFailure(ctx, runner, image, stackName, runID, password, s3Repo, mounts, snapshotIDs, failure)
 		if absent {
 			result.snapshotsForgotten = len(snapshotIDs)
@@ -406,7 +392,7 @@ func deleteSnapshots(ctx context.Context, runner deleteResticRunner, image, stac
 		if isRepositoryLockedOutput(prune.output) {
 			return result, ErrRepositoryBusy
 		}
-		return result, fmt.Errorf("pruning deleted backup data failed with exit code %d: %s", prune.exitCode, lastLine(prune.output))
+		return result, resticOperationError("pruning deleted backup data", prune)
 	}
 	result.pruneStatus = BackupPruneSucceeded
 	return result, nil

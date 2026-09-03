@@ -211,7 +211,7 @@ func (s *Service) verifyRepository(ctx context.Context, image, password string, 
 	run.Verified = &verified
 	if !verified {
 		run.VerifyError = check.output
-		return fmt.Errorf("the repository failed its integrity check after this backup (exit code %d): %s", check.exitCode, lastLine(check.output))
+		return resticOperationError("repository integrity verification", check)
 	}
 	writer.WriteStdout("Repository integrity verified")
 
@@ -261,7 +261,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 		return fmt.Errorf("failed to run restic in a helper container: %w", err)
 	}
 	if version.exitCode != 0 {
-		return fmt.Errorf("restic version check failed with exit code %d: %s", version.exitCode, version.output)
+		return fmt.Errorf("restic version check failed with exit code %d: %s", version.exitCode, firstLine(version.output))
 	}
 	run.ResticVersion = firstLine(version.output)
 	writer.WriteStdout("Backup engine: " + run.ResticVersion)
@@ -288,12 +288,12 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 			return fmt.Errorf("failed to initialise the backup repository: %w", err)
 		}
 		if initResult.exitCode != 0 {
-			return fmt.Errorf("repository initialisation failed with exit code %d: %s", initResult.exitCode, initResult.output)
+			return fmt.Errorf("repository initialisation failed with exit code %d", initResult.exitCode)
 		}
 	case resticExitWrongPassword:
 		return fmt.Errorf("the backup password configured for this server in berth does not open the existing repository for stack %q; refusing to continue (a new repository is never created next to one that cannot be read)", run.StackName)
 	default:
-		return fmt.Errorf("backup repository probe failed with exit code %d: %s", probe.exitCode, probe.output)
+		return fmt.Errorf("backup repository probe failed with exit code %d", probe.exitCode)
 	}
 
 	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
@@ -302,7 +302,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
 	}
 	if unlock.exitCode != 0 {
-		return fmt.Errorf("clearing stale repository locks failed with exit code %d: %s", unlock.exitCode, unlock.output)
+		return fmt.Errorf("clearing stale repository locks failed with exit code %d", unlock.exitCode)
 	}
 	return nil
 }
@@ -370,7 +370,7 @@ func (s *Service) forgetPartialSnapshot(ctx context.Context, image, password str
 		return
 	}
 	if result.exitCode != 0 {
-		writer.WriteStderr(fmt.Sprintf("Removing partial snapshot %s failed with exit code %d: %s", snapshotID, result.exitCode, lastLine(result.output)))
+		writer.WriteStderr(fmt.Sprintf("Removing partial snapshot %s failed with exit code %d", snapshotID, result.exitCode))
 	}
 }
 

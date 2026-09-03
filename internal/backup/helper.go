@@ -90,12 +90,13 @@ func (s *Service) runResticStreaming(ctx context.Context, image, stackName, runI
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
 
+	redactor := newSecretRedactor(password, spec)
 	done := make(chan error, 2)
 	go func() {
-		done <- streamLines(stdoutReader, stdoutLine)
+		done <- streamLines(stdoutReader, redactedLineHandler(redactor, stdoutLine))
 	}()
 	go func() {
-		done <- streamLines(stderrReader, stderrLine)
+		done <- streamLines(stderrReader, redactedLineHandler(redactor, stderrLine))
 	}()
 
 	exitCode, runErr := s.dockerClient.RunContainer(ctx, container, stdoutWriter, stderrWriter)
@@ -128,6 +129,12 @@ func bufferedLineAppender(buffer *bytes.Buffer) func(string) {
 		defer bufferMu.Unlock()
 		buffer.WriteString(line)
 		buffer.WriteByte('\n')
+	}
+}
+
+func redactedLineHandler(redactor *secretRedactor, next func(string)) func(string) {
+	return func(line string) {
+		next(redactor.line(line))
 	}
 }
 

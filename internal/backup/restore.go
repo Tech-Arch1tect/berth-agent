@@ -462,7 +462,7 @@ func (s *Service) openRepositoryForRestore(ctx context.Context, image, password 
 	case resticExitWrongPassword:
 		return fmt.Errorf("the backup password configured for this server in berth does not open the repository for stack %q", run.StackName)
 	default:
-		return fmt.Errorf("backup repository probe failed with exit code %d: %s", probe.exitCode, probe.output)
+		return fmt.Errorf("backup repository probe failed with exit code %d", probe.exitCode)
 	}
 
 	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
@@ -471,7 +471,7 @@ func (s *Service) openRepositoryForRestore(ctx context.Context, image, password 
 		return fmt.Errorf("failed to clear stale repository locks: %w", err)
 	}
 	if unlock.exitCode != 0 {
-		return fmt.Errorf("clearing stale repository locks failed with exit code %d: %s", unlock.exitCode, unlock.output)
+		return fmt.Errorf("clearing stale repository locks failed with exit code %d", unlock.exitCode)
 	}
 	return nil
 }
@@ -589,7 +589,7 @@ func (s *Service) applyRootMetadata(ctx context.Context, image, password string,
 		return fmt.Errorf("failed to read the recorded ownership of %s: %w", component.ID, err)
 	}
 	if ls.exitCode != 0 {
-		return fmt.Errorf("reading the recorded ownership of %s failed with exit code %d: %s", component.ID, ls.exitCode, lastLine(ls.output))
+		return resticOperationError(fmt.Sprintf("reading the recorded ownership of %s", component.ID), ls)
 	}
 
 	for _, node := range parseResticLsNodes(ls.output) {
@@ -615,7 +615,7 @@ func (s *Service) applyRootMetadata(ctx context.Context, image, password string,
 			return fmt.Errorf("failed to apply the recorded ownership of %s: %w", component.ID, err)
 		}
 		if exitCode != 0 {
-			return fmt.Errorf("applying the recorded ownership of %s failed with exit code %d: %s", component.ID, exitCode, strings.TrimSpace(output.String()))
+			return fmt.Errorf("applying the recorded ownership of %s failed with exit code %d", component.ID, exitCode)
 		}
 		writer.WriteStdout(fmt.Sprintf("%s: ownership %d:%d and mode %o applied to the restored root", component.ID, node.UID, node.GID, node.permissionBits()))
 		return nil
@@ -653,7 +653,8 @@ restic dump "$1" "$2" > "$3"`
 		return fmt.Errorf("restore of %s failed: %w", component.ID, err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("restore of %s failed with exit code %d: %s", component.ID, exitCode, strings.TrimSpace(stderr.String()))
+		redactor := newSecretRedactor(password, s3Repo)
+		return fmt.Errorf("restore of %s failed with exit code %d: %s", component.ID, exitCode, redactor.apply(strings.TrimSpace(stderr.String())))
 	}
 
 	parentMount := mount.Mount{
