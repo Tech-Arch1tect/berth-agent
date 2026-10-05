@@ -275,11 +275,13 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 		case ws.MessageTypeTerminalClose:
 			if sessionCreated && session != nil {
 				var closeEvent ws.TerminalCloseEvent
-				if err := json.Unmarshal(rawMessage, &closeEvent); err == nil {
-					if closeEvent.SessionID != session.ID {
-						h.sendError(conn, "Session ID mismatch", "")
-						continue
-					}
+				if err := json.Unmarshal(rawMessage, &closeEvent); err != nil {
+					h.sendError(conn, "Invalid close event", err.Error())
+					continue
+				}
+				if closeEvent.SessionID != session.ID {
+					h.sendError(conn, "Session ID mismatch", "")
+					continue
 				}
 
 				h.logger.Info("Client requested terminal session close",
