@@ -197,7 +197,16 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				}
 			})
 
-			session.SetCloseCallback(func(exitCode int) {
+			session.SetCloseCallback(func(exitCode *int, failure error) {
+				if failure != nil {
+					h.logger.Error("Terminal result unavailable",
+						zap.String("session_id", sessionID),
+						zap.Error(failure),
+					)
+					h.sendError(conn, "Terminal result unavailable", "")
+					conn.CloseWithError()
+					return
+				}
 				event := ws.TerminalCloseEvent{
 					BaseMessage: ws.BaseMessage{
 						Type:      ws.MessageTypeTerminalClose,
@@ -206,7 +215,14 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 					SessionID: sessionID,
 					ExitCode:  exitCode,
 				}
-				_ = conn.WriteJSON(event)
+				if err := conn.WriteJSON(event); err != nil {
+					h.logger.Error("Failed to send terminal close",
+						zap.String("session_id", sessionID),
+						zap.Error(err),
+					)
+					conn.CloseWithError()
+					return
+				}
 				_ = conn.Close()
 			})
 

@@ -30,7 +30,7 @@ type Session struct {
 	started      bool
 	closed       bool
 	onOutput     func([]byte)
-	onClose      func(int)
+	onClose      func(*int, error)
 	cols         int
 	rows         int
 	logger       *logging.Logger
@@ -190,7 +190,7 @@ func (s *Session) Start() {
 	if s.closed {
 		callback := s.onClose
 		s.mutex.Unlock()
-		go callback(0)
+		go callback(nil, nil)
 		return
 	}
 	s.started = true
@@ -199,10 +199,7 @@ func (s *Session) Start() {
 }
 
 func (s *Session) readOutput() {
-	defer func() {
-		s.hijackedResp.Close()
-		s.closeSession(0)
-	}()
+	defer s.hijackedResp.Close()
 
 	firstOutput := make(chan struct{})
 	go warnWhenSilent(s.ctx, firstOutput, shellStartupWait, func() {
@@ -221,11 +218,15 @@ func (s *Session) readOutput() {
 	for {
 		n, err := s.hijackedResp.Reader.Read(buf)
 		if err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				exitCode, inspectErr := s.waitForExec()
+				s.closeSession(exitCode, inspectErr)
+			} else {
 				s.logger.Error("Terminal I/O read error",
 					zap.String("session_id", s.ID),
 					zap.Error(err),
 				)
+				s.closeSession(nil, fmt.Errorf("terminal output read: %w", err))
 			}
 			return
 		}
@@ -248,6 +249,32 @@ func (s *Session) readOutput() {
 			if callback != nil {
 				callback(buf[:n])
 			}
+		}
+	}
+}
+
+func (s *Session) waitForExec() (*int, error) {
+	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+	defer cancel()
+
+	var ticker *time.Ticker
+	for {
+		inspect, err := s.dockerClient.ContainerExecInspect(ctx, s.ExecID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to inspect terminal exec: %w", err)
+		}
+		if !inspect.Running {
+			exitCode := inspect.ExitCode
+			return &exitCode, nil
+		}
+		if ticker == nil {
+			ticker = time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("terminal exec result unavailable: %w", ctx.Err())
+		case <-ticker.C:
 		}
 	}
 }
@@ -277,7 +304,7 @@ func (m *Manager) CloseSession(sessionID string) error {
 		zap.String("service_name", session.ServiceName),
 	)
 
-	session.closeSession(0)
+	session.closeSession(nil, nil)
 	delete(m.sessions, sessionID)
 	return nil
 }
@@ -291,7 +318,7 @@ func (m *Manager) CloseAllSessions() {
 	)
 
 	for sessionID, session := range m.sessions {
-		session.closeSession(0)
+		session.closeSession(nil, nil)
 		delete(m.sessions, sessionID)
 	}
 }
@@ -367,13 +394,13 @@ func (s *Session) SetOutputCallback(callback func([]byte)) {
 	s.onOutput = callback
 }
 
-func (s *Session) SetCloseCallback(callback func(int)) {
+func (s *Session) SetCloseCallback(callback func(*int, error)) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.onClose = callback
 }
 
-func (s *Session) closeSession(exitCode int) {
+func (s *Session) closeSession(exitCode *int, failure error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -381,10 +408,7 @@ func (s *Session) closeSession(exitCode int) {
 		return
 	}
 
-	s.logger.Info("Closing terminal session",
-		zap.String("session_id", s.ID),
-		zap.Int("exit_code", exitCode),
-	)
+	s.logger.Info("Closing terminal session", zap.String("session_id", s.ID))
 
 	s.closed = true
 
@@ -397,7 +421,7 @@ func (s *Session) closeSession(exitCode int) {
 	}
 
 	if s.started && s.onClose != nil {
-		go s.onClose(exitCode)
+		go s.onClose(exitCode, failure)
 	}
 
 	if s.ExecID != "" && s.dockerClient != nil {

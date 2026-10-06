@@ -83,5 +83,5 @@ type TerminalResizeEvent struct {
 type TerminalCloseEvent struct {
 	BaseMessage
 	SessionID string `json:"session_id"`
-	ExitCode  int    `json:"exit_code"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
 }
