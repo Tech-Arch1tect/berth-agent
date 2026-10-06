@@ -178,8 +178,9 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			}
 
 			sessionCreated = true
+			sessionID := session.ID
 
-			h.logTerminalSession(c, req, session.ID, true, "")
+			h.logTerminalSession(c, req, sessionID, true, "")
 
 			session.SetOutputCallback(func(output []byte) {
 				event := ws.TerminalOutputEvent{
@@ -187,12 +188,12 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 						Type:      ws.MessageTypeTerminalOutput,
 						Timestamp: time.Now().Format(time.RFC3339),
 					},
-					SessionID: session.ID,
+					SessionID: sessionID,
 					Output:    output,
 				}
 				if err := conn.WriteJSON(event); err != nil {
 					h.logger.Error("Failed to send terminal output to WebSocket",
-						zap.String("session_id", session.ID),
+						zap.String("session_id", sessionID),
 						zap.Error(err),
 					)
 				}
@@ -204,7 +205,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 						Type:      ws.MessageTypeTerminalClose,
 						Timestamp: time.Now().Format(time.RFC3339),
 					},
-					SessionID: session.ID,
+					SessionID: sessionID,
 					ExitCode:  exitCode,
 				}
 				_ = conn.WriteJSON(event)
