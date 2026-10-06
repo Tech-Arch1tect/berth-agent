@@ -21,11 +21,13 @@ type Session struct {
 	ServiceName  string
 	ContainerID  string
 	ExecID       string
+	shell        []string
 	dockerClient *client.Client
 	hijackedResp *types.HijackedResponse
 	ctx          context.Context
 	cancel       context.CancelFunc
 	mutex        sync.RWMutex
+	started      bool
 	closed       bool
 	onOutput     func([]byte)
 	onClose      func(int)
@@ -172,60 +174,7 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 	session.hijackedResp = &hijackedResp
 	session.cols = cols
 	session.rows = rows
-
-	go func() {
-		defer func() {
-			hijackedResp.Close()
-			session.closeSession(0)
-		}()
-
-		firstOutput := make(chan struct{})
-		go warnWhenSilent(session.ctx, firstOutput, shellStartupWait, func() {
-			session.mutex.RLock()
-			callback := session.onOutput
-			session.mutex.RUnlock()
-
-			if callback != nil {
-				errorMsg := fmt.Sprintf("\r\n\x1b[31mTerminal Error: Shell may not be available in this container.\r\nTried shells: %v\x1b[0m\r\n", selectedShell)
-				callback([]byte(errorMsg))
-			}
-		})
-
-		announced := false
-		buf := make([]byte, 1024)
-		for {
-			n, err := hijackedResp.Reader.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-					session.logger.Error("Terminal I/O read error",
-						zap.String("session_id", sessionID),
-						zap.Error(err),
-					)
-				}
-				return
-			}
-
-			if n > 0 {
-				if !announced {
-					announced = true
-					close(firstOutput)
-				}
-
-				session.logger.Debug("Terminal output received",
-					zap.String("session_id", sessionID),
-					zap.Int("bytes", n),
-				)
-
-				session.mutex.RLock()
-				callback := session.onOutput
-				session.mutex.RUnlock()
-
-				if callback != nil {
-					callback(buf[:n])
-				}
-			}
-		}
-	}()
+	session.shell = selectedShell
 
 	m.sessions[sessionID] = session
 	m.logger.Info("Terminal session created successfully",
@@ -234,6 +183,73 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 		zap.String("service_name", serviceName),
 	)
 	return session, nil
+}
+
+func (s *Session) Start() {
+	s.mutex.Lock()
+	if s.closed {
+		callback := s.onClose
+		s.mutex.Unlock()
+		go callback(0)
+		return
+	}
+	s.started = true
+	s.mutex.Unlock()
+	go s.readOutput()
+}
+
+func (s *Session) readOutput() {
+	defer func() {
+		s.hijackedResp.Close()
+		s.closeSession(0)
+	}()
+
+	firstOutput := make(chan struct{})
+	go warnWhenSilent(s.ctx, firstOutput, shellStartupWait, func() {
+		s.mutex.RLock()
+		callback := s.onOutput
+		s.mutex.RUnlock()
+
+		if callback != nil {
+			errorMsg := fmt.Sprintf("\r\n\x1b[31mTerminal Error: Shell may not be available in this container.\r\nTried shells: %v\x1b[0m\r\n", s.shell)
+			callback([]byte(errorMsg))
+		}
+	})
+
+	announced := false
+	buf := make([]byte, 1024)
+	for {
+		n, err := s.hijackedResp.Reader.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				s.logger.Error("Terminal I/O read error",
+					zap.String("session_id", s.ID),
+					zap.Error(err),
+				)
+			}
+			return
+		}
+
+		if n > 0 {
+			if !announced {
+				announced = true
+				close(firstOutput)
+			}
+
+			s.logger.Debug("Terminal output received",
+				zap.String("session_id", s.ID),
+				zap.Int("bytes", n),
+			)
+
+			s.mutex.RLock()
+			callback := s.onOutput
+			s.mutex.RUnlock()
+
+			if callback != nil {
+				callback(buf[:n])
+			}
+		}
+	}
 }
 
 func (m *Manager) GetSession(sessionID string) (*Session, bool) {
@@ -380,7 +396,7 @@ func (s *Session) closeSession(exitCode int) {
 		s.cancel()
 	}
 
-	if s.onClose != nil {
+	if s.started && s.onClose != nil {
 		go s.onClose(exitCode)
 	}
 

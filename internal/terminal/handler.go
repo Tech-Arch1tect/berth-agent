@@ -180,8 +180,6 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 			sessionCreated = true
 			sessionID := session.ID
 
-			h.logTerminalSession(c, req, sessionID, true, "")
-
 			session.SetOutputCallback(func(output []byte) {
 				event := ws.TerminalOutputEvent{
 					BaseMessage: ws.BaseMessage{
@@ -212,12 +210,18 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				_ = conn.Close()
 			})
 
+			if err := h.sendSuccess(conn, "Terminal session started", sessionID); err != nil {
+				conn.CloseWithError()
+				_ = h.manager.CloseSession(sessionID)
+				return err
+			}
+			h.logTerminalSession(c, req, sessionID, true, "")
 			h.logger.Info("Terminal session started successfully",
-				zap.String("session_id", session.ID),
+				zap.String("session_id", sessionID),
 				zap.String("stack_name", req.StackName),
 				zap.String("service_name", req.ServiceName),
 			)
-			h.sendSuccess(conn, "Terminal session started", session.ID)
+			session.Start()
 
 		case ws.MessageTypeTerminalInput:
 			if !sessionCreated || session == nil {
@@ -411,14 +415,14 @@ func (h *Handler) sendError(conn *framedConn, message, details string) {
 	_ = conn.WriteJSON(event)
 }
 
-func (h *Handler) sendSuccess(conn *framedConn, message, sessionID string) {
+func (h *Handler) sendSuccess(conn *framedConn, message, sessionID string) error {
 	response := map[string]any{
 		"type":       "success",
 		"message":    message,
 		"session_id": sessionID,
 		"timestamp":  time.Now().Format(time.RFC3339),
 	}
-	_ = conn.WriteJSON(response)
+	return conn.WriteJSON(response)
 }
 
 func (h *Handler) Shutdown() {
