@@ -424,19 +424,6 @@ func (s *Session) closeSession(exitCode *int, failure error) {
 		go s.onClose(exitCode, failure)
 	}
 
-	if s.ExecID != "" && s.dockerClient != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := s.dockerClient.ContainerExecStart(ctx, s.ExecID, container.ExecStartOptions{}); err != nil {
-			s.logger.Warn("Failed to terminate exec session during cleanup",
-				zap.String("session_id", s.ID),
-				zap.String("exec_id", s.ExecID),
-				zap.Error(err),
-			)
-		}
-	}
-
 	s.logger.Info("Terminal session closed",
 		zap.String("session_id", s.ID),
 		zap.String("stack_name", s.StackName),
