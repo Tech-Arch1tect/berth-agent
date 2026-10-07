@@ -218,6 +218,12 @@ func (s *Session) readOutput() {
 	for {
 		n, err := s.hijackedResp.Reader.Read(buf)
 		if err != nil {
+			s.mutex.RLock()
+			closed := s.closed
+			s.mutex.RUnlock()
+			if closed {
+				return
+			}
 			if err == io.EOF {
 				exitCode, inspectErr := s.waitForExec()
 				s.closeSession(exitCode, inspectErr)
