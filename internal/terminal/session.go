@@ -331,18 +331,21 @@ func (m *Manager) CloseAllSessions() {
 
 func (s *Session) Write(data []byte) error {
 	s.mutex.RLock()
-	defer s.mutex.RUnlock()
 
 	if s.closed || s.hijackedResp == nil {
+		s.mutex.RUnlock()
 		return fmt.Errorf("session is closed")
 	}
+
+	conn := s.hijackedResp.Conn
+	s.mutex.RUnlock()
 
 	s.logger.Debug("Writing to terminal",
 		zap.String("session_id", s.ID),
 		zap.Int("bytes", len(data)),
 	)
 
-	_, err := s.hijackedResp.Conn.Write(data)
+	_, err := conn.Write(data)
 	if err != nil {
 		s.logger.Error("Terminal I/O write error",
 			zap.String("session_id", s.ID),
