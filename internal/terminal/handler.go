@@ -27,11 +27,12 @@ type Handler struct {
 }
 
 type TerminalRequest struct {
-	StackName     string `json:"stack_name"`
-	ServiceName   string `json:"service_name"`
-	ContainerName string `json:"container_name"`
-	Cols          int    `json:"cols"`
-	Rows          int    `json:"rows"`
+	StackName     string   `json:"stack_name"`
+	ServiceName   string   `json:"service_name"`
+	ContainerName string   `json:"container_name"`
+	Command       []string `json:"command,omitempty"`
+	Cols          int      `json:"cols"`
+	Rows          int      `json:"rows"`
 }
 
 const (
@@ -149,7 +150,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				zap.String("container_name", req.ContainerName),
 			)
 
-			containerID, err := h.findContainerID(req.StackName, req.ServiceName, req.ContainerName)
+			containerID, err := h.findContainerID(req.StackName, req.ServiceName, req.ContainerName, len(req.Command) > 0)
 			if err != nil {
 				h.logger.Error("Container not found",
 					zap.String("stack_name", req.StackName),
@@ -161,7 +162,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 				continue
 			}
 
-			session, err = h.manager.CreateSession(req.StackName, req.ServiceName, containerID, req.Cols, req.Rows)
+			session, err = h.manager.CreateSession(req.StackName, req.ServiceName, containerID, req.Cols, req.Rows, req.Command)
 			if err != nil {
 				h.logger.Error("Failed to create terminal session",
 					zap.String("stack_name", req.StackName),
@@ -326,7 +327,7 @@ func (h *Handler) HandleTerminalWebSocket(c echo.Context) error {
 	return nil
 }
 
-func (h *Handler) findContainerID(stackName, serviceName, containerName string) (string, error) {
+func (h *Handler) findContainerID(stackName, serviceName, containerName string, exactName bool) (string, error) {
 	ctx := context.Background()
 
 	filterArgs := filters.NewArgs()
@@ -350,7 +351,20 @@ func (h *Handler) findContainerID(stackName, serviceName, containerName string) 
 			stackName, serviceName, containerName)
 	}
 
+	expectedName := strings.TrimPrefix(containerName, "/")
 	for _, c := range containers {
+		if exactName && containerName != "" {
+			matched := false
+			for _, name := range c.Names {
+				if strings.TrimPrefix(name, "/") == expectedName {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
 		if c.State == "running" {
 			if err := h.validateContainerStackMatch(c.ID, stackName); err != nil {
 				return "", fmt.Errorf("container validation failed: %w", err)

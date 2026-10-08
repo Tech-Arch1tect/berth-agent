@@ -51,7 +51,7 @@ func NewManager(dockerClient *client.Client, logger *logging.Logger) *Manager {
 	}
 }
 
-func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols, rows int) (*Session, error) {
+func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols, rows int, command []string) (*Session, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -78,75 +78,91 @@ func (m *Manager) CreateSession(stackName, serviceName, containerID string, cols
 		zap.Int("rows", rows),
 	)
 
-	shells := [][]string{
-		{"/bin/bash", "-l"},
-		{"/bin/bash"},
-		{"/bin/sh"},
-		{"/bin/ash"},
-		{"/bin/dash"},
-		{"sh"},
-	}
-
 	var selectedShell []string
 	var execIDResp container.ExecCreateResponse
 
-	for _, shell := range shells {
-
-		testShell := append(shell, "-c", "echo test")
-		testConfig := container.ExecOptions{
-			AttachStdout: true,
-			AttachStderr: true,
-			Cmd:          testShell,
-		}
-
-		testResp, err := m.dockerClient.ContainerExecCreate(ctx, containerID, testConfig)
-		if err != nil {
-			continue
-		}
-
-		testAttach, err := m.dockerClient.ContainerExecAttach(ctx, testResp.ID, container.ExecStartOptions{})
-		if err != nil {
-			continue
-		}
-		testAttach.Close()
-
-		time.Sleep(100 * time.Millisecond)
-
-		testInspect, err := m.dockerClient.ContainerExecInspect(ctx, testResp.ID)
-		if err != nil || testInspect.ExitCode != 0 {
-			continue
-		}
-
-		execConfig := container.ExecOptions{
+	if len(command) > 0 {
+		var err error
+		execIDResp, err = m.dockerClient.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 			AttachStdin:  true,
 			AttachStdout: true,
 			AttachStderr: true,
 			Tty:          true,
 			ConsoleSize:  &[2]uint{uint(rows), uint(cols)},
-			Cmd:          shell,
-		}
-
-		resp, err := m.dockerClient.ContainerExecCreate(ctx, containerID, execConfig)
+			Cmd:          command,
+		})
 		if err != nil {
-			continue
+			cancel()
+			return nil, fmt.Errorf("failed to create command exec: %w", err)
+		}
+	} else {
+		shells := [][]string{
+			{"/bin/bash", "-l"},
+			{"/bin/bash"},
+			{"/bin/sh"},
+			{"/bin/ash"},
+			{"/bin/dash"},
+			{"sh"},
 		}
 
-		selectedShell = shell
-		execIDResp = resp
-		m.logger.Info("Shell selected for terminal session",
-			zap.String("session_id", sessionID),
-			zap.Strings("shell", shell),
-		)
-		break
-	}
+		for _, shell := range shells {
 
-	if len(selectedShell) == 0 {
-		cancel()
-		m.logger.Error("No compatible shell found in container",
-			zap.String("session_id", sessionID),
-			zap.String("container_id", containerID),
-		)
-		return nil, fmt.Errorf("no compatible shell found in container (tried: bash, sh, ash, dash)")
+			testShell := append(shell, "-c", "echo test")
+			testConfig := container.ExecOptions{
+				AttachStdout: true,
+				AttachStderr: true,
+				Cmd:          testShell,
+			}
+
+			testResp, err := m.dockerClient.ContainerExecCreate(ctx, containerID, testConfig)
+			if err != nil {
+				continue
+			}
+
+			testAttach, err := m.dockerClient.ContainerExecAttach(ctx, testResp.ID, container.ExecStartOptions{})
+			if err != nil {
+				continue
+			}
+			testAttach.Close()
+
+			time.Sleep(100 * time.Millisecond)
+
+			testInspect, err := m.dockerClient.ContainerExecInspect(ctx, testResp.ID)
+			if err != nil || testInspect.ExitCode != 0 {
+				continue
+			}
+
+			execConfig := container.ExecOptions{
+				AttachStdin:  true,
+				AttachStdout: true,
+				AttachStderr: true,
+				Tty:          true,
+				ConsoleSize:  &[2]uint{uint(rows), uint(cols)},
+				Cmd:          shell,
+			}
+
+			resp, err := m.dockerClient.ContainerExecCreate(ctx, containerID, execConfig)
+			if err != nil {
+				continue
+			}
+
+			selectedShell = shell
+			execIDResp = resp
+			m.logger.Info("Shell selected for terminal session",
+				zap.String("session_id", sessionID),
+				zap.Strings("shell", shell),
+			)
+			break
+		}
+
+		if len(selectedShell) == 0 {
+			cancel()
+			m.logger.Error("No compatible shell found in container",
+				zap.String("session_id", sessionID),
+				zap.String("container_id", containerID),
+			)
+			return nil, fmt.Errorf("no compatible shell found in container (tried: bash, sh, ash, dash)")
+		}
 	}
 
 	session.ExecID = execIDResp.ID
@@ -201,17 +217,20 @@ func (s *Session) Start() {
 func (s *Session) readOutput() {
 	defer s.hijackedResp.Close()
 
-	firstOutput := make(chan struct{})
-	go warnWhenSilent(s.ctx, firstOutput, shellStartupWait, func() {
-		s.mutex.RLock()
-		callback := s.onOutput
-		s.mutex.RUnlock()
+	var firstOutput chan struct{}
+	if len(s.shell) > 0 {
+		firstOutput = make(chan struct{})
+		go warnWhenSilent(s.ctx, firstOutput, shellStartupWait, func() {
+			s.mutex.RLock()
+			callback := s.onOutput
+			s.mutex.RUnlock()
 
-		if callback != nil {
-			errorMsg := fmt.Sprintf("\r\n\x1b[31mTerminal Error: Shell may not be available in this container.\r\nTried shells: %v\x1b[0m\r\n", s.shell)
-			callback([]byte(errorMsg))
-		}
-	})
+			if callback != nil {
+				errorMsg := fmt.Sprintf("\r\n\x1b[31mTerminal Error: Shell may not be available in this container.\r\nTried shells: %v\x1b[0m\r\n", s.shell)
+				callback([]byte(errorMsg))
+			}
+		})
+	}
 
 	announced := false
 	buf := make([]byte, 1024)
@@ -238,7 +257,7 @@ func (s *Session) readOutput() {
 		}
 
 		if n > 0 {
-			if !announced {
+			if firstOutput != nil && !announced {
 				announced = true
 				close(firstOutput)
 			}
