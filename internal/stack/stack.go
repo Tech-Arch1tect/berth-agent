@@ -474,7 +474,7 @@ func (s *Service) GetStackDetails(name string) (*StackDetails, error) {
 	services := composeResult.services
 	containers := containerResult.containers
 	if containerResult.err != nil {
-		containers = make(map[string][]Container)
+		return nil, fmt.Errorf("failed to load container data: %w", containerResult.err)
 	}
 
 	for i := range services {
