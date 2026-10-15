@@ -205,13 +205,14 @@ func (s *Service) verifyRepository(ctx context.Context, image, password string, 
 	writer.WriteStdout(commandEcho("restic", []string{"check"}))
 	check, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"check"}, []mount.Mount{repoMount(s.repoHostPath(run.StackName), false)})
 	if err != nil {
-		return fmt.Errorf("failed to verify the backup repository: %w", err)
+		return resticFailure("repository integrity verification", check)
 	}
 	verified := check.exitCode == 0
 	run.Verified = &verified
 	if !verified {
-		run.VerifyError = check.output
-		return resticOperationError("repository integrity verification", check)
+		failure := resticFailure("repository integrity verification", check)
+		run.VerifyError = failure.Error()
+		return failure
 	}
 	writer.WriteStdout("Repository integrity verified")
 
@@ -258,10 +259,10 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 
 	version, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"version"}, nil)
 	if err != nil {
-		return fmt.Errorf("failed to run restic in a helper container: %w", err)
+		return resticFailure("version check", version)
 	}
 	if version.exitCode != 0 {
-		return fmt.Errorf("restic version check failed with exit code %d: %s", version.exitCode, firstLine(version.output))
+		return resticFailure("version check", version)
 	}
 	run.ResticVersion = firstLine(version.output)
 	writer.WriteStdout("Backup engine: " + run.ResticVersion)
@@ -269,7 +270,7 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 	writer.WriteStdout(commandEcho("restic", []string{"cat", "config"}))
 	probe, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"cat", "config"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
-		return fmt.Errorf("failed to probe the backup repository: %w", err)
+		return resticFailure("repository probe", probe)
 	}
 	switch probe.exitCode {
 	case 0:
@@ -279,30 +280,28 @@ func (s *Service) prepareRepository(ctx context.Context, image, password string,
 			return err
 		}
 		if hasSnapshots {
-			return fmt.Errorf("no repository found at %s but earlier backups are recorded for stack %q; refusing to create a new repository (is the backup disk mounted?) - if the old repository is permanently lost, remove the run records under %s on the agent host and retry", repoPath, run.StackName, filepath.Join(s.cfg.BackupPersistenceDir, run.StackName))
+			return fmt.Errorf("%w; earlier backups are recorded; refusing to initialise a replacement repository", resticFailure("repository probe", probe))
 		}
 		writer.WriteProgress("Initialising new backup repository for this stack...")
 		writer.WriteStdout(commandEcho("restic", []string{"init"}))
 		initResult, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"init"}, []mount.Mount{repoMount(repoPath, false)})
 		if err != nil {
-			return fmt.Errorf("failed to initialise the backup repository: %w", err)
+			return resticFailure("repository initialisation", initResult)
 		}
 		if initResult.exitCode != 0 {
-			return fmt.Errorf("repository initialisation failed with exit code %d", initResult.exitCode)
+			return resticFailure("repository initialisation", initResult)
 		}
-	case resticExitWrongPassword:
-		return fmt.Errorf("the backup password configured for this server in berth does not open the existing repository for stack %q; refusing to continue (a new repository is never created next to one that cannot be read)", run.StackName)
 	default:
-		return fmt.Errorf("backup repository probe failed with exit code %d", probe.exitCode)
+		return resticFailure("repository probe", probe)
 	}
 
 	writer.WriteStdout(commandEcho("restic", []string{"unlock"}))
 	unlock, err := s.runResticBuffered(ctx, image, run.StackName, run.ID, password, s3Repo, []string{"unlock"}, []mount.Mount{repoMount(repoPath, false)})
 	if err != nil {
-		return fmt.Errorf("failed to clear stale repository locks: %w", err)
+		return resticFailure("stale lock clearing", unlock)
 	}
 	if unlock.exitCode != 0 {
-		return fmt.Errorf("clearing stale repository locks failed with exit code %d", unlock.exitCode)
+		return resticFailure("stale lock clearing", unlock)
 	}
 	return nil
 }
@@ -318,27 +317,41 @@ func (s *Service) backupComponent(ctx context.Context, image, password string, s
 	mounts := []mount.Mount{repoMount(s.repoHostPath(run.StackName), false), sourceMount}
 
 	parser := newResticOutputParser(component.ID, writer)
+	var stdoutCause, stderrCause resticFailureCause
+	parser.captureFailure = func(line string) {
+		if cause := classifyResticFailure(line); cause != resticFailureUnknown {
+			stdoutCause = cause
+		}
+	}
 	args := backupArgs(*component, run.StackName, run.ID, run.Label)
 	writer.WriteStdout(commandEcho("restic", args))
 
 	exitCode, err := s.runResticStreaming(ctx, image, run.StackName, run.ID, password, s3Repo, args, mounts,
 		parser.handleLine,
-		writer.WriteStderr,
+		func(line string) {
+			if cause := classifyResticFailure(line); cause != resticFailureUnknown {
+				stderrCause = cause
+			}
+		},
 	)
 	if err != nil {
-		component.Error = err.Error()
-		return fmt.Errorf("backup of %s failed: %w", component.ID, err)
+		failure := resticCauseFailure("component upload", exitCode, resticFailureUnknown)
+		component.Error = failure.Error()
+		writer.WriteStderr(failure.Error())
+		return failure
 	}
 	if exitCode != 0 {
-		message := fmt.Sprintf("backup of %s failed with restic exit code %d", component.ID, exitCode)
-		if len(parser.errors) > 0 {
-			message += ": " + strings.Join(parser.errors, "; ")
+		cause := stdoutCause
+		if cause == resticFailureUnknown {
+			cause = stderrCause
 		}
-		component.Error = message
+		failure := resticCauseFailure("component upload", exitCode, cause)
+		component.Error = failure.Error()
+		writer.WriteStderr(failure.Error())
 		if parser.summary != nil && parser.summary.SnapshotID != "" {
 			s.forgetPartialSnapshot(ctx, image, password, s3Repo, run, parser.summary.SnapshotID, writer)
 		}
-		return fmt.Errorf("%s", message)
+		return failure
 	}
 	if parser.summary == nil {
 		component.Error = "restic reported success but no snapshot summary was seen"

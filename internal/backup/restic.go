@@ -12,6 +12,7 @@ const (
 	helperSourceRoot = "/berth-backup/source"
 
 	resticExitRepoDoesNotExist = 10
+	resticExitRepoLocked       = 11
 	resticExitWrongPassword    = 12
 )
 
@@ -90,12 +91,13 @@ type backupSummary struct {
 }
 
 type resticOutputParser struct {
-	componentID  string
-	writer       ProgressWriter
-	now          func() time.Time
-	lastProgress time.Time
-	summary      *backupSummary
-	errors       []string
+	componentID    string
+	writer         ProgressWriter
+	now            func() time.Time
+	lastProgress   time.Time
+	summary        *backupSummary
+	errors         []string
+	captureFailure func(string)
 }
 
 func newResticOutputParser(componentID string, writer ProgressWriter) *resticOutputParser {
@@ -111,15 +113,22 @@ func (p *resticOutputParser) handleLine(line string) {
 	if line == "" {
 		return
 	}
+	if p.captureFailure != nil {
+		p.captureFailure(line)
+	}
 
 	if !strings.HasPrefix(line, "{") {
-		p.writer.WriteStdout(line)
+		if p.captureFailure == nil {
+			p.writer.WriteStdout(line)
+		}
 		return
 	}
 
 	var event resticEvent
 	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		p.writer.WriteStdout(line)
+		if p.captureFailure == nil {
+			p.writer.WriteStdout(line)
+		}
 		return
 	}
 
@@ -145,12 +154,16 @@ func (p *resticOutputParser) handleLine(line string) {
 			TotalDuration:       event.TotalDuration,
 		}
 	case "error":
-		message := fmt.Sprintf("%s: error during %s on %s: %v", p.componentID, event.During, event.Item, event.Error)
-		p.errors = append(p.errors, message)
-		p.writer.WriteStderr(message)
+		if p.captureFailure == nil {
+			message := fmt.Sprintf("%s: error during %s on %s: %v", p.componentID, event.During, event.Item, event.Error)
+			p.errors = append(p.errors, message)
+			p.writer.WriteStderr(message)
+		}
 	case "verbose_status":
 	default:
-		p.writer.WriteStdout(line)
+		if p.captureFailure == nil {
+			p.writer.WriteStdout(line)
+		}
 	}
 }
 
