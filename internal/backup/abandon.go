@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path"
-	"strings"
 
-	"github.com/tech-arch1tect/berth-agent/internal/validation"
 	"go.uber.org/zap"
 )
 
@@ -57,13 +54,8 @@ func (p *RunPersistence) abandonHistory(ctx context.Context) (AbandonBackupStora
 			result.Errors = append(result.Errors, "backup history abandonment was cancelled before all entries were attempted")
 			break
 		}
-		switch {
-		case derivedHistoryIndex(entry):
-			p.removeHistoryFile(root, entry.Name(), &result)
-		case entry.IsDir() && validation.ValidateStackName(entry.Name()) == nil:
-			p.removeStackHistory(root, entry.Name(), &result)
-		default:
-			result.Errors = append(result.Errors, fmt.Sprintf("backup history entry %q was not removed because it is outside the known metadata namespace", entry.Name()))
+		if err := root.RemoveAll(entry.Name()); err != nil {
+			p.recordRemovalError(entry.Name(), err, &result)
 		}
 	}
 
@@ -82,60 +74,6 @@ func (p *RunPersistence) abandonHistory(ctx context.Context) (AbandonBackupStora
 	}
 	result.Complete = result.After.Empty && len(remaining) == 0 && len(result.Errors) == 0
 	return result, nil
-}
-
-func (p *RunPersistence) removeStackHistory(root *os.Root, stackName string, result *AbandonBackupStorageResult) {
-	entries, err := fs.ReadDir(root.FS(), stackName)
-	if err != nil {
-		p.recordRemovalError(stackName, err, result)
-		return
-	}
-	for _, entry := range entries {
-		entryPath := path.Join(stackName, entry.Name())
-		if !knownStackHistoryFile(entry) {
-			result.Errors = append(result.Errors, fmt.Sprintf("backup history entry %q was not removed because it is outside the known metadata namespace", entryPath))
-			continue
-		}
-		p.removeHistoryFile(root, entryPath, result)
-	}
-	remaining, err := fs.ReadDir(root.FS(), stackName)
-	if err != nil {
-		p.recordRemovalError(stackName, err, result)
-		return
-	}
-	if len(remaining) == 0 {
-		p.removeHistoryEntry(root, stackName, result)
-	}
-}
-
-func knownStackHistoryFile(entry fs.DirEntry) bool {
-	if !entry.Type().IsRegular() {
-		return false
-	}
-	name := entry.Name()
-	if strings.HasSuffix(name, ".json.tmp") {
-		return validateRunID(strings.TrimSuffix(name, ".json.tmp")) == nil
-	}
-	return strings.HasSuffix(name, ".json") && validateRunID(strings.TrimSuffix(name, ".json")) == nil
-}
-
-func (p *RunPersistence) removeHistoryFile(root *os.Root, name string, result *AbandonBackupStorageResult) {
-	info, err := root.Lstat(name)
-	if err != nil {
-		p.recordRemovalError(name, err, result)
-		return
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		result.Errors = append(result.Errors, fmt.Sprintf("backup history entry %q was not removed because it is outside the known metadata namespace", name))
-		return
-	}
-	p.removeHistoryEntry(root, name, result)
-}
-
-func (p *RunPersistence) removeHistoryEntry(root *os.Root, name string, result *AbandonBackupStorageResult) {
-	if err := root.Remove(name); err != nil {
-		p.recordRemovalError(name, err, result)
-	}
 }
 
 func (p *RunPersistence) recordRemovalError(name string, err error, result *AbandonBackupStorageResult) {
